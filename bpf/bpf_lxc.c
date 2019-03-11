@@ -52,7 +52,7 @@
 #include "lib/nat.h"
 
 #if defined ENABLE_IPV4 || defined ENABLE_IPV6
-static inline bool redirect_to_proxy(int verdict, int dir)
+static inline bool redirect_to_proxy(int verdict, __u8 dir)
 {
 	return is_defined(ENABLE_HOST_REDIRECT) && verdict > 0 &&
 	       (dir == CT_NEW || dir == CT_ESTABLISHED);
@@ -65,7 +65,7 @@ static inline int ipv6_l3_from_lxc(struct __sk_buff *skb,
 				   struct ipv6hdr *ip6, __u32 *dstID)
 {
 	union macaddr router_mac = NODE_MAC;
-	int ret, verdict, l4_off, forwarding_reason, hdrlen;
+	int ret, verdict, l4_off, hdrlen;
 	struct csum_offset csum_off = {};
 	struct endpoint_info *ep;
 	struct lb6_service_v2 *svc;
@@ -77,6 +77,7 @@ static inline int ipv6_l3_from_lxc(struct __sk_buff *skb,
 	__u32 tunnel_endpoint = 0;
 	__u8 encrypt_key = 0;
 	__u32 monitor = 0;
+	__u8 reason;
 
 	if (unlikely(!is_valid_lxc_src_ip(ip6)))
 		return DROP_INVALID_SIP;
@@ -137,7 +138,7 @@ skip_service_lookup:
 		return ret;
 	}
 
-	forwarding_reason = ret;
+	reason = ret;
 
 	if (!revalidate_data(skb, &data, &data_end, &ip6))
 		return DROP_INVALID;
@@ -289,7 +290,7 @@ to_host:
 			return ret;
 
 		send_trace_notify(skb, TRACE_TO_HOST, SECLABEL, HOST_ID, 0,
-				  HOST_IFINDEX, forwarding_reason, monitor);
+				  HOST_IFINDEX, reason, monitor);
 
 		cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
 		return redirect(HOST_IFINDEX, 0);
@@ -306,7 +307,7 @@ pass_to_stack:
 		return DROP_WRITE_ERROR;
 
 	send_trace_notify(skb, TRACE_TO_STACK, SECLABEL, *dstID, 0, 0,
-			  forwarding_reason, monitor);
+			  reason, monitor);
 
 	cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, 0);
 #ifndef ENCAP_IFINDEX
@@ -372,7 +373,7 @@ static inline int handle_ipv4_from_lxc(struct __sk_buff *skb, __u32 *dstID)
 	union macaddr router_mac = NODE_MAC;
 	void *data, *data_end;
 	struct iphdr *ip4;
-	int ret, verdict, l3_off = ETH_HLEN, l4_off, forwarding_reason;
+	int ret, verdict, l3_off = ETH_HLEN, l4_off;
 	struct csum_offset csum_off = {};
 	struct endpoint_info *ep;
 	struct lb4_service_v2 *svc;
@@ -383,6 +384,7 @@ static inline int handle_ipv4_from_lxc(struct __sk_buff *skb, __u32 *dstID)
 	__u32 tunnel_endpoint = 0;
 	__u8 encrypt_key = 0;
 	__u32 monitor = 0;
+	__u8 reason;
 
 	if (!revalidate_data(skb, &data, &data_end, &ip4))
 		return DROP_INVALID;
@@ -436,7 +438,7 @@ skip_service_lookup:
 	if (ret < 0)
 		return ret;
 
-	forwarding_reason = ret;
+	reason = ret;
 
 	/* Determine the destination category for policy fallback. */
 	if (1) {
@@ -503,7 +505,7 @@ skip_service_lookup:
 		return DROP_UNKNOWN_CT;
 	}
 
-	if (redirect_to_proxy(verdict, forwarding_reason)) {
+	if (redirect_to_proxy(verdict, reason)) {
 		// Trace the packet before its forwarded to proxy
 		send_trace_notify(skb, TRACE_TO_PROXY, SECLABEL, 0,
 				  0, 0, forwarding_reason, monitor);
@@ -570,7 +572,7 @@ to_host:
 			return ret;
 
 		send_trace_notify(skb, TRACE_TO_HOST, SECLABEL, HOST_ID, 0, HOST_IFINDEX,
-				  forwarding_reason, monitor);
+				  reason, monitor);
 
 		cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
 #ifdef HOST_REDIRECT_TO_INGRESS
@@ -593,7 +595,7 @@ pass_to_stack:
 	 */
 
 	send_trace_notify(skb, TRACE_TO_STACK, SECLABEL, *dstID, 0, 0,
-			  forwarding_reason, monitor);
+			  reason, monitor);
 #ifndef ENCAP_IFINDEX
 #ifdef ENABLE_IPSEC
 	if (*dstID > WORLD_ID && encrypt_key) {
@@ -681,7 +683,7 @@ out:
 
 #ifdef ENABLE_IPV6
 static inline int __inline__
-ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding_reason, struct ep_config *cfg)
+ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, __u8 *reason, struct ep_config *cfg)
 {
 	struct ipv6_ct_tuple tuple = {};
 	void *data, *data_end;
@@ -739,7 +741,7 @@ ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 	if (ret < 0)
 		return ret;
 
-	*forwarding_reason = ret;
+	*reason = ret;
 
 	if (unlikely(ct_state.rev_nat_index)) {
 		int ret2;
@@ -790,7 +792,7 @@ ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		return skb_redirect_to_proxy(skb, verdict);
 	} else { // Not redirected to host / proxy.
 		send_trace_notify(skb, TRACE_TO_LXC, src_label, SECLABEL,
-				  LXC_ID, ifindex, *forwarding_reason, monitor);
+				  LXC_ID, ifindex, *reason, monitor);
 	}
 
 	ifindex = skb->cb[CB_IFINDEX];
@@ -805,13 +807,13 @@ int tail_ipv6_policy(struct __sk_buff *skb)
 {
 	int ret, ifindex = skb->cb[CB_IFINDEX];
 	__u32 src_label = skb->cb[CB_SRC_LABEL];
-	int forwarding_reason = 0;
+	__u8 reason = 0;
 
 	struct ep_config *cfg = lookup_ep_config();
 
 	skb->cb[CB_SRC_LABEL] = 0;
 	if (cfg)
-		ret = ipv6_policy(skb, ifindex, src_label, &forwarding_reason, cfg);
+		ret = ipv6_policy(skb, ifindex, src_label, &reason, cfg);
 	else
 		ret = DROP_NO_CONFIG;
 
@@ -826,7 +828,7 @@ int tail_ipv6_policy(struct __sk_buff *skb)
 
 #ifdef ENABLE_IPV4
 static inline int __inline__
-ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding_reason, struct ep_config *cfg)
+ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, __u8 *reason, struct ep_config *cfg)
 {
 	struct ipv4_ct_tuple tuple = {};
 	void *data, *data_end;
@@ -864,7 +866,7 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 	if (ret < 0)
 		return ret;
 
-	*forwarding_reason = ret;
+	*reason = ret;
 
 #ifdef ENABLE_NAT46
 	if (skb->cb[CB_NAT46_STATE] == NAT46) {
@@ -925,7 +927,7 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		return skb_redirect_to_proxy(skb, verdict);
 	} else { // Not redirected to host / proxy.
 		send_trace_notify(skb, TRACE_TO_LXC, src_label, SECLABEL,
-				  LXC_ID, ifindex, *forwarding_reason, monitor);
+				  LXC_ID, ifindex, *reason, monitor);
 	}
 
 	ifindex = skb->cb[CB_IFINDEX];
@@ -941,11 +943,11 @@ int tail_ipv4_policy(struct __sk_buff *skb)
 	struct ep_config *cfg = lookup_ep_config();
 	int ret, ifindex = skb->cb[CB_IFINDEX];
 	__u32 src_label = skb->cb[CB_SRC_LABEL];
-	int forwarding_reason = 0;
+	__u8 reason = 0;
 
 	skb->cb[CB_SRC_LABEL] = 0;
 	if (cfg)
-		ret = ipv4_policy(skb, ifindex, src_label, &forwarding_reason, cfg);
+		ret = ipv4_policy(skb, ifindex, src_label, &reason, cfg);
 	else
 		ret = DROP_NO_CONFIG;
 	if (IS_ERR(ret))
