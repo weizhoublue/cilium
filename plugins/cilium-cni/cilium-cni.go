@@ -40,6 +40,7 @@ import (
 	chainingapi "github.com/cilium/cilium/plugins/cilium-cni/chaining/api"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/awscni"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/flannel"
+	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/generic-veth"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/portmap"
 	"github.com/cilium/cilium/plugins/cilium-cni/types"
 
