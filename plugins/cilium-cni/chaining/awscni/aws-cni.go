@@ -31,6 +31,10 @@ import (
 
 type awscniChainer struct{}
 
+func (f *awscniChainer) ImplementsAdd() bool {
+	return true
+}
+
 func (f *awscniChainer) Add(ctx context.Context, pluginCtx chainingapi.PluginContext) (res *cniTypesVer.Result, err error) {
 	err = cniVersion.ParsePrevResult(&pluginCtx.NetConf.NetConf)
 	if err != nil {
@@ -178,6 +182,14 @@ func (f *awscniChainer) Add(ctx context.Context, pluginCtx chainingapi.PluginCon
 	}
 
 	return
+}
+
+func (f *awscniChainer) ImplementsDelete() bool {
+	return true
+}
+
+func (f *awscniChainer) Delete(ctx context.Context, pluginCtx chainingapi.PluginContext) (err error) {
+	return nil
 }
 
 func init() {
