@@ -16,7 +16,6 @@ package envoy
 
 import (
 	"net"
-	"sort"
 
 	"github.com/cilium/cilium/pkg/envoy/xds"
 	"github.com/cilium/cilium/pkg/identity"
@@ -93,18 +92,19 @@ func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModificati
 
 	switch modType {
 	case ipcache.Upsert:
-		var hostAddresses []string
+		var hostAddresses map[string]bool
 		if msg == nil {
-			hostAddresses = make([]string, 0, 1)
+			hostAddresses = make(map[string]bool, 1)
 		} else {
 			// If the resource already exists, create a copy of it and insert
 			// the new IP address into its HostAddresses list.
 			npHost := msg.(*envoyAPI.NetworkPolicyHosts)
-			hostAddresses = make([]string, 0, len(npHost.HostAddresses)+1)
-			hostAddresses = append(hostAddresses, npHost.HostAddresses...)
+			hostAddresses = make(map[string]bool, len(npHost.HostAddresses))
+			for k := range npHost.HostAddresses {
+				hostAddresses[k] = true
+			}
 		}
-		hostAddresses = append(hostAddresses, cidrStr)
-		sort.Strings(hostAddresses)
+		hostAddresses[cidrStr] = true
 
 		newNpHost := envoyAPI.NetworkPolicyHosts{
 			Policy:        uint64(newID),
@@ -128,20 +128,12 @@ func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModificati
 
 // handleIPUpsert deletes elements from the NPHDS cache with the specified peer IP->ID mapping.
 func (cache *NPHDSCache) handleIPDelete(npHost *envoyAPI.NetworkPolicyHosts, peerIdentity, peerIP string) {
-	targetIndex := -1
-
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.IPAddr:       peerIP,
 		logfields.Identity:     peerIdentity,
 		logfields.Modification: ipcache.Delete,
 	})
-	for i, endpointIP := range npHost.HostAddresses {
-		if endpointIP == peerIP {
-			targetIndex = i
-			break
-		}
-	}
-	if targetIndex < 0 {
+	if _, ok := npHost.HostAddresses[peerIP]; !ok {
 		scopedLog.Warning("Can't find IP in NPHDS cache")
 		return
 	}
@@ -153,13 +145,12 @@ func (cache *NPHDSCache) handleIPDelete(npHost *envoyAPI.NetworkPolicyHosts, pee
 	} else {
 		// If the resource is to be updated, create a copy of it before
 		// removing the IP address from its HostAddresses list.
-		hostAddresses := make([]string, 0, len(npHost.HostAddresses)-1)
-		if len(npHost.HostAddresses) == targetIndex {
-			hostAddresses = append(hostAddresses, npHost.HostAddresses[0:targetIndex]...)
-		} else {
-			hostAddresses = append(hostAddresses, npHost.HostAddresses[0:targetIndex]...)
-			hostAddresses = append(hostAddresses, npHost.HostAddresses[targetIndex+1:]...)
+		hostAddresses := make(map[string]bool, len(npHost.HostAddresses))
+		// TODO: do we need to deep copy the map?
+		for k := range npHost.HostAddresses {
+			hostAddresses[k] = true
 		}
+		delete(hostAddresses, peerIP)
 
 		newNpHost := envoyAPI.NetworkPolicyHosts{
 			Policy:        uint64(npHost.Policy),
