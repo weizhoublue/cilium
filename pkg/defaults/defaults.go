@@ -206,4 +206,8 @@ const (
 	// option.ForceLocalPolicyEvalAtSource. It is enabled by default to
 	// provide backwards compatibility, it can be disabled via an option
 	ForceLocalPolicyEvalAtSource = true
+
+	// ReserveConflictingRoutes, when enabled, removes all IPs from the
+	// IPAM block if a local route not owned by Cilium conflicts with it
+	ReserveConflictingRoutes = true
 )

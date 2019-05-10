@@ -458,6 +458,10 @@ const (
 	// ForceLocalPolicyEvalAtSource forces a policy decision at the source
 	// endpoint for all local communication
 	ForceLocalPolicyEvalAtSource = "force-local-policy-eval-at-source"
+
+	// ReserveConflictingRoutes, when enabled, removes all IPs from the
+	// IPAM block if a local route not owned by Cilium conflicts with it
+	ReserveConflictingRoutes = "dont-allocate-conflicting-routes"
 )
 
 // FQDNS variables
@@ -920,6 +924,10 @@ type DaemonConfig struct {
 	// ForceLocalPolicyEvalAtSource forces a policy decision at the source
 	// endpoint for all local communication
 	ForceLocalPolicyEvalAtSource bool
+
+	// ReserveConflictingRoutes, when enabled, removes all IPs from the
+	// IPAM block if a local route not owned by Cilium conflicts with it
+	ReserveConflictingRoutes bool
 }
 
 var (
@@ -944,6 +952,7 @@ var (
 		LoopbackIPv4:                 defaults.LoopbackIPv4,
 		IPAM:                         defaults.IPAM,
 		ForceLocalPolicyEvalAtSource: defaults.ForceLocalPolicyEvalAtSource,
+		ReserveConflictingRoutes:     defaults.ReserveConflictingRoutes,
 	}
 )
 
@@ -1224,6 +1233,7 @@ func (c *DaemonConfig) Populate() {
 	c.PrependIptablesChains = viper.GetBool(PrependIptablesChainsName)
 	c.PrometheusServeAddr = getPrometheusServerAddr()
 	c.ProxyConnectTimeout = viper.GetInt(ProxyConnectTimeout)
+	c.ReserveConflictingRoutes = viper.GetBool(ReserveConflictingRoutes)
 	c.RestoreState = viper.GetBool(Restore)
 	c.RunDir = viper.GetString(StateDir)
 	c.SidecarIstioProxyImage = viper.GetString(SidecarIstioProxyImage)

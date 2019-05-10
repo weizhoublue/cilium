@@ -634,6 +634,9 @@ func init() {
 	flags.String(option.IPv4NodeAddr, "auto", "IPv4 address of node")
 	option.BindEnv(option.IPv4NodeAddr)
 
+	flags.Bool(option.ReserveConflictingRoutes, defaults.ReserveConflictingRoutes, "Don't allocate IPs conflicting will local routes not owned by Cilium")
+	option.BindEnv(option.ReserveConflictingRoutes)
+
 	flags.Bool(option.Restore, true, "Restores state, if possible, from previous daemon")
 	option.BindEnv(option.Restore)
 

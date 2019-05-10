@@ -148,6 +148,10 @@ func (ipam *IPAM) reserveLocalRoutes() {
 // ReserveLocalRoutes walks through local routes/subnets and reserves them in
 // the allocator pool in case of overlap
 func (ipam *IPAM) ReserveLocalRoutes() {
+	if !option.Config.ReserveConflictingRoutes {
+		return
+	}
+
 	if ipam.IPv4Allocator != nil {
 		ipam.reserveLocalRoutes()
 	}

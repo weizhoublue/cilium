@@ -40,6 +40,7 @@ cilium-agent [flags]
       --disable-endpoint-crd                       Disable use of CiliumEndpoint CRD
       --disable-k8s-services                       Disable east-west K8s load balancing by cilium
   -e, --docker string                              Path to docker runtime socket (DEPRECATED: use container-runtime-endpoint instead) (default "unix:///var/run/docker.sock")
+      --dont-allocate-conflicting-routes           Don't allocate IPs conflicting will local routes not owned by Cilium (default true)
       --enable-health-checking                     Enable connectivity health checking (default true)
       --enable-host-reachable-services             Enable reachability of services for host applications
       --enable-ipsec                               Enable IPSec support
