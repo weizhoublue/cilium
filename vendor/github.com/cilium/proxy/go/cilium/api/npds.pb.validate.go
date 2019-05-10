@@ -16,8 +16,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/golang/protobuf/ptypes"
-
-	core "envoy/api/v2/core"
 )
 
 // ensure the imports are used
@@ -33,8 +31,6 @@ var (
 	_ = (*url.URL)(nil)
 	_ = (*mail.Address)(nil)
 	_ = ptypes.DynamicAny{}
-
-	_ = core.SocketAddress_Protocol(0)
 )
 
 // Validate checks the field values on NetworkPolicy with the rules defined in
