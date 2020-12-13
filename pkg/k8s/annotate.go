@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
 
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/cidr"
@@ -27,6 +28,8 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
 	"github.com/sirupsen/logrus"
+	apiextclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
@@ -43,7 +46,12 @@ type K8sCiliumClient struct {
 	clientset.Interface
 }
 
-func updateNodeAnnotation(c kubernetes.Interface, nodeName string, v4CIDR, v6CIDR *cidr.CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP net.IP) error {
+// K8sAPIExtensionsClient is a wrapper around clientset.Interface.
+type K8sAPIExtensionsClient struct {
+	apiextclientset.Interface
+}
+
+func updateNodeAnnotation(c kubernetes.Interface, nodeName string, encryptKey uint8, v4CIDR, v6CIDR *cidr.CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP net.IP) error {
 	annotations := map[string]string{}
 
 	if v4CIDR != nil {
@@ -68,6 +76,10 @@ func updateNodeAnnotation(c kubernetes.Interface, nodeName string, v4CIDR, v6CID
 		annotations[annotation.CiliumHostIPv6] = v6CiliumHostIP.String()
 	}
 
+	if encryptKey != 0 {
+		annotations[annotation.CiliumEncryptionKey] = strconv.FormatUint(uint64(encryptKey), 10)
+	}
+
 	if len(annotations) == 0 {
 		return nil
 	}
@@ -78,7 +90,7 @@ func updateNodeAnnotation(c kubernetes.Interface, nodeName string, v4CIDR, v6CID
 	}
 	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":%s}}`, raw))
 
-	_, err = c.CoreV1().Nodes().Patch(nodeName, types.StrategicMergePatchType, patch)
+	_, err = c.CoreV1().Nodes().Patch(context.TODO(), nodeName, types.StrategicMergePatchType, patch, v1.PatchOptions{})
 
 	return err
 }
@@ -86,7 +98,7 @@ func updateNodeAnnotation(c kubernetes.Interface, nodeName string, v4CIDR, v6CID
 // AnnotateNode writes v4 and v6 CIDRs and health IPs in the given k8s node name.
 // In case of failure while updating the node, this function while spawn a go
 // routine to retry the node update indefinitely.
-func (k8sCli K8sClient) AnnotateNode(nodeName string, v4CIDR, v6CIDR *cidr.CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP net.IP) error {
+func (k8sCli K8sClient) AnnotateNode(nodeName string, encryptKey uint8, v4CIDR, v6CIDR *cidr.CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP net.IP) error {
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.NodeName:       nodeName,
 		logfields.V4Prefix:       v4CIDR,
@@ -95,20 +107,33 @@ func (k8sCli K8sClient) AnnotateNode(nodeName string, v4CIDR, v6CIDR *cidr.CIDR,
 		logfields.V6HealthIP:     v6HealthIP,
 		logfields.V4CiliumHostIP: v4CiliumHostIP,
 		logfields.V6CiliumHostIP: v6CiliumHostIP,
+		logfields.Key:            encryptKey,
 	})
 	scopedLog.Debug("Updating node annotations with node CIDRs")
 
 	controller.NewManager().UpdateController("update-k8s-node-annotations",
 		controller.ControllerParams{
 			DoFunc: func(_ context.Context) error {
-				err := updateNodeAnnotation(k8sCli, nodeName, v4CIDR, v6CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP)
+				err := updateNodeAnnotation(k8sCli, nodeName, encryptKey, v4CIDR, v6CIDR, v4HealthIP, v6HealthIP, v4CiliumHostIP, v6CiliumHostIP)
 				if err != nil {
 					scopedLog.WithFields(logrus.Fields{}).WithError(err).Warn("Unable to patch node resource with annotation")
-					return err
 				}
-				return SetNodeNetworkUnavailableFalse(k8sCli, nodeName)
+				return err
 			},
 		})
 
 	return nil
+}
+
+// GetSecrets returns the secrets found in the given namespace and name.
+func (k8sCli K8sClient) GetSecrets(ctx context.Context, ns, name string) (map[string][]byte, error) {
+	if k8sCli.Interface == nil {
+		return nil, fmt.Errorf("GetSecrets: No k8s, cannot access k8s secrets")
+	}
+
+	result, err := k8sCli.CoreV1().Secrets(ns).Get(ctx, name, v1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return result.Data, nil
 }

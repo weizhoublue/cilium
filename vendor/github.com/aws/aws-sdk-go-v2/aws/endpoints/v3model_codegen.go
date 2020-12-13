@@ -166,65 +166,12 @@ import (
 	"regexp"
 )
 
-	{{ template "partition consts" . }}
-
-	{{ range $_, $partition := . }}
-		{{ template "partition region consts" $partition }}
-	{{ end }}
-
-	{{ template "service consts" . }}
-	
-	{{ template "endpoint resolvers" . }}
-{{- end }}
-
-{{ define "partition consts" }}
-	// Partition identifiers
-	const (
-		{{ range $_, $p := . -}}
-			{{ ToSymbol $p.ID }}PartitionID = {{ QuoteString $p.ID }} // {{ $p.Name }} partition.
-		{{ end -}}
-	)
-{{- end }}
-
-{{ define "partition region consts" }}
-	// {{ .Name }} partition's regions.
-	const (
-		{{ range $id, $region := .Regions -}}
-			{{ ToSymbol $id }}RegionID = {{ QuoteString $id }} // {{ $region.Description }}.
-		{{ end -}}
-	)
-{{- end }}
-
-{{ define "service consts" }}
-	// Service identifiers
-	const (
-		{{ $serviceSet := ServicesSet . -}}
-		{{ range $id, $_ := $serviceSet -}}
-			{{ ToSymbol $id }}ServiceID = {{ QuoteString $id }} // {{ ToSymbol $id }}.
-		{{ end -}}
-	)
-{{- end }}
-
-{{ define "endpoint resolvers" }}
 	// NewDefaultResolver returns an Endpoint resolver that will be able
 	// to resolve endpoints for: {{ ListPartitionNames . }}.
-	//
-	// Use DefaultPartitions() to get the list of the default partitions.
 	func NewDefaultResolver() *Resolver {
 		return &Resolver{
 			partitions: defaultPartitions,
 		}
-	}
-
-	// DefaultPartitions returns a list of the partitions the SDK is bundled
-	// with. The available partitions are: {{ ListPartitionNames . }}.
-	//
-	//    partitions := endpoints.DefaultPartitions
-	//    for _, p := range partitions {
-	//        // ... inspect partitions
-	//    }
-	func DefaultPartitions() Partitions {
-		return defaultPartitions.Partitions()
 	}
 
 	var defaultPartitions = partitions{
@@ -234,14 +181,10 @@ import (
 	}
 	
 	{{ range $_, $partition := . -}}
-		{{ $name := PartitionGetter $partition.ID -}}
-		// {{ $name }} returns the Resolver for {{ $partition.Name }}.
-		func {{ $name }}() Partition {
-			return  {{ PartitionVarName $partition.ID }}.Partition()
-		}
 		var {{ PartitionVarName $partition.ID }} = {{ template "gocode Partition" $partition }}
 	{{ end }}
-{{ end }}
+
+{{- end }}
 
 {{ define "gocode Partition" -}}
 partition{

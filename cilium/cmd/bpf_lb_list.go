@@ -17,9 +17,9 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/maps/lbmap"
 
@@ -34,7 +34,6 @@ const (
 
 var (
 	listRevNAT bool
-	listLegacy bool
 )
 
 func dumpRevNat(serviceList map[string][]string) {
@@ -53,7 +52,7 @@ func dumpSVC(serviceList map[string][]string) {
 
 	parseBackendEntry := func(key bpf.MapKey, value bpf.MapValue) {
 		id := key.(lbmap.BackendKey).GetID()
-		backendMap[id] = value.DeepCopyMapValue().(lbmap.BackendValue)
+		backendMap[id] = value.DeepCopyMapValue().(lbmap.BackendValue).ToHost()
 	}
 	if err := lbmap.Backend4Map.DumpWithCallbackIfExists(parseBackendEntry); err != nil {
 		Fatalf("Unable to dump IPv4 backends table: %s", err)
@@ -65,18 +64,20 @@ func dumpSVC(serviceList map[string][]string) {
 	parseSVCEntry := func(key bpf.MapKey, value bpf.MapValue) {
 		var entry string
 
-		svcKey := key.(lbmap.ServiceKeyV2)
-		svcVal := value.(lbmap.ServiceValueV2)
+		svcKey := key.(lbmap.ServiceKey)
+		svcVal := value.(lbmap.ServiceValue).ToHost()
 		svc := svcKey.String()
+		svcKey = svcKey.ToHost()
 		revNATID := svcVal.GetRevNat()
 		backendID := svcVal.GetBackendID()
+		flags := loadbalancer.ServiceFlags(svcVal.GetFlags())
 
-		if backendID == 0 {
+		if svcKey.GetBackendSlot() == 0 {
 			ip := "0.0.0.0"
 			if svcKey.IsIPv6() {
 				ip = "[::]"
 			}
-			entry = fmt.Sprintf("%s:%d (%d)", ip, 0, revNATID)
+			entry = fmt.Sprintf("%s:%d (%d) [%s]", ip, 0, revNATID, flags)
 		} else if backend, found := backendMap[backendID]; !found {
 			entry = fmt.Sprintf("backend %d not found", backendID)
 		} else {
@@ -99,16 +100,7 @@ func dumpSVC(serviceList map[string][]string) {
 	}
 }
 
-func dumpLegacySVC(serviceList map[string][]string) {
-	if err := lbmap.Service4Map.DumpIfExists(serviceList); err != nil {
-		Fatalf("Unable to dump IPv4 services table: %s", err)
-	}
-	if err := lbmap.Service6Map.DumpIfExists(serviceList); err != nil {
-		Fatalf("Unable to dump IPv6 services table: %s", err)
-	}
-}
-
-// bpfCtListCmd represents the bpf_ct_list command
+// bpfLBListCmd represents the bpf_lb_list command
 var bpfLBListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
@@ -122,9 +114,6 @@ var bpfLBListCmd = &cobra.Command{
 		case listRevNAT:
 			firstTitle = idTitle
 			dumpRevNat(serviceList)
-		case listLegacy:
-			firstTitle = serviceAddressTitle
-			dumpLegacySVC(serviceList)
 		default:
 			firstTitle = serviceAddressTitle
 			dumpSVC(serviceList)
@@ -144,6 +133,5 @@ var bpfLBListCmd = &cobra.Command{
 func init() {
 	bpfLBCmd.AddCommand(bpfLBListCmd)
 	bpfLBListCmd.Flags().BoolVarP(&listRevNAT, "revnat", "", false, "List reverse NAT entries")
-	bpfLBListCmd.Flags().BoolVarP(&listLegacy, "legacy", "", false, "List legacy service entries")
 	command.AddJSONOutput(bpfLBListCmd)
 }

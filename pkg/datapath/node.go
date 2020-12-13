@@ -15,9 +15,11 @@
 package datapath
 
 import (
+	"net"
+
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/mtu"
-	"github.com/cilium/cilium/pkg/node"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 )
 
 // LocalNodeConfiguration represents the configuration of the local node
@@ -91,6 +93,19 @@ type LocalNodeConfiguration struct {
 
 	// EnableIPSec enables IPSec routes
 	EnableIPSec bool
+
+	// EncryptNode enables encrypting NodeIP traffic requires EnableIPSec
+	EncryptNode bool
+
+	// IPv4PodSubnets is a list of IPv4 subnets that pod IPs are assigned from
+	// these are then used when encryption is enabled to configure the node
+	// for encryption over these subnets at node initialization.
+	IPv4PodSubnets []*net.IPNet
+
+	// IPv6PodSubnets is a list of IPv6 subnets that pod IPs are assigned from
+	// these are then used when encryption is enabled to configure the node
+	// for encryption over these subnets at node initialization.
+	IPv6PodSubnets []*net.IPNet
 }
 
 // NodeHandler handles node related events such as addition, update or deletion
@@ -101,19 +116,19 @@ type LocalNodeConfiguration struct {
 // calling node.IsLocal().
 type NodeHandler interface {
 	// NodeAdd is called when a node is discovered for the first time.
-	NodeAdd(newNode node.Node) error
+	NodeAdd(newNode nodeTypes.Node) error
 
 	// NodeUpdate is called when a node definition changes. Both the old
 	// and new node definition is provided. NodeUpdate() is never called
 	// before NodeAdd() is called for a particular node.
-	NodeUpdate(oldNode, newNode node.Node) error
+	NodeUpdate(oldNode, newNode nodeTypes.Node) error
 
 	// NodeDelete is called after a node has been deleted
-	NodeDelete(node node.Node) error
+	NodeDelete(node nodeTypes.Node) error
 
 	// NodeValidateImplementation is called to validate the implementation
 	// of the node in the datapath
-	NodeValidateImplementation(node node.Node) error
+	NodeValidateImplementation(node nodeTypes.Node) error
 
 	// NodeConfigurationChanged is called when the local node configuration
 	// has changed

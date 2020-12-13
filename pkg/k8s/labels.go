@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,13 +18,12 @@ import (
 	"regexp"
 
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 
 	"github.com/sirupsen/logrus"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -56,8 +55,8 @@ var (
 
 // isInjectedWithIstioSidecarProxy returns whether the given pod has been
 // injected by Istio with a sidecar proxy that is compatible with Cilium.
-func isInjectedWithIstioSidecarProxy(scopedLog *logrus.Entry, pod *corev1.Pod) bool {
-	istioStatusString, ok := pod.GetAnnotations()[AnnotationIstioSidecarStatus]
+func isInjectedWithIstioSidecarProxy(scopedLog *logrus.Entry, pod *slim_corev1.Pod) bool {
+	istioStatusString, ok := pod.Annotations[AnnotationIstioSidecarStatus]
 	if !ok {
 		// Istio's injection annotation was not found.
 		scopedLog.Debugf("No %s annotation", AnnotationIstioSidecarStatus)
@@ -80,8 +79,8 @@ func isInjectedWithIstioSidecarProxy(scopedLog *logrus.Entry, pod *corev1.Pod) b
 		}
 		scopedLog.Debugf("istio-proxy container runs Cilium-compatible image: %s", container.Image)
 
-		for _, mount := range container.VolumeMounts {
-			if mount.MountPath != "/var/run/cilium" {
+		for _, mountPath := range container.VolumeMounts {
+			if mountPath.MountPath != "/var/run/cilium" {
 				continue
 			}
 			scopedLog.Debug("istio-proxy container has volume mounted into /var/run/cilium")
@@ -94,26 +93,19 @@ func isInjectedWithIstioSidecarProxy(scopedLog *logrus.Entry, pod *corev1.Pod) b
 	return false
 }
 
-// GetPodLabels returns the labels of a pod
-func GetPodLabels(namespace, podName string) (map[string]string, error) {
+// GetPodMetadata returns the labels and annotations of the pod with the given
+// namespace / name.
+func GetPodMetadata(k8sNs *slim_corev1.Namespace, pod *slim_corev1.Pod) (containerPorts []slim_corev1.ContainerPort, lbls map[string]string, retAnno map[string]string, retErr error) {
+	namespace := pod.Namespace
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.K8sNamespace: namespace,
-		logfields.K8sPodName:   podName,
+		logfields.K8sPodName:   pod.Name,
 	})
-	scopedLog.Debug("Connecting to k8s apiserver to retrieve labels for pod")
+	scopedLog.Debug("Connecting to k8s local stores to retrieve labels for pod")
 
-	result, err := Client().CoreV1().Pods(namespace).Get(podName, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	// Also get all labels from the namespace where the pod is running
-	k8sNs, err := Client().CoreV1().Namespaces().Get(namespace, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	k8sLabels := result.GetLabels()
+	objMetaCpy := pod.ObjectMeta.DeepCopy()
+	annotations := objMetaCpy.Annotations
+	k8sLabels := objMetaCpy.Labels
 	if k8sLabels == nil {
 		k8sLabels = map[string]string{}
 	}
@@ -122,8 +114,8 @@ func GetPodLabels(namespace, podName string) (map[string]string, error) {
 	}
 	k8sLabels[k8sConst.PodNamespaceLabel] = namespace
 
-	if result.Spec.ServiceAccountName != "" {
-		k8sLabels[k8sConst.PolicyLabelServiceAccount] = result.Spec.ServiceAccountName
+	if pod.Spec.ServiceAccountName != "" {
+		k8sLabels[k8sConst.PolicyLabelServiceAccount] = pod.Spec.ServiceAccountName
 	} else {
 		delete(k8sLabels, k8sConst.PolicyLabelServiceAccount)
 	}
@@ -133,11 +125,17 @@ func GetPodLabels(namespace, podName string) (map[string]string, error) {
 	// If the pod already contains that label to explicitly enable or disable
 	// the sidecar proxy mode, keep it as is.
 	if _, ok := k8sLabels[k8sConst.PolicyLabelIstioSidecarProxy]; !ok &&
-		isInjectedWithIstioSidecarProxy(scopedLog, result) {
+		isInjectedWithIstioSidecarProxy(scopedLog, pod) {
 		k8sLabels[k8sConst.PolicyLabelIstioSidecarProxy] = "true"
 	}
 
 	k8sLabels[k8sConst.PolicyLabelCluster] = option.Config.ClusterName
 
-	return k8sLabels, nil
+	for _, containers := range pod.Spec.Containers {
+		for _, cp := range containers.Ports {
+			containerPorts = append(containerPorts, cp)
+		}
+	}
+
+	return containerPorts, k8sLabels, annotations, nil
 }

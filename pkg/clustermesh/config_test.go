@@ -22,7 +22,9 @@ import (
 	"path"
 	"time"
 
+	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/testutils"
+	"github.com/cilium/cilium/pkg/testutils/allocator"
 
 	. "gopkg.in/check.v1"
 )
@@ -33,11 +35,15 @@ func createFile(c *C, name string) {
 }
 
 func expectExists(c *C, cm *ClusterMesh, name string) {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
 	c.Assert(cm.clusters[name], Not(IsNil))
 }
 
 func expectChange(c *C, cm *ClusterMesh, name string) {
+	cm.mutex.RLock()
 	cluster := cm.clusters[name]
+	cm.mutex.RUnlock()
 	c.Assert(cluster, Not(IsNil))
 
 	select {
@@ -48,6 +54,8 @@ func expectChange(c *C, cm *ClusterMesh, name string) {
 }
 
 func expectNotExist(c *C, cm *ClusterMesh, name string) {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
 	c.Assert(cm.clusters[name], IsNil)
 }
 
@@ -68,17 +76,26 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	createFile(c, file1)
 	createFile(c, file2)
 
+	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
+	// The nils are only used by k8s CRD identities. We default to kvstore.
+	<-mgr.InitIdentityAllocator(nil, nil)
+
 	cm, err := NewClusterMesh(Configuration{
-		Name:            "test1",
-		ConfigDirectory: dir,
-		NodeKeyCreator:  testNodeCreator,
+		Name:                  "test1",
+		ConfigDirectory:       dir,
+		NodeKeyCreator:        testNodeCreator,
+		RemoteIdentityWatcher: mgr,
 	})
 	c.Assert(err, IsNil)
 	c.Assert(cm, Not(IsNil))
 	defer cm.Close()
 
 	// wait for cluster1 and cluster2 to appear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 2 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 2
+	}, time.Second), IsNil)
 	expectExists(c, cm, "cluster1")
 	expectExists(c, cm, "cluster2")
 	expectNotExist(c, cm, "cluster3")
@@ -87,12 +104,20 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	c.Assert(err, IsNil)
 
 	// wait for cluster1 to disappear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 1 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 1
+	}, time.Second), IsNil)
 
 	createFile(c, file3)
 
 	// wait for cluster3 to appear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 2 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 2
+	}, time.Second), IsNil)
 	expectNotExist(c, cm, "cluster1")
 	expectExists(c, cm, "cluster2")
 	expectExists(c, cm, "cluster3")
@@ -102,7 +127,11 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	c.Assert(err, IsNil)
 
 	// wait for cluster1 to appear
-	c.Assert(testutils.WaitUntil(func() bool { return cm.clusters["cluster1"] != nil }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return cm.clusters["cluster1"] != nil
+	}, time.Second), IsNil)
 	expectExists(c, cm, "cluster2")
 	expectNotExist(c, cm, "cluster3")
 
@@ -120,7 +149,11 @@ func (s *ClusterMeshTestSuite) TestWatchConfigDirectory(c *C) {
 	c.Assert(err, IsNil)
 
 	// wait for all clusters to disappear
-	c.Assert(testutils.WaitUntil(func() bool { return len(cm.clusters) == 0 }, time.Second), IsNil)
+	c.Assert(testutils.WaitUntil(func() bool {
+		cm.mutex.RLock()
+		defer cm.mutex.RUnlock()
+		return len(cm.clusters) == 0
+	}, time.Second), IsNil)
 	expectNotExist(c, cm, "cluster1")
 	expectNotExist(c, cm, "cluster2")
 	expectNotExist(c, cm, "cluster3")

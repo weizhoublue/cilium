@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 ******************
 Command Cheatsheet
@@ -21,7 +21,7 @@ guide.
       cilium [command]
 
     Available Commands:
-      bpf                      Direct access to local BPF maps
+      bpf                      Direct access to local eBPF maps
       cleanup                  Reset the agent state
       completion               Output shell completion code for bash
       config                   Cilium configuration options
@@ -62,7 +62,7 @@ output, to get the JSON output you can use the global option ``-o json``
     $ cilium endpoint list -o json
 
 Moreover, Cilium also provides a `JSONPath
-<http://goessner.net/articles/JsonPath/>`_ support, so detailed information can
+<https://goessner.net/articles/JsonPath/>`_ support, so detailed information can
 be extracted. JSONPath template reference can be found in `Kubernetes
 documentation <https://kubernetes.io/docs/reference/kubectl/jsonpath/>`_
 
@@ -202,6 +202,11 @@ Verbose output (including debug if enabled)
 
     cilium monitor -v
 
+Extra verbose output (including packet dissection)
+::
+
+    cilium monitor -v -v
+
 
 Filter for only the events related to endpoint
 ::
@@ -224,7 +229,7 @@ Show notifications only for dropped packet events
 Don't dissect packet payload, display payload in hex information
 ::
 
-    cilium monitor -v --hex
+    cilium monitor -v -v --hex
 
 
 
@@ -237,7 +242,7 @@ Check cluster Connectivity
 	cilium-health status
 
 There is also a `blog post
-<https://cilium.io/blog/2018/2/6/cilium-troubleshooting-cluster-health-monitor>`_
+<https://cilium.io/blog/2018/2/6/cilium-troubleshooting-cluster-health-monitor/>`_
 related to this tool.
 
 Endpoints
@@ -284,11 +289,10 @@ Add a new loadbalancer
 
     cilium service update --frontend 127.0.0.1:80 \
         --backends 127.0.0.2:90,127.0.0.3:90 \
-        --id 20 \
-        --rev 2
+        --id 20
 
-BPF
----
+eBPF
+----
 
 List node tunneling mapping information
 ::
@@ -310,19 +314,13 @@ Flush connection tracking entries:
 
     sudo cilium bpf ct flush
 
-List proxy configuration:
-::
-
-    sudo cilium bpf proxy list
-
-
 Kubernetes examples:
 =====================
 
 If you running Cilium on top of Kubernetes you may also want a way to list all
 cilium endpoints or policies from a single Kubectl commands. Cilium provides all
 this information to the user by using `Kubernetes Resource Definitions
-<https://kubernetes.io/docs/concepts/api-extension/custom-resources/>`_:
+<https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/>`_:
 
 Policies
 ---------
@@ -352,7 +350,7 @@ Cilium Network Policies. Both can be retrieved from the ``kubectl`` command:
 Endpoints
 ----------
 
-To retrieve a list of all endpoints managed by cilium, ``Cilum Endpoint``
+To retrieve a list of all endpoints managed by cilium, ``Cilium Endpoint``
 resource can be used.
 
 ::
@@ -380,27 +378,3 @@ resource can be used.
     51796=none
     40355=none
 
-
-Microscope
-----------
-
-Cilium also provides an option to monitor all connections from all Kubernetes
-nodes. `Microscope <https://github.com/cilium/microscope>`_ is a distributed
-monitor that connects to all Cilium instances and retrieves monitor information
-from there.
-
-Cilium also provides the ability to monitor all cilium-managed connections in
-the kubernetes cluster via `Microscope <https://github.com/cilium/microscope>`_.
-It is a distributed monitor that connects to all Cilium instances and retrieves
-monitor information from each node.
-
-Microscope can be installed an run as a pod, the basic usage is the following:
-::
-
-    $ kubectl apply -f
-    https://raw.githubusercontent.com/cilium/microscope/1.1.0/docs/microscope.yaml
-    $ kubectl exec -n kube-system microscope -- microscope -h
-
-
-More information about Cilium Microscope options can be found on the project
-homepage: `cilium/microscope <https://github.com/cilium/microscope>`_

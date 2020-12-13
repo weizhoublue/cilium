@@ -18,17 +18,21 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"math/rand"
 	"time"
 
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/uuid"
+	"github.com/cilium/cilium/pkg/rand"
 
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
-var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "backoff")
+var (
+	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "backoff")
+
+	randGen = rand.NewSafeRand(time.Now().UnixNano())
+)
 
 // NodeManager is the interface required to implement cluster size dependent
 // intervals
@@ -78,7 +82,7 @@ func CalculateDuration(min, max time.Duration, factor float64, jitter bool, fail
 	}
 
 	if jitter {
-		t = rand.Float64()*(t-minFloat) + minFloat
+		t = randGen.Float64()*(t-minFloat) + minFloat
 	}
 
 	return time.Duration(t)
@@ -107,7 +111,7 @@ func (b *Exponential) Wait(ctx context.Context) error {
 // Duration returns the wait duration for the nth attempt
 func (b *Exponential) Duration(attempt int) time.Duration {
 	if b.Name == "" {
-		b.Name = uuid.NewUUID().String()
+		b.Name = uuid.New().String()
 	}
 
 	min := time.Duration(1) * time.Second

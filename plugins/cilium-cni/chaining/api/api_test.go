@@ -42,10 +42,25 @@ func (p *pluginTest) ImplementsAdd() bool {
 	return true
 }
 
+func (p *pluginTest) Delete(ctx context.Context, pluginContext PluginContext) (err error) {
+	return nil
+}
+
+func (p *pluginTest) ImplementsDelete() bool {
+	return true
+}
+
 func (a *APISuite) TestRegistration(c *check.C) {
 	err := Register("foo", &pluginTest{})
 	c.Assert(err, check.IsNil)
 
 	err = Register("foo", &pluginTest{})
 	c.Assert(err, check.Not(check.IsNil))
+
+	err = Register(DefaultConfigName, &pluginTest{})
+	c.Assert(err, check.Not(check.IsNil))
+}
+
+func (a *APISuite) TestNonChaining(c *check.C) {
+	c.Assert(Lookup("cilium"), check.IsNil)
 }

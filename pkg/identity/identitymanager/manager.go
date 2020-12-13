@@ -17,7 +17,11 @@ package identitymanager
 import (
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -59,10 +63,19 @@ func Remove(identity *identity.Identity) {
 	GlobalIdentityManager.Remove(identity)
 }
 
+// RemoveAll deletes all identities from the GlobalIdentityManager.
+func RemoveAll() {
+	GlobalIdentityManager.RemoveAll()
+}
+
 // Add inserts the identity into the identity manager. If the identity is
 // already in the identity manager, the reference count for the identity is
 // incremented.
 func (idm *IdentityManager) Add(identity *identity.Identity) {
+	log.WithFields(logrus.Fields{
+		logfields.Identity: identity,
+	}).Debug("Adding identity to the identity manager")
+
 	idm.mutex.Lock()
 	defer idm.mutex.Unlock()
 	idm.add(identity)
@@ -83,6 +96,7 @@ func (idm *IdentityManager) add(identity *identity.Identity) {
 		for o := range idm.observers {
 			o.LocalEndpointIdentityAdded(identity)
 		}
+
 	} else {
 		idMeta.refCount++
 	}
@@ -90,9 +104,25 @@ func (idm *IdentityManager) add(identity *identity.Identity) {
 
 // RemoveOldAddNew removes old from the identity manager and inserts new
 // into the IdentityManager.
+// Caller must have previously added the old identity with Add().
+// This is a no-op if both identities have the same numeric ID.
 func (idm *IdentityManager) RemoveOldAddNew(old, new *identity.Identity) {
 	idm.mutex.Lock()
 	defer idm.mutex.Unlock()
+
+	if old == nil && new == nil {
+		return
+	}
+	// The host endpoint will always retain its reserved ID, but its labels may
+	// change so we need to update its identity.
+	if old != nil && new != nil && old.ID == new.ID && new.ID != identity.ReservedIdentityHost {
+		return
+	}
+
+	log.WithFields(logrus.Fields{
+		"old": old,
+		"new": new,
+	}).Debug("removing old and adding new identity")
 
 	idm.remove(old)
 	idm.add(new)
@@ -104,11 +134,25 @@ func RemoveOldAddNew(old, new *identity.Identity) {
 	GlobalIdentityManager.RemoveOldAddNew(old, new)
 }
 
+// RemoveAll removes all identities.
+func (idm *IdentityManager) RemoveAll() {
+	idm.mutex.Lock()
+	defer idm.mutex.Unlock()
+
+	for id := range idm.identities {
+		idm.remove(idm.identities[id].identity)
+	}
+}
+
 // Remove deletes the identity from the identity manager. If the identity is
 // already in the identity manager, the reference count for the identity is
 // decremented. If the identity is not in the cache, this is a no-op. If the
 // ref count becomes zero, the identity is removed from the cache.
 func (idm *IdentityManager) Remove(identity *identity.Identity) {
+	log.WithFields(logrus.Fields{
+		logfields.Identity: identity,
+	}).Debug("Removing identity from the identity manager")
+
 	idm.mutex.Lock()
 	defer idm.mutex.Unlock()
 	idm.remove(identity)
@@ -122,6 +166,9 @@ func (idm *IdentityManager) remove(identity *identity.Identity) {
 
 	idMeta, exists := idm.identities[identity.ID]
 	if !exists {
+		log.WithFields(logrus.Fields{
+			logfields.Identity: identity,
+		}).Error("removing identity not added to the identity manager!")
 		return
 	}
 	idMeta.refCount--
@@ -143,7 +190,7 @@ func (idm *IdentityManager) GetIdentityModels() []*models.IdentityEndpoints {
 
 	for _, v := range idm.identities {
 		identities = append(identities, &models.IdentityEndpoints{
-			Identity: v.identity.GetModel(),
+			Identity: model.CreateModel(v.identity),
 			RefCount: int64(v.refCount),
 		})
 	}

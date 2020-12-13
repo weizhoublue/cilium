@@ -23,7 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("RuntimeMemcache", func() {
+var _ = XDescribe("RuntimeMemcache", func() {
 
 	var (
 		vm         *helpers.SSHMeta
@@ -112,6 +112,7 @@ var _ = Describe("RuntimeMemcache", func() {
 
 	AfterAll(func() {
 		containers("delete")
+		vm.CloseSSHClient()
 	})
 
 	JustAfterEach(func() {

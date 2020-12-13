@@ -84,7 +84,7 @@ var _ = Describe("BenchmarkNetperfPerformance", func() {
 	})
 
 	JustBeforeEach(func() {
-		monitorStop = vm.MonitorStart()
+		_, monitorStop = vm.MonitorStart()
 	})
 
 	JustAfterEach(func() {
@@ -105,6 +105,10 @@ var _ = Describe("BenchmarkNetperfPerformance", func() {
 		helpers.WriteOrAppendToFile(filepath.Join(testPath, PerfLogFile), PerfLogWriter.Bytes(), LogPerm)
 		PerfLogWriter.Reset()
 	}, 500)
+
+	AfterAll(func() {
+		vm.CloseSSHClient()
+	})
 
 	createContainers := func() {
 		By("create Client container")
@@ -128,12 +132,12 @@ var _ = Describe("BenchmarkNetperfPerformance", func() {
 
 	superNetperfRRLog := func(client string, server string, num int) {
 		res := superNetperfRR(vm, client, server, num)
-		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.GetStdOut(), "\n"))
+		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.Stdout(), "\n"))
 	}
 
 	superNetperfStreamLog := func(client string, server string, num int) {
 		res := superNetperfStream(vm, client, server, num)
-		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.GetStdOut(), "\n"))
+		fmt.Fprintf(&PerfLogWriter, "%s,", strings.TrimSuffix(res.Stdout(), "\n"))
 	}
 
 	Context("Benchmark Netperf Tests", func() {

@@ -50,20 +50,45 @@ function install_k8s_using_packages {
 function install_k8s_using_binary {
     local RELEASE=$1
     local CNI_VERSION=$2
+    local OS=$3
     cd $(mktemp -d)
 
     mkdir -p /opt/cni/bin
     mkdir -p /etc/systemd/system/kubelet.service.d
 
-    curl -sSL "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-amd64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
+    curl -sSL "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins${OS}-amd64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
 
-    wget -q https://storage.googleapis.com/kubernetes-release/release/$RELEASE/bin/linux/amd64/{kubectl,kubeadm,kubelet}
+    wget -q https://storage.googleapis.com/kubernetes-release/release/${RELEASE}/bin/linux/amd64/{kubectl,kubeadm,kubelet}
     chmod 777 ku*
     cp -fv ku* /usr/bin/
     rm -rf /etc/systemd/system/kubelet.service || true
-    curl -sSL https://raw.githubusercontent.com/kubernetes/kubernetes/${RELEASE}/build/debs/kubelet.service > /etc/systemd/system/kubelet.service
+
+    # github.com/kubernetes/release is the canonical location for deb/rpm build definitions/specs.
+    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/v0.6.0/cmd/kubepkg/templates/latest/deb/kubelet/lib/systemd/system/kubelet.service" \
+      > /etc/systemd/system/kubelet.service
 
 
-    curl -sSL "https://raw.githubusercontent.com/kubernetes/kubernetes/${RELEASE}/build/debs/10-kubeadm.conf" > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+    curl -sSL "https://raw.githubusercontent.com/kubernetes/release/v0.6.0/cmd/kubepkg/templates/latest/deb/kubeadm/10-kubeadm.conf" \
+        > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
     systemctl enable kubelet
+}
+
+function pull_image_and_push_to_local_registry {
+  local IMG=$1
+  local REGISTRY=$2
+  local TAG_NAME=$3
+
+  local TAG_WITH_REG="${REGISTRY}/${TAG_NAME}"
+
+  echo "pulling ${IMG}..."
+  docker pull "${IMG}"
+  echo "done pulling ${IMG}"
+
+  echo "tagging ${IMG} with tag ${TAG_WITH_REG}"
+  docker tag "${IMG}" "${TAG_WITH_REG}"
+  echo "done tagging ${IMG} with tag ${TAG_WITH_REG}"
+
+  echo "pushing ${TAG_WITH_REG}"
+  docker push "${TAG_WITH_REG}"
+  echo "done pushing ${TAG_WITH_REG}"
 }

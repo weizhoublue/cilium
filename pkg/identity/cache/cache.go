@@ -19,10 +19,11 @@ import (
 	"reflect"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/identity"
+	identitymodel "github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/idpool"
 	"github.com/cilium/cilium/pkg/kvstore"
-	"github.com/cilium/cilium/pkg/kvstore/allocator"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -46,14 +47,14 @@ func (s IdentitiesModel) Less(i, j int) bool {
 }
 
 // GetIdentityCache returns a cache of all known identities
-func GetIdentityCache() IdentityCache {
+func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
+	log.Debug("getting identity cache for identity allocator manager")
 	cache := IdentityCache{}
 
-	if IdentityAllocator != nil {
-
-		IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
+	if m.isGlobalIdentityAllocatorInitialized() {
+		m.IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
 			if val != nil {
-				if gi, ok := val.(globalIdentity); ok {
+				if gi, ok := val.(GlobalIdentity); ok {
 					cache[identity.NumericIdentity(id)] = gi.LabelArray
 				} else {
 					log.Warningf("Ignoring unknown identity type '%s': %+v",
@@ -67,8 +68,8 @@ func GetIdentityCache() IdentityCache {
 		cache[key] = identity.Labels.LabelArray()
 	}
 
-	if localIdentities != nil {
-		for _, identity := range localIdentities.GetIdentities() {
+	if m.isLocalIdentityAllocatorInitialized() {
+		for _, identity := range m.localIdentities.GetIdentities() {
 			cache[identity.ID] = identity.Labels.LabelArray()
 		}
 	}
@@ -77,43 +78,48 @@ func GetIdentityCache() IdentityCache {
 }
 
 // GetIdentities returns all known identities
-func GetIdentities() IdentitiesModel {
+func (m *CachingIdentityAllocator) GetIdentities() IdentitiesModel {
 	identities := IdentitiesModel{}
 
-	IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
-		if gi, ok := val.(globalIdentity); ok {
-			identity := identity.NewIdentityFromLabelArray(identity.NumericIdentity(id), gi.LabelArray)
-			identities = append(identities, identity.GetModel())
-		}
+	if m.isGlobalIdentityAllocatorInitialized() {
+		m.IdentityAllocator.ForeachCache(func(id idpool.ID, val allocator.AllocatorKey) {
+			if gi, ok := val.(GlobalIdentity); ok {
+				identity := identity.NewIdentityFromLabelArray(identity.NumericIdentity(id), gi.LabelArray)
+				identities = append(identities, identitymodel.CreateModel(identity))
+			}
 
-	})
+		})
+	}
 	// append user reserved identities
 	for _, v := range identity.ReservedIdentityCache {
-		identities = append(identities, v.GetModel())
+		identities = append(identities, identitymodel.CreateModel(v))
 	}
 
-	for _, v := range localIdentities.GetIdentities() {
-		identities = append(identities, v.GetModel())
+	if m.isLocalIdentityAllocatorInitialized() {
+		for _, v := range m.localIdentities.GetIdentities() {
+			identities = append(identities, identitymodel.CreateModel(v))
+		}
 	}
-
 	return identities
 }
 
 type identityWatcher struct {
-	stopChan chan bool
+	stopChan chan struct{}
+	owner    IdentityAllocatorOwner
 }
 
+// collectEvent records the 'event' as an added or deleted identity,
+// and makes sure that any identity is present in only one of the sets
+// (added or deleted).
 func collectEvent(event allocator.AllocatorEvent, added, deleted IdentityCache) bool {
 	id := identity.NumericIdentity(event.ID)
 	// Only create events have the key
 	if event.Typ == kvstore.EventTypeCreate {
-		if gi, ok := event.Key.(globalIdentity); ok {
+		if gi, ok := event.Key.(GlobalIdentity); ok {
 			// Un-delete the added ID if previously
 			// 'deleted' so that collected events can be
 			// processed in any order.
-			if _, exists := deleted[id]; exists {
-				delete(deleted, id)
-			}
+			delete(deleted, id)
 			added[id] = gi.LabelArray
 			return true
 		}
@@ -122,9 +128,7 @@ func collectEvent(event allocator.AllocatorEvent, added, deleted IdentityCache) 
 		return false
 	}
 	// Reverse an add when subsequently deleted
-	if _, exists := added[id]; exists {
-		delete(added, id)
-	}
+	delete(added, id)
 	// record the id deleted even if an add was reversed, as the
 	// id may also have previously existed, in which case the
 	// result is not no-op!
@@ -134,8 +138,7 @@ func collectEvent(event allocator.AllocatorEvent, added, deleted IdentityCache) 
 }
 
 // watch starts the identity watcher
-func (w *identityWatcher) watch(owner IdentityAllocatorOwner, events allocator.AllocatorEventChan) {
-	w.stopChan = make(chan bool)
+func (w *identityWatcher) watch(events allocator.AllocatorEventChan) {
 
 	go func() {
 		for {
@@ -188,7 +191,7 @@ func (w *identityWatcher) watch(owner IdentityAllocatorOwner, events allocator.A
 				}
 			}
 			// Issue collected updates
-			owner.UpdateIdentities(added, deleted)
+			w.owner.UpdateIdentities(added, deleted) // disjoint sets
 		}
 	}()
 }
@@ -198,24 +201,51 @@ func (w *identityWatcher) stop() {
 	close(w.stopChan)
 }
 
+// isLocalIdentityAllocatorInitialized returns true if m.localIdentities is not nil.
+func (m *CachingIdentityAllocator) isLocalIdentityAllocatorInitialized() bool {
+	select {
+	case <-m.localIdentityAllocatorInitialized:
+		return m.localIdentities != nil
+	default:
+		return false
+	}
+}
+
+// isGlobalIdentityAllocatorInitialized returns true if m.IdentityAllocator is not nil.
+// Note: This does not mean that the identities have been synchronized,
+// see WaitForInitialGlobalIdentities to wait for a fully populated cache.
+func (m *CachingIdentityAllocator) isGlobalIdentityAllocatorInitialized() bool {
+	select {
+	case <-m.globalIdentityAllocatorInitialized:
+		return m.IdentityAllocator != nil
+	default:
+		return false
+	}
+}
+
 // LookupIdentity looks up the identity by its labels but does not create it.
-// This function will first search through the local cache and fall back to
-// querying the kvstore.
-func LookupIdentity(lbls labels.Labels) *identity.Identity {
-	if reservedIdentity := LookupReservedIdentityByLabels(lbls); reservedIdentity != nil {
+// This function will first search through the local cache, then the caches for
+// remote kvstores and finally fall back to the main kvstore.
+// May return nil for lookups if the allocator has not yet been synchronized.
+func (m *CachingIdentityAllocator) LookupIdentity(ctx context.Context, lbls labels.Labels) *identity.Identity {
+	if reservedIdentity := identity.LookupReservedIdentityByLabels(lbls); reservedIdentity != nil {
 		return reservedIdentity
 	}
 
-	if identity := localIdentities.lookup(lbls); identity != nil {
+	if !m.isLocalIdentityAllocatorInitialized() {
+		return nil
+	}
+
+	if identity := m.localIdentities.lookup(lbls); identity != nil {
 		return identity
 	}
 
-	if IdentityAllocator == nil {
+	if !identity.RequiresGlobalIdentity(lbls) || !m.isGlobalIdentityAllocatorInitialized() {
 		return nil
 	}
 
 	lblArray := lbls.LabelArray()
-	id, err := IdentityAllocator.Get(context.TODO(), globalIdentity{lblArray})
+	id, err := m.IdentityAllocator.GetIncludeRemoteCaches(ctx, GlobalIdentity{lblArray})
 	if err != nil {
 		return nil
 	}
@@ -227,47 +257,13 @@ func LookupIdentity(lbls labels.Labels) *identity.Identity {
 	return identity.NewIdentityFromLabelArray(identity.NumericIdentity(id), lblArray)
 }
 
-// LookupReservedIdentityByLabels looks up a reserved identity by its labels and
-// returns it if found. Returns nil if not found.
-func LookupReservedIdentityByLabels(lbls labels.Labels) *identity.Identity {
-	if identity := identity.WellKnown.LookupByLabels(lbls); identity != nil {
-		return identity
-	}
-
-	for _, lbl := range lbls {
-		switch {
-		// If the set of labels contain a fixed identity then and exists in
-		// the map of reserved IDs then return the identity of that reserved ID.
-		case lbl.Key == labels.LabelKeyFixedIdentity:
-			id := identity.GetReservedID(lbl.Value)
-			if id != identity.IdentityUnknown && identity.IsUserReservedIdentity(id) {
-				return identity.LookupReservedIdentity(id)
-			}
-			// If a fixed identity was not found then we return nil to avoid
-			// falling to a reserved identity.
-			return nil
-		// If it doesn't contain a fixed-identity then make sure the set of
-		// labels only contains a single label and that label is of the reserved
-		// type. This is to prevent users from adding cilium-reserved labels
-		// into the workloads.
-		case lbl.Source == labels.LabelSourceReserved:
-			if len(lbls) != 1 {
-				return nil
-			}
-			id := identity.GetReservedID(lbl.Key)
-			if id != identity.IdentityUnknown && !identity.IsUserReservedIdentity(id) {
-				return identity.LookupReservedIdentity(id)
-			}
-		}
-	}
-	return nil
-}
-
 var unknownIdentity = identity.NewIdentity(identity.IdentityUnknown, labels.Labels{labels.IDNameUnknown: labels.NewLabel(labels.IDNameUnknown, "", labels.LabelSourceReserved)})
 
 // LookupIdentityByID returns the identity by ID. This function will first
-// search through the local cache and fall back to querying the kvstore.
-func LookupIdentityByID(id identity.NumericIdentity) *identity.Identity {
+// search through the local cache, then the caches for remote kvstores and
+// finally fall back to the main kvstore
+// May return nil for lookups if the allocator has not yet been synchronized.
+func (m *CachingIdentityAllocator) LookupIdentityByID(ctx context.Context, id identity.NumericIdentity) *identity.Identity {
 	if id == identity.IdentityUnknown {
 		return unknownIdentity
 	}
@@ -276,45 +272,26 @@ func LookupIdentityByID(id identity.NumericIdentity) *identity.Identity {
 		return identity
 	}
 
-	if IdentityAllocator == nil {
+	if !m.isLocalIdentityAllocatorInitialized() {
 		return nil
 	}
 
-	if identity := localIdentities.lookupByID(id); identity != nil {
+	if identity := m.localIdentities.lookupByID(id); identity != nil {
 		return identity
 	}
 
-	allocatorKey, err := IdentityAllocator.GetByID(idpool.ID(id))
+	if !m.isGlobalIdentityAllocatorInitialized() || id.HasLocalScope() {
+		return nil
+	}
+
+	allocatorKey, err := m.IdentityAllocator.GetByIDIncludeRemoteCaches(ctx, idpool.ID(id))
 	if err != nil {
 		return nil
 	}
 
-	if gi, ok := allocatorKey.(globalIdentity); ok {
+	if gi, ok := allocatorKey.(GlobalIdentity); ok {
 		return identity.NewIdentityFromLabelArray(id, gi.LabelArray)
 	}
 
-	return nil
-}
-
-// AddUserDefinedNumericIdentitySet adds all key-value pairs from the given map
-// to the map of user defined numeric identities and reserved identities.
-// The key-value pairs should map a numeric identity to a valid label.
-// Is not safe for concurrent use.
-func AddUserDefinedNumericIdentitySet(m map[string]string) error {
-	// Validate first
-	for k := range m {
-		ni, err := identity.ParseNumericIdentity(k)
-		if err != nil {
-			return err
-		}
-		if !identity.IsUserReservedIdentity(ni) {
-			return identity.ErrNotUserIdentity
-		}
-	}
-	for k, lbl := range m {
-		ni, _ := identity.ParseNumericIdentity(k)
-		identity.AddUserDefinedNumericIdentity(ni, lbl)
-		identity.AddReservedIdentity(ni, lbl)
-	}
 	return nil
 }

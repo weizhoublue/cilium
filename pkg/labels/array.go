@@ -96,7 +96,7 @@ func (ls LabelArray) Contains(needed LabelArray) bool {
 nextLabel:
 	for i := range needed {
 		for l := range ls {
-			if needed[i].Matches(&ls[l]) {
+			if needed[i].matches(&ls[l]) {
 				continue nextLabel
 			}
 		}
@@ -113,7 +113,7 @@ func (ls LabelArray) Lacks(needed LabelArray) LabelArray {
 nextLabel:
 	for i := range needed {
 		for l := range ls {
-			if needed[i].Matches(&ls[l]) {
+			if needed[i].matches(&ls[l]) {
 				continue nextLabel
 			}
 		}
@@ -125,7 +125,8 @@ nextLabel:
 }
 
 // Has returns whether the provided key exists.
-// Implementation of the k8s.io/apimachinery/pkg/labels.Labels interface.
+// Implementation of the
+// github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels.Labels interface.
 func (ls LabelArray) Has(key string) bool {
 	// The key is submitted in the form of `source.key=value`
 	keyLabel := parseSelectLabel(key, '.')
@@ -147,7 +148,8 @@ func (ls LabelArray) Has(key string) bool {
 }
 
 // Get returns the value for the provided key.
-// Implementation of the k8s.io/apimachinery/pkg/labels.Labels interface.
+// Implementation of the
+// github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels.Labels interface.
 func (ls LabelArray) Get(key string) string {
 	keyLabel := parseSelectLabel(key, '.')
 	if keyLabel.IsAnySource() {
@@ -172,7 +174,7 @@ func (ls LabelArray) DeepCopy() LabelArray {
 		return nil
 	}
 
-	o := make(LabelArray, len(ls), len(ls))
+	o := make(LabelArray, len(ls))
 	copy(o, ls)
 	return o
 }
@@ -197,4 +199,64 @@ func (ls LabelArray) String() string {
 	}
 	res += "]"
 	return res
+}
+
+// StringMap converts LabelArray into map[string]string
+// Note: The source is included in the keys with a ':' separator.
+// Note: LabelArray does not deduplicate entries, as it is an array. It is
+// possible for the output to contain fewer entries when the source and key are
+// repeated in a LabelArray, as that is the key of the output. This scenario is
+// not expected.
+func (ls LabelArray) StringMap() map[string]string {
+	o := map[string]string{}
+	for _, v := range ls {
+		o[v.Source+":"+v.Key] = v.Value
+	}
+	return o
+}
+
+// Equals returns true if the label arrays are the same, i.e., have the same labels in the same order.
+func (ls LabelArray) Equals(b LabelArray) bool {
+	if len(ls) != len(b) {
+		return false
+	}
+	for l := range ls {
+		if !ls[l].Equals(&b[l]) {
+			return false
+		}
+	}
+	return true
+}
+
+// Less returns true if ls comes before b in the lexicographical order.
+// Assumes both ls and b are already sorted.
+func (ls LabelArray) Less(b LabelArray) bool {
+	lsLen, bLen := len(ls), len(b)
+
+	minLen := lsLen
+	if bLen < minLen {
+		minLen = bLen
+	}
+
+	for i := 0; i < minLen; i++ {
+		switch {
+		// Key
+		case ls[i].Key < b[i].Key:
+			return true
+		case ls[i].Key > b[i].Key:
+			return false
+		// Value
+		case ls[i].Value < b[i].Value:
+			return true
+		case ls[i].Value > b[i].Value:
+			return false
+		// Source
+		case ls[i].Source < b[i].Source:
+			return true
+		case ls[i].Source > b[i].Source:
+			return false
+		}
+	}
+
+	return lsLen < bLen
 }

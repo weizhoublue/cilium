@@ -20,7 +20,6 @@ import (
 	"strings"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/color"
 	"github.com/cilium/cilium/pkg/lock"
 )
 
@@ -32,8 +31,7 @@ type VerifyFunc func(key string, value string) error
 // cannot be parsed or applied.
 type ParseFunc func(value string) (OptionSetting, error)
 
-// FormatFunc formats the specified value as a colored textual representation
-// of the option.
+// FormatFunc formats the specified value as textual representation option.
 type FormatFunc func(value OptionSetting) string
 
 // Option is the structure used to specify the semantics of a configurable
@@ -107,7 +105,7 @@ func NormalizeBool(value string) (OptionSetting, error) {
 	case "false", "off", "disable", "disabled", "0":
 		return OptionDisabled, nil
 	default:
-		return OptionDisabled, fmt.Errorf("Invalid option value %s", value)
+		return OptionDisabled, fmt.Errorf("invalid option value %s", value)
 	}
 }
 
@@ -133,11 +131,11 @@ func (l *OptionLibrary) ValidateConfigurationMap(n models.ConfigurationMap) (Opt
 func (l OptionLibrary) Validate(name string, value string) error {
 	key, spec := l.Lookup(name)
 	if key == "" {
-		return fmt.Errorf("Unknown option %s", name)
+		return fmt.Errorf("unknown option %s", name)
 	}
 
 	if spec.Immutable {
-		return fmt.Errorf("Specified option is immutable (read-only)")
+		return fmt.Errorf("specified option is immutable (read-only)")
 	}
 
 	if spec.Verify != nil {
@@ -185,9 +183,9 @@ func (o *IntOptions) GetMutableModel() *models.ConfigurationMap {
 		if config != nil {
 			if config.Format == nil {
 				if v == OptionDisabled {
-					mutableCfg[k] = fmt.Sprintf("Disabled")
+					mutableCfg[k] = "Disabled"
 				} else {
-					mutableCfg[k] = fmt.Sprintf("Enabled")
+					mutableCfg[k] = "Enabled"
 				}
 			} else {
 				mutableCfg[k] = config.Format(v)
@@ -286,13 +284,13 @@ func ParseOption(arg string, lib *OptionLibrary) (string, OptionSetting, error) 
 	arg = optionSplit[0]
 	if len(optionSplit) > 1 {
 		if result == OptionDisabled {
-			return "", OptionDisabled, fmt.Errorf("Invalid boolean format")
+			return "", OptionDisabled, fmt.Errorf("invalid boolean format")
 		}
 
 		return ParseKeyValue(lib, arg, optionSplit[1])
 	}
 
-	return "", OptionDisabled, fmt.Errorf("Invalid option format")
+	return "", OptionDisabled, fmt.Errorf("invalid option format")
 }
 
 func ParseKeyValue(lib *OptionLibrary, arg, value string) (string, OptionSetting, error) {
@@ -300,7 +298,7 @@ func ParseKeyValue(lib *OptionLibrary, arg, value string) (string, OptionSetting
 
 	key, spec := lib.Lookup(arg)
 	if key == "" {
-		return "", OptionDisabled, fmt.Errorf("Unknown option %q", arg)
+		return "", OptionDisabled, fmt.Errorf("unknown option %q", arg)
 	}
 
 	var err error
@@ -314,7 +312,7 @@ func ParseKeyValue(lib *OptionLibrary, arg, value string) (string, OptionSetting
 	}
 
 	if spec.Immutable {
-		return "", OptionDisabled, fmt.Errorf("Specified option is immutable (read-only)")
+		return "", OptionDisabled, fmt.Errorf("specified option is immutable (read-only)")
 	}
 
 	return key, result, nil
@@ -373,9 +371,9 @@ func (o *IntOptions) Dump() {
 		_, option := o.Library.Lookup(k)
 		if option == nil || option.Format == nil {
 			if o.Opts[k] == OptionDisabled {
-				text = color.Red("Disabled")
+				text = "Disabled"
 			} else {
-				text = color.Green("Enabled")
+				text = "Enabled"
 			}
 		} else {
 			text = option.Format(o.Opts[k])

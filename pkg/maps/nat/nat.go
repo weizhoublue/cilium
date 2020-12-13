@@ -15,13 +15,14 @@
 package nat
 
 import (
-	"bytes"
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/tuple"
 )
 
@@ -39,21 +40,10 @@ const (
 	MinPortSnatDefault = 1024
 	// MaxPortSnatDefault represents default max port from range.
 	MaxPortSnatDefault = 65535
-
-	// CollisionRetriesDefault defines maximum retries for resolving port collisions.
-	CollisionRetriesDefault = 16
-
-	// DeterministicRetriesDefault defines maximum deterministic retries for
-	// resolving port collisions.
-	DeterministicRetriesDefault = 6
-
-	// MaxEntries defines maximum NAT entries.
-	MaxEntries = 524288
-
-	mapCount = 2
 )
 
 // Map represents a NAT map.
+// It also implements the NatMap interface.
 type Map struct {
 	bpf.Map
 	v4 bool
@@ -67,7 +57,25 @@ type NatEntry interface {
 	ToHost() NatEntry
 
 	// Dumps the Nat entry as string.
-	Dump(key tuple.TupleKey, start uint64) string
+	Dump(key NatKey, start uint64) string
+}
+
+// A "Record" designates a map entry (key + value), but avoid "entry" because of
+// possible confusion with "NatEntry" (actually the value part).
+// This type is used for JSON dump and mock maps.
+type NatMapRecord struct {
+	Key   NatKey
+	Value NatEntry
+}
+
+// NatMap interface represents a NAT map, and can be reused to implement mock
+// maps for unit tests.
+type NatMap interface {
+	Open() error
+	Close() error
+	Path() (string, error)
+	DumpEntries() (string, error)
+	DumpWithCallback(bpf.DumpCallback) error
 }
 
 // NatDumpCreated returns time in seconds when NAT entry was created.
@@ -79,21 +87,21 @@ func NatDumpCreated(dumpStart, entryCreated uint64) string {
 }
 
 // NewMap instantiates a Map.
-func NewMap(name string, v4 bool) *Map {
+func NewMap(name string, v4 bool, entries int) *Map {
 	var sizeKey, sizeVal int
 	var mapKey bpf.MapKey
 	var mapValue bpf.MapValue
 
 	if v4 {
-		mapKey = &tuple.TupleKey4Global{}
-		sizeKey = int(unsafe.Sizeof(tuple.TupleKey4Global{}))
+		mapKey = &NatKey4{}
+		sizeKey = SizeofNatKey4
 		mapValue = &NatEntry4{}
-		sizeVal = int(unsafe.Sizeof(NatEntry4{}))
+		sizeVal = SizeofNatEntry4
 	} else {
-		mapKey = &tuple.TupleKey6Global{}
-		sizeKey = int(unsafe.Sizeof(tuple.TupleKey6Global{}))
+		mapKey = &NatKey6{}
+		sizeKey = SizeofNatKey6
 		mapValue = &NatEntry6{}
-		sizeVal = int(unsafe.Sizeof(NatEntry6{}))
+		sizeVal = SizeofNatEntry6
 	}
 	return &Map{
 		Map: *bpf.NewMap(
@@ -103,7 +111,7 @@ func NewMap(name string, v4 bool) *Map {
 			sizeKey,
 			mapValue,
 			sizeVal,
-			MaxEntries,
+			entries,
 			0, 0,
 			bpf.ConvertKeyValue,
 		).WithCache(),
@@ -111,22 +119,40 @@ func NewMap(name string, v4 bool) *Map {
 	}
 }
 
-// DumpEntries iterates through Map m and writes the values of the
+func (m *Map) Delete(k bpf.MapKey) error {
+	return (&m.Map).Delete(k)
+}
+
+func (m *Map) DumpStats() *bpf.DumpStats {
+	return bpf.NewDumpStats(&m.Map)
+}
+
+func (m *Map) DumpReliablyWithCallback(cb bpf.DumpCallback, stats *bpf.DumpStats) error {
+	return (&m.Map).DumpReliablyWithCallback(cb, stats)
+}
+
+// DoDumpEntries iterates through Map m and writes the values of the
 // nat entries in m to a string.
-func (m *Map) DumpEntries() (string, error) {
-	var buffer bytes.Buffer
+func DoDumpEntries(m NatMap) (string, error) {
+	var sb strings.Builder
 
 	nsecStart, _ := bpf.GetMtime()
 	cb := func(k bpf.MapKey, v bpf.MapValue) {
-		key := k.(tuple.TupleKey)
-		if !key.ToHost().Dump(&buffer, false) {
+		key := k.(NatKey)
+		if !key.ToHost().Dump(&sb, false) {
 			return
 		}
 		val := v.(NatEntry)
-		buffer.WriteString(val.ToHost().Dump(key, nsecStart))
+		sb.WriteString(val.ToHost().Dump(key, nsecStart))
 	}
 	err := m.DumpWithCallback(cb)
-	return buffer.String(), err
+	return sb.String(), err
+}
+
+// DumpEntries iterates through Map m and writes the values of the
+// nat entries in m to a string.
+func (m *Map) DumpEntries() (string, error) {
+	return DoDumpEntries(m)
 }
 
 type gcStats struct {
@@ -148,10 +174,9 @@ func statStartGc(m *Map) gcStats {
 func doFlush4(m *Map) gcStats {
 	stats := statStartGc(m)
 	filterCallback := func(key bpf.MapKey, _ bpf.MapValue) {
-		currentKey := key.(*tuple.TupleKey4Global)
-		err := m.Delete(currentKey)
+		err := m.Delete(key)
 		if err != nil {
-			log.WithError(err).WithField(logfields.Key, currentKey.String()).Error("Unable to delete CT entry")
+			log.WithError(err).WithField(logfields.Key, key.String()).Error("Unable to delete CT entry")
 		} else {
 			stats.deleted++
 		}
@@ -163,10 +188,9 @@ func doFlush4(m *Map) gcStats {
 func doFlush6(m *Map) gcStats {
 	stats := statStartGc(m)
 	filterCallback := func(key bpf.MapKey, _ bpf.MapValue) {
-		currentKey := key.(*tuple.TupleKey6Global)
-		err := m.Delete(currentKey)
+		err := m.Delete(key)
 		if err != nil {
-			log.WithError(err).WithField(logfields.Key, currentKey.String()).Error("Unable to delete CT entry")
+			log.WithError(err).WithField(logfields.Key, key.String()).Error("Unable to delete CT entry")
 		} else {
 			stats.deleted++
 		}
@@ -184,7 +208,9 @@ func (m *Map) Flush() int {
 }
 
 func deleteMapping4(m *Map, ctKey *tuple.TupleKey4Global) error {
-	key := *ctKey
+	key := NatKey4{
+		TupleKey4Global: *ctKey,
+	}
 	// Workaround #5848.
 	addr := key.SourceAddr
 	key.SourceAddr = key.DestAddr
@@ -206,7 +232,9 @@ func deleteMapping4(m *Map, ctKey *tuple.TupleKey4Global) error {
 }
 
 func deleteMapping6(m *Map, ctKey *tuple.TupleKey6Global) error {
-	key := *ctKey
+	key := NatKey6{
+		TupleKey6Global: *ctKey,
+	}
 	// Workaround #5848.
 	addr := key.SourceAddr
 	key.SourceAddr = key.DestAddr
@@ -227,29 +255,59 @@ func deleteMapping6(m *Map, ctKey *tuple.TupleKey6Global) error {
 	return nil
 }
 
+// Expects ingress tuple
+func deleteSwappedMapping4(m *Map, ctKey *tuple.TupleKey4Global) error {
+	key := NatKey4{TupleKey4Global: *ctKey}
+	// Because of #5848, we need to reverse only ports
+	port := key.SourcePort
+	key.SourcePort = key.DestPort
+	key.DestPort = port
+	key.Flags = tuple.TUPLE_F_OUT
+	m.Delete(&key)
+
+	return nil
+}
+
+// Expects ingress tuple
+func deleteSwappedMapping6(m *Map, ctKey *tuple.TupleKey6Global) error {
+	key := NatKey6{TupleKey6Global: *ctKey}
+	// Because of #5848, we need to reverse only ports
+	port := key.SourcePort
+	key.SourcePort = key.DestPort
+	key.DestPort = port
+	key.Flags = tuple.TUPLE_F_OUT
+	m.Delete(&key)
+
+	return nil
+}
+
 // DeleteMapping removes a NAT mapping from the global NAT table.
 func (m *Map) DeleteMapping(key tuple.TupleKey) error {
 	if key.GetFlags()&tuple.TUPLE_F_IN != 0 {
-		return nil
+		if m.v4 {
+			// To delete NAT entries created by DSR
+			return deleteSwappedMapping4(m, key.(*tuple.TupleKey4Global))
+		}
+		return deleteSwappedMapping6(m, key.(*tuple.TupleKey6Global))
 	}
+
 	if m.v4 {
 		return deleteMapping4(m, key.(*tuple.TupleKey4Global))
 	}
 	return deleteMapping6(m, key.(*tuple.TupleKey6Global))
 }
 
-func maps(ipv4, ipv6 bool) []*Map {
-	result := make([]*Map, 0, mapCount)
+// GlobalMaps returns all global NAT maps.
+func GlobalMaps(ipv4, ipv6 bool) (ipv4Map, ipv6Map *Map) {
+	entries := option.Config.NATMapEntriesGlobal
+	if entries == 0 {
+		entries = option.LimitTableMax
+	}
 	if ipv4 {
-		result = append(result, NewMap(MapNameSnat4Global, true))
+		ipv4Map = NewMap(MapNameSnat4Global, true, entries)
 	}
 	if ipv6 {
-		result = append(result, NewMap(MapNameSnat6Global, false))
+		ipv6Map = NewMap(MapNameSnat6Global, false, entries)
 	}
-	return result
-}
-
-// GlobalMaps returns all global NAT maps.
-func GlobalMaps(ipv4, ipv6 bool) []*Map {
-	return maps(ipv4, ipv6)
+	return
 }

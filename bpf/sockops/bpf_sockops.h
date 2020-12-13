@@ -1,20 +1,5 @@
-/*
- *  Copyright (C) 2018 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2018-2020 Authors of Cilium */
 
 #include "sockops_config.h"
 
@@ -43,7 +28,7 @@ struct sock_key {
 	__u16 pad8;
 	__u32 sport;
 	__u32 dport;
-} __attribute__((packed));
+} __packed;
 
 struct bpf_elf_map __section_maps SOCK_OPS_MAP = {
 	.type           = BPF_MAP_TYPE_SOCKHASH,
@@ -52,39 +37,3 @@ struct bpf_elf_map __section_maps SOCK_OPS_MAP = {
 	.pinning        = PIN_GLOBAL_NS,
 	.max_elem       = SOCKOPS_MAP_SIZE,
 };
-
-static __always_inline void sk_extract4_key(struct bpf_sock_ops *ops,
-					    struct sock_key *key)
-{
-	key->dip4 = ops->remote_ip4;
-	key->sip4 = ops->local_ip4;
-	key->family = ENDPOINT_KEY_IPV4;
-
-	key->sport = (bpf_ntohl(ops->local_port) >> 16);
-	key->dport = ops->remote_port >> 16;
-}
-
-static __always_inline void sk_msg_extract4_key(struct sk_msg_md *msg,
-						struct sock_key *key)
-{
-	key->dip4 = msg->remote_ip4;
-	key->sip4 = msg->local_ip4;
-	key->family = ENDPOINT_KEY_IPV4;
-
-	key->sport = (bpf_ntohl(msg->local_port) >> 16);
-	key->dport = msg->remote_port >> 16;
-}
-
-static __always_inline void sk_lb4_key(struct lb4_key *lb4,
-				       struct sock_key *key)
-{
-	/* SK MSG is always egress, so use daddr */
-	lb4->address = key->dip4;
-	lb4->dport = key->dport;
-	lb4->slave = 0;
-}
-
-static __always_inline bool redirect_to_proxy(int verdict)
-{
-	return verdict > 0;
-}

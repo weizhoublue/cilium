@@ -20,16 +20,17 @@ import (
 	"path"
 	"time"
 
+	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/controller"
-	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/kvstore"
-	"github.com/cilium/cilium/pkg/kvstore/allocator"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/lock"
 	nodeStore "github.com/cilium/cilium/pkg/node/store"
-	"github.com/cilium/cilium/pkg/service"
+	serviceStore "github.com/cilium/cilium/pkg/service/store"
 
+	strfmt "github.com/go-openapi/strfmt"
 	"github.com/sirupsen/logrus"
 )
 
@@ -57,6 +58,7 @@ type remoteCluster struct {
 	remoteConnectionControllerName string
 
 	// mutex protects the following variables
+	// - backend
 	// - store
 	// - remoteNodes
 	// - ipCacheWatcher
@@ -80,6 +82,14 @@ type remoteCluster struct {
 
 	// backend is the kvstore backend being used
 	backend kvstore.BackendOperations
+
+	swg *lock.StoppableWaitGroup
+
+	// failures is the number of observed failures
+	failures int
+
+	// lastFailure is the timestamp of the last failure
+	lastFailure time.Time
 }
 
 var (
@@ -105,45 +115,58 @@ func (rc *remoteCluster) getLogger() *logrus.Entry {
 	})
 }
 
+// releaseOldConnection releases the etcd connection to a remote cluster
 func (rc *remoteCluster) releaseOldConnection() {
-	if rc.ipCacheWatcher != nil {
-		rc.ipCacheWatcher.Close()
-		rc.ipCacheWatcher = nil
-	}
+	rc.mutex.Lock()
+	ipCacheWatcher := rc.ipCacheWatcher
+	rc.ipCacheWatcher = nil
 
-	if rc.remoteNodes != nil {
-		rc.remoteNodes.Close()
-		rc.remoteNodes = nil
-	}
-	if rc.remoteIdentityCache != nil {
-		rc.remoteIdentityCache.Close()
-		rc.remoteIdentityCache = nil
-	}
-	if rc.remoteServices != nil {
-		rc.remoteServices.Close()
-		rc.remoteServices = nil
-	}
-	if rc.backend != nil {
-		rc.backend.Close()
-		rc.backend = nil
-	}
+	remoteNodes := rc.remoteNodes
+	rc.remoteNodes = nil
+
+	remoteIdentityCache := rc.remoteIdentityCache
+	rc.remoteIdentityCache = nil
+
+	remoteServices := rc.remoteServices
+	rc.remoteServices = nil
+
+	backend := rc.backend
+	rc.backend = nil
+	rc.mutex.Unlock()
+
+	// Release resources asynchroneously in the background. Many of these
+	// operations may time out if the connection was closed due to an error
+	// condition.
+	go func() {
+		if ipCacheWatcher != nil {
+			ipCacheWatcher.Close()
+		}
+		if remoteNodes != nil {
+			remoteNodes.Close(context.TODO())
+		}
+		if remoteIdentityCache != nil {
+			remoteIdentityCache.Close()
+		}
+		if remoteServices != nil {
+			remoteServices.Close(context.TODO())
+		}
+		if backend != nil {
+			backend.Close()
+		}
+	}()
 }
 
-func (rc *remoteCluster) restartRemoteConnection() {
+func (rc *remoteCluster) restartRemoteConnection(allocator RemoteIdentityWatcher) {
 	rc.controllers.UpdateController(rc.remoteConnectionControllerName,
 		controller.ControllerParams{
 			DoFunc: func(ctx context.Context) error {
-				rc.mutex.Lock()
-				if rc.backend != nil {
-					rc.releaseOldConnection()
-				}
-				rc.mutex.Unlock()
+				rc.releaseOldConnection()
 
-				backend, errChan := kvstore.NewClient(kvstore.EtcdBackendName,
+				backend, errChan := kvstore.NewClient(context.TODO(), kvstore.EtcdBackendName,
 					map[string]string{
 						kvstore.EtcdOptionConfig: rc.configPath,
 					},
-					nil)
+					&kvstore.ExtraOptions{NoLockQuorumCheck: true})
 
 				// Block until either an error is returned or
 				// the channel is closed due to success of the
@@ -154,9 +177,11 @@ func (rc *remoteCluster) restartRemoteConnection() {
 					if backend != nil {
 						backend.Close()
 					}
-					rc.getLogger().WithError(err).Warning("Unable to establish etcd connection to remote cluser")
+					rc.getLogger().WithError(err).Warning("Unable to establish etcd connection to remote cluster")
 					return err
 				}
+
+				rc.getLogger().Info("Connection to remote cluster established")
 
 				remoteNodes, err := store.JoinSharedStore(store.Configuration{
 					Prefix:                  path.Join(nodeStore.NodeStorePrefix, rc.name),
@@ -171,27 +196,35 @@ func (rc *remoteCluster) restartRemoteConnection() {
 				}
 
 				remoteServices, err := store.JoinSharedStore(store.Configuration{
-					Prefix: path.Join(service.ServiceStorePrefix, rc.name),
+					Prefix: path.Join(serviceStore.ServiceStorePrefix, rc.name),
 					KeyCreator: func() store.Key {
-						svc := service.ClusterService{}
+						svc := serviceStore.ClusterService{}
 						return &svc
 					},
 					SynchronizationInterval: time.Minute,
 					Backend:                 backend,
 					Observer: &remoteServiceObserver{
 						remoteCluster: rc,
+						swg:           rc.swg,
 					},
 				})
 				if err != nil {
-					remoteNodes.Close()
+					remoteNodes.Close(context.TODO())
+					backend.Close()
+					return err
+				}
+				rc.swg.Stop()
+
+				remoteIdentityCache, err := allocator.WatchRemoteIdentities(backend)
+				if err != nil {
+					remoteServices.Close(context.TODO())
+					remoteNodes.Close(context.TODO())
 					backend.Close()
 					return err
 				}
 
 				ipCacheWatcher := ipcache.NewIPIdentityWatcher(backend)
-				go ipCacheWatcher.Watch()
-
-				remoteIdentityCache := cache.WatchRemoteIdentities(backend)
+				go ipCacheWatcher.Watch(ctx)
 
 				rc.mutex.Lock()
 				rc.remoteNodes = remoteNodes
@@ -206,40 +239,70 @@ func (rc *remoteCluster) restartRemoteConnection() {
 				return nil
 			},
 			StopFunc: func(ctx context.Context) error {
-				rc.mutex.Lock()
 				rc.releaseOldConnection()
-				rc.mutex.Unlock()
-
 				rc.getLogger().Info("All resources of remote cluster cleaned up")
-
 				return nil
 			},
 		},
 	)
 }
 
-func (rc *remoteCluster) onInsert() {
-	rc.getLogger().Info("New remote cluster discovered")
+func (rc *remoteCluster) onInsert(allocator RemoteIdentityWatcher) {
+	rc.getLogger().Info("New remote cluster configuration")
 
 	if skipKvstoreConnection {
 		return
 	}
 
 	rc.remoteConnectionControllerName = fmt.Sprintf("remote-etcd-%s", rc.name)
-	rc.restartRemoteConnection()
+	rc.restartRemoteConnection(allocator)
 
 	go func() {
 		for {
 			val := <-rc.changed
 			if val {
 				rc.getLogger().Info("etcd configuration has changed, re-creating connection")
-				rc.restartRemoteConnection()
+				rc.restartRemoteConnection(allocator)
 			} else {
 				rc.getLogger().Info("Closing connection to remote etcd")
 				return
 			}
 		}
 	}()
+
+	go func() {
+		for {
+			select {
+			// terminate routine when remote cluster is removed
+			case _, ok := <-rc.changed:
+				if !ok {
+					return
+				}
+			default:
+			}
+
+			// wait for backend to appear
+			rc.mutex.RLock()
+			if rc.backend == nil {
+				rc.mutex.RUnlock()
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			statusCheckErrors := rc.backend.StatusCheckErrors()
+			rc.mutex.RUnlock()
+
+			err, ok := <-statusCheckErrors
+			if ok && err != nil {
+				rc.getLogger().WithError(err).Warning("Error observed on etcd connection, reconnecting etcd")
+				rc.mutex.Lock()
+				rc.failures++
+				rc.lastFailure = time.Now()
+				rc.mutex.Unlock()
+				rc.restartRemoteConnection(allocator)
+			}
+		}
+	}()
+
 }
 
 func (rc *remoteCluster) onRemove() {
@@ -253,5 +316,36 @@ func (rc *remoteCluster) isReady() bool {
 	rc.mutex.RLock()
 	defer rc.mutex.RUnlock()
 
+	return rc.isReadyLocked()
+}
+
+func (rc *remoteCluster) isReadyLocked() bool {
 	return rc.backend != nil && rc.remoteNodes != nil && rc.ipCacheWatcher != nil
+}
+
+func (rc *remoteCluster) status() *models.RemoteCluster {
+	rc.mutex.RLock()
+	defer rc.mutex.RUnlock()
+
+	// This can happen when the controller in restartRemoteConnection is waiting
+	// for the first connection to succeed.
+	var backendStatus = "Waiting for initial connection to be established"
+	if rc.backend != nil {
+		var backendError error
+		backendStatus, backendError = rc.backend.Status()
+		if backendError != nil {
+			backendStatus = backendError.Error()
+		}
+	}
+
+	return &models.RemoteCluster{
+		Name:              rc.name,
+		Ready:             rc.isReadyLocked(),
+		NumNodes:          int64(rc.remoteNodes.NumEntries()),
+		NumSharedServices: int64(rc.remoteServices.NumEntries()),
+		NumIdentities:     int64(rc.remoteIdentityCache.NumEntries()),
+		Status:            backendStatus,
+		NumFailures:       int64(rc.failures),
+		LastFailure:       strfmt.DateTime(rc.lastFailure),
+	}
 }

@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2017-2020 Authors of Cilium */
+
 /*
- *  Copyright (C) 2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  *  Parts from iproute2 bpf.c loader code:
  *
  *  This program is free software; you can distribute it and/or
@@ -49,7 +36,8 @@
 #include "elf/libelf.h"
 #include "elf/gelf.h"
 
-#include "iproute2/bpf_elf.h"
+#include "bpf/ctx/nobpf.h"
+#include "bpf/api.h"
 
 #ifndef EM_BPF
 # define EM_BPF		247
@@ -186,7 +174,7 @@ out_fd:
 	return ret;
 }
 
-static void bpf_elf_close(struct bpf_elf_ctx *ctx)
+static void bpf_elf_close(const struct bpf_elf_ctx *ctx)
 {
 	elf_end(ctx->elf_fd);
 	close(ctx->obj_fd);
@@ -198,7 +186,7 @@ static const char *bpf_str_tab_name(const struct bpf_elf_ctx *ctx,
 	return ctx->str_tab->d_buf + sym->st_name;
 }
 
-static int bpf_map_verify_all_offs(struct bpf_elf_ctx *ctx, int end)
+static int bpf_map_verify_all_offs(const struct bpf_elf_ctx *ctx, int end)
 {
 	GElf_Sym sym;
 	int off, i;
@@ -246,7 +234,7 @@ static const char *bpf_map_fetch_name(struct bpf_elf_ctx *ctx, unsigned long off
 	return NULL;
 }
 
-static int bpf_map_num_sym(struct bpf_elf_ctx *ctx)
+static int bpf_map_num_sym(const struct bpf_elf_ctx *ctx)
 {
 	int i, num = 0;
 	GElf_Sym sym;
@@ -290,7 +278,7 @@ static int bpf_derive_elf_map_from_fdinfo(int fd, struct bpf_elf_map *map)
 			map->size_value = val;
 		else if (sscanf(buff, "max_entries:\t%u", &val) == 1)
 			map->max_elem = val;
-		else if (sscanf(buff, "map_flags:\t%i", &val) == 1)
+		else if (sscanf(buff, "map_flags:\t%x", &val) == 1)
 			map->flags = val;
 	}
 
@@ -312,15 +300,14 @@ typedef int (*bpf_handle_state_t)(struct bpf_elf_ctx *ctx,
 
 char fs_base[PATH_MAX + 1];
 
-void fs_base_init()
+void fs_base_init(void)
 {
 	const char *mnt_env = getenv(BPF_ENV_MNT);
 
-	if (mnt_env) {
+	if (mnt_env)
 		snprintf(fs_base, sizeof(fs_base), "%s/tc/globals", mnt_env);
-	} else {
+	else
 		strcpy(fs_base, "/sys/fs/bpf/tc/globals");
-	}
 }
 
 static int bpf_handle_pending(struct bpf_elf_ctx *ctx,
@@ -354,7 +341,9 @@ static int bpf_handle_pending(struct bpf_elf_ctx *ctx,
 	}
 
 	pinned.id = map->id;
-        pinned.pinning = map->pinning;
+	pinned.inner_id = map->inner_id;
+	pinned.inner_idx = map->inner_idx;
+	pinned.pinning = map->pinning;
 	if (!memcmp(map, &pinned, sizeof(pinned)))
 		return 0;
 
@@ -390,14 +379,14 @@ static int bpf_handle_finalize(struct bpf_elf_ctx *ctx,
 		utimensat(AT_FDCWD, file, NULL, 0);
 		renameat2(AT_FDCWD, file, AT_FDCWD, dest, 1);
 		return 0;
-	} else {
-		syslog(LOG_WARNING, "Unlinking migrated node %s due to good exit.\n",
-		       file);
-		return unlink(file);
 	}
+
+	syslog(LOG_WARNING, "Unlinking migrated node %s due to good exit.\n",
+	       file);
+	return unlink(file);
 }
 
-static int bpf_fill_section_data(struct bpf_elf_ctx *ctx, int section,
+static int bpf_fill_section_data(const struct bpf_elf_ctx *ctx, int section,
 				 struct bpf_elf_sec_data *data)
 {
 	Elf_Data *sec_edata;
@@ -430,7 +419,7 @@ static int bpf_fill_section_data(struct bpf_elf_ctx *ctx, int section,
 }
 
 static int bpf_fetch_symtab(struct bpf_elf_ctx *ctx, int section,
-			    struct bpf_elf_sec_data *data)
+			    const struct bpf_elf_sec_data *data)
 {
 	ctx->sym_tab = data->sec_data;
 	ctx->sym_num = data->sec_hdr.sh_size /
@@ -439,14 +428,14 @@ static int bpf_fetch_symtab(struct bpf_elf_ctx *ctx, int section,
 }
 
 static int bpf_fetch_strtab(struct bpf_elf_ctx *ctx, int section,
-			    struct bpf_elf_sec_data *data)
+			    const struct bpf_elf_sec_data *data)
 {
 	ctx->str_tab = data->sec_data;
 	return 0;
 }
 
 static int bpf_fetch_maps_begin(struct bpf_elf_ctx *ctx, int section,
-				struct bpf_elf_sec_data *data)
+				const struct bpf_elf_sec_data *data)
 {
 	ctx->map_tab = data->sec_data;
 	ctx->map_len = data->sec_data->d_size;
@@ -463,7 +452,7 @@ static int bpf_fetch_maps_end(struct bpf_elf_ctx *ctx, bpf_handle_state_t cb,
 	const char *name;
 
 	if (sym_num == 0 || sym_num > 64) {
-		fprintf(stderr, "%u maps not supported in current map section!\n",
+		fprintf(stderr, "%d maps not supported in current map section!\n",
 			sym_num);
 		return -EINVAL;
 	}
@@ -483,7 +472,7 @@ static int bpf_fetch_maps_end(struct bpf_elf_ctx *ctx, bpf_handle_state_t cb,
 	for (i = 0, map = ctx->map_tab->d_buf; i < sym_num; i++, map++) {
 		if (map->pinning != PIN_GLOBAL_NS)
 			continue;
-		off = (void*)map - ctx->map_tab->d_buf;
+		off = (void *)map - ctx->map_tab->d_buf;
 		name = bpf_map_fetch_name(ctx, off);
 		if (!name) {
 			fprintf(stderr, "Count not fetch map name at off %lu!\n", off);
@@ -513,7 +502,7 @@ static int bpf_check_ancillary(struct bpf_elf_ctx *ctx, bpf_handle_state_t cb,
 		if (ret < 0)
 			continue;
 		if (data.sec_hdr.sh_type == SHT_PROGBITS &&
-		    !strcmp(data.sec_name, ELF_SECTION_MAPS))
+		    !strcmp(data.sec_name, "maps"))
 			ret = bpf_fetch_maps_begin(ctx, i, &data);
 		else if (data.sec_hdr.sh_type == SHT_SYMTAB &&
 			 !strcmp(data.sec_name, ".symtab"))

@@ -16,7 +16,6 @@ package eppolicymap
 
 import (
 	"fmt"
-	"net"
 	"sync"
 	"unsafe"
 
@@ -36,7 +35,7 @@ var (
 
 const (
 	// MaxEntries represents the maximum number of endpoints in the map
-	MaxEntries = 65535
+	MaxEntries = 65536
 )
 
 // +k8s:deepcopy-gen=true
@@ -50,39 +49,53 @@ type EPPolicyValue struct{ Fd uint32 }
 var (
 	buildMap sync.Once
 
-	EpPolicyMap = bpf.NewMap(MapName,
-		bpf.MapTypeHashOfMaps,
-		&EndpointKey{},
-		int(unsafe.Sizeof(EndpointKey{})),
-		&EPPolicyValue{},
-		int(unsafe.Sizeof(EPPolicyValue{})),
-		MaxEntries,
-		0,
-		0,
-		bpf.ConvertKeyValue,
-	).WithCache()
+	// EpPolicyMap is the global singleton of the endpoint policy map.
+	EpPolicyMap *bpf.Map
 )
+
+// CreateWithName creates a new endpoint policy hash of maps for
+// looking up an endpoint's policy map by the endpoint key.
+//
+// The specified mapName allows non-standard map paths to be used, for instance
+// for testing purposes.
+func CreateWithName(mapName string) error {
+	buildMap.Do(func() {
+		mapType := bpf.MapTypeHash
+		fd, err := bpf.CreateMap(mapType,
+			uint32(unsafe.Sizeof(policymap.PolicyKey{})),
+			uint32(unsafe.Sizeof(policymap.PolicyEntry{})),
+			uint32(policymap.MaxEntries),
+			bpf.GetPreAllocateMapFlags(mapType),
+			0, innerMapName)
+
+		if err != nil {
+			log.WithError(err).Fatal("unable to create EP to policy map")
+			return
+		}
+
+		EpPolicyMap = bpf.NewMap(mapName,
+			bpf.MapTypeHashOfMaps,
+			&EndpointKey{},
+			int(unsafe.Sizeof(EndpointKey{})),
+			&EPPolicyValue{},
+			int(unsafe.Sizeof(EPPolicyValue{})),
+			MaxEntries,
+			0,
+			0,
+			bpf.ConvertKeyValue,
+		).WithCache()
+		EpPolicyMap.InnerID = uint32(fd)
+	})
+
+	_, err := EpPolicyMap.OpenOrCreate()
+	return err
+}
 
 // CreateEPPolicyMap will create both the innerMap (needed for map in map types) and
 // then after BPFFS is mounted create the epPolicyMap. We only create the innerFd once
 // to avoid having multiple inner maps.
 func CreateEPPolicyMap() {
-	buildMap.Do(func() {
-		fd, err := bpf.CreateMap(bpf.BPF_MAP_TYPE_HASH,
-			uint32(unsafe.Sizeof(policymap.PolicyKey{})),
-			uint32(unsafe.Sizeof(policymap.PolicyEntry{})),
-			policymap.MaxEntries,
-			0, 0, innerMapName)
-
-		if err != nil {
-			log.WithError(err).Warning("unable to create EP to policy map")
-			return
-		}
-
-		EpPolicyMap.InnerID = uint32(fd)
-	})
-
-	if _, err := EpPolicyMap.OpenOrCreate(); err != nil {
+	if err := CreateWithName(MapName); err != nil {
 		log.WithError(err).Warning("Unable to open or create endpoint policy map")
 	}
 }
@@ -90,17 +103,10 @@ func CreateEPPolicyMap() {
 func (v EPPolicyValue) String() string { return fmt.Sprintf("fd=%d", v.Fd) }
 
 // GetValuePtr returns the unsafe value pointer to the Endpoint Policy fd
-func (v EPPolicyValue) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(&v.Fd) }
+func (v *EPPolicyValue) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 
 // NewValue returns a new empty instance of the Endpoint Policy fd
 func (k EndpointKey) NewValue() bpf.MapValue { return &EPPolicyValue{} }
-
-// newEndpointKey return a new key from the IP address.
-func newEndpointKey(ip net.IP) *EndpointKey {
-	return &EndpointKey{
-		EndpointKey: bpf.NewEndpointKey(ip),
-	}
-}
 
 func writeEndpoint(keys []*lxcmap.EndpointKey, fd int) error {
 	if option.Config.SockopsEnable == false {
@@ -126,6 +132,7 @@ func writeEndpoint(keys []*lxcmap.EndpointKey, fd int) error {
 // the datapath side can do a lookup from EndpointKey->PolicyMap. Locking is
 // handled in the usual way via Map lock. If sockops is disabled this will be
 // a nop.
-func WriteEndpoint(keys []*lxcmap.EndpointKey, pm *policymap.PolicyMap) error {
+func WriteEndpoint(f lxcmap.EndpointFrontend, pm *policymap.PolicyMap) error {
+	keys := lxcmap.GetBPFKeys(f)
 	return writeEndpoint(keys, pm.GetFd())
 }

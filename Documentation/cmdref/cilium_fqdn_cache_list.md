@@ -4,10 +4,6 @@
 
 List fqdn cache contents
 
-### Synopsis
-
-List fqdn cache contents
-
 ```
 cilium fqdn cache list [flags]
 ```
@@ -15,6 +11,7 @@ cilium fqdn cache list [flags]
 ### Options
 
 ```
+  -e, --endpoint string       List cache entries for a specific endpoint id
   -h, --help                  help for list
   -p, --matchpattern string   List cache entries with FQDN that match matchpattern
   -o, --output string         json| jsonpath='{}'

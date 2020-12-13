@@ -17,13 +17,32 @@ case "$CILIUM_CNI_CHAINING_MODE" in
 	done
 	CNI_CONF_NAME=${CNI_CONF_NAME:-04-flannel-cilium-cni.conflist}
 	;;
+"generic-veth")
+	CNI_CONF_NAME=${CNI_CONF_NAME:-05-cilium.conflist}
+	;;
 "portmap")
+	CNI_CONF_NAME=${CNI_CONF_NAME:-05-cilium.conflist}
+	;;
+"aws-cni")
 	CNI_CONF_NAME=${CNI_CONF_NAME:-05-cilium.conflist}
 	;;
 *)
 	CNI_CONF_NAME=${CNI_CONF_NAME:-05-cilium.conf}
 	;;
 esac
+
+ENABLE_DEBUG=false
+while test $# -gt 0; do
+  case "$1" in
+    --enable-debug*)
+      ENABLE_DEBUG=`echo $1 | sed -e 's/^[^=]*=//g'`
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 BIN_NAME=cilium-cni
 CNI_DIR=${CNI_DIR:-${HOST_PREFIX}/opt/cni}
@@ -80,7 +99,8 @@ case "$CILIUM_CNI_CHAINING_MODE" in
     },
     {
        "name": "cilium",
-       "type": "cilium-cni"
+       "type": "cilium-cni",
+       "enable-debug": ${ENABLE_DEBUG}
     }
   ]
 }
@@ -90,15 +110,43 @@ EOF
 "portmap")
 	cat > ${CNI_CONF_NAME} <<EOF
 {
+  "cniVersion": "0.3.1",
   "name": "portmap",
   "plugins": [
     {
        "name": "cilium",
-       "type": "cilium-cni"
+       "type": "cilium-cni",
+       "enable-debug": ${ENABLE_DEBUG}
+    },
+    {
+      "type": "portmap",
+      "capabilities": {"portMappings": true}
+    }
+  ]
+}
+EOF
+	;;
+
+"aws-cni")
+	cat > ${CNI_CONF_NAME} <<EOF
+{
+  "cniVersion": "0.3.1",
+  "name": "aws-cni",
+  "plugins": [
+    {
+      "name": "aws-cni",
+      "type": "aws-cni",
+      "vethPrefix": "eni"
     },
     {
       "type": "portmap",
       "capabilities": {"portMappings": true},
+      "snat": true
+    },
+    {
+       "name": "cilium",
+       "type": "cilium-cni",
+       "enable-debug": ${ENABLE_DEBUG}
     }
   ]
 }
@@ -108,8 +156,10 @@ EOF
 *)
 	cat > ${CNI_CONF_NAME} <<EOF
 {
+  "cniVersion": "0.3.1",
   "name": "cilium",
-  "type": "cilium-cni"
+  "type": "cilium-cni",
+  "enable-debug": ${ENABLE_DEBUG}
 }
 EOF
 	;;

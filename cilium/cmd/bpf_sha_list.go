@@ -21,8 +21,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/defaults"
 
 	"github.com/spf13/cobra"
@@ -78,7 +78,7 @@ func getTemplateSHA(epID string) string {
 	if err != nil {
 		return brokenSHA
 	}
-	if f, err = os.Stat(template); err != nil {
+	if _, err = os.Stat(template); err != nil {
 		return brokenSHA
 	}
 	return filepath.Base(filepath.Dir(template))

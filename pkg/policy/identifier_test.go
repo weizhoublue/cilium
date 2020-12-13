@@ -32,13 +32,16 @@ func (d *DummyEndpoint) GetID16() uint16 {
 	return 0
 }
 
-func (d *DummyEndpoint) GetSecurityIdentity() *identity.Identity {
-	return nil
+func (d *DummyEndpoint) IsHost() bool {
+	return false
+}
+
+func (d *DummyEndpoint) GetSecurityIdentity() (*identity.Identity, error) {
+	return nil, nil
 }
 
 func (d *DummyEndpoint) PolicyRevisionBumpEvent(rev uint64) {
 	d.rev = rev
-	return
 }
 
 func (d *DummyEndpoint) RLockAlive() error {
@@ -46,15 +49,13 @@ func (d *DummyEndpoint) RLockAlive() error {
 }
 
 func (d *DummyEndpoint) RUnlock() {
-	return
 }
 
 func (ds *PolicyTestSuite) TestNewEndpointSet(c *C) {
-	epSet := NewEndpointSet(20)
-	c.Assert(epSet.Len(), Equals, 0)
-
 	d := &DummyEndpoint{}
-	epSet.Insert(d)
+	epSet := NewEndpointSet(map[Endpoint]struct{}{
+		d: {},
+	})
 	c.Assert(epSet.Len(), Equals, 1)
 	epSet.Delete(d)
 	c.Assert(epSet.Len(), Equals, 0)
@@ -66,10 +67,11 @@ func (ds *PolicyTestSuite) TestForEach(c *C) {
 	d0 := &DummyEndpoint{}
 	d1 := &DummyEndpoint{}
 
-	epSet := NewEndpointSet(20)
-	epSet.Insert(d0)
-	epSet.Insert(d1)
-	epSet.ForEach(&wg, func(e Endpoint) {
+	epSet := NewEndpointSet(map[Endpoint]struct{}{
+		d0: {},
+		d1: {},
+	})
+	epSet.ForEachGo(&wg, func(e Endpoint) {
 		e.PolicyRevisionBumpEvent(100)
 	})
 

@@ -24,7 +24,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cilium/cilium/test/config"
 	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 
 	"github.com/sirupsen/logrus"
@@ -36,13 +35,15 @@ var (
 	SSHMetaLogs = ginkgoext.NewWriter(new(Buffer))
 )
 
-// SSHMeta contains metadata to SSH into a remote location to run tests
+// SSHMeta contains metadata to SSH into a remote location to run tests,
+// implements Executor interface
 type SSHMeta struct {
 	sshClient *SSHClient
 	env       []string
 	rawConfig []byte
 	nodeName  string
 	logger    *logrus.Entry
+	basePath  string
 }
 
 // CreateSSHMeta returns an SSHMeta with the specified host, port, and user, as
@@ -53,9 +54,30 @@ func CreateSSHMeta(host string, port int, user string) *SSHMeta {
 	}
 }
 
+// IsLocal returns true if commands are executed on the Ginkgo host
+func (s *SSHMeta) IsLocal() bool {
+	return false
+}
+
+// Logger returns logger for SSHMeta
+func (s *SSHMeta) Logger() *logrus.Entry {
+	return s.logger
+}
+
 func (s *SSHMeta) String() string {
 	return fmt.Sprintf("environment: %s, SSHClient: %s", s.env, s.sshClient.String())
 
+}
+
+// CloseSSHClient closes all of the connections made by the SSH Client for this
+// SSHMeta.
+func (s *SSHMeta) CloseSSHClient() {
+	if s.sshClient == nil || s.sshClient.client == nil {
+		log.Error("SSH client is nil; cannot close")
+	}
+	if err := s.sshClient.client.Close(); err != nil {
+		log.WithError(err).Error("error closing SSH client")
+	}
 }
 
 // GetVagrantSSHMeta returns a SSHMeta initialized based on the provided
@@ -97,13 +119,9 @@ func GetVagrantSSHMeta(vmName string) *SSHMeta {
 // setBasePath if the SSHConfig is defined we set the BasePath to the GOPATH,
 // from golang 1.8 GOPATH is by default $HOME/go so we also check that.
 func (s *SSHMeta) setBasePath() {
-	if config.CiliumTestConfig.SSHConfig == "" {
-		return
-	}
-
 	gopath := s.Exec("echo $GOPATH").SingleOut()
 	if gopath != "" {
-		BasePath = filepath.Join(gopath, CiliumPath)
+		s.basePath = filepath.Join(gopath, CiliumPath)
 		return
 	}
 
@@ -112,8 +130,7 @@ func (s *SSHMeta) setBasePath() {
 		return
 	}
 
-	BasePath = filepath.Join(home, "go", CiliumPath)
-	return
+	s.basePath = filepath.Join(home, "go", CiliumPath)
 }
 
 // ExecuteContext executes the given `cmd` and writes the cmd's stdout and
@@ -135,13 +152,7 @@ func (s *SSHMeta) ExecuteContext(ctx context.Context, cmd string, stdout io.Writ
 		Stdout: stdout,
 		Stderr: stderr,
 	}
-	err := s.sshClient.RunCommandContext(ctx, command)
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return err
-	}
+	return s.sshClient.RunCommandContext(ctx, command)
 }
 
 // ExecWithSudo returns the result of executing the provided cmd via SSH using
@@ -158,12 +169,35 @@ type ExecOptions struct {
 
 // Exec returns the results of executing the provided cmd via SSH.
 func (s *SSHMeta) Exec(cmd string, options ...ExecOptions) *CmdRes {
-	// Since we have no timeout, ensure that the context given to ExecContext
-	// eventually cancels in case something is blocked on ctx.Done() (something
-	// is).
-	ctx, cancel := context.WithCancel(context.TODO())
+	// Bound all command executions to be at most the timeout used by the CI
+	// so that commands do not block forever.
+	ctx, cancel := context.WithTimeout(context.Background(), HelperTimeout)
 	defer cancel()
 	return s.ExecContext(ctx, cmd, options...)
+}
+
+// ExecShort runs command with the provided options. It will take up to
+// ShortCommandTimeout seconds to run the command before it times out.
+func (s *SSHMeta) ExecShort(cmd string, options ...ExecOptions) *CmdRes {
+	ctx, cancel := context.WithTimeout(context.Background(), ShortCommandTimeout)
+	defer cancel()
+	return s.ExecContext(ctx, cmd, options...)
+}
+
+// ExecMiddle runs command with the provided options. It will take up to
+// MidCommandTimeout seconds to run the command before it times out.
+func (s *SSHMeta) ExecMiddle(cmd string, options ...ExecOptions) *CmdRes {
+	ctx, cancel := context.WithTimeout(context.Background(), MidCommandTimeout)
+	defer cancel()
+	return s.ExecContext(ctx, cmd, options...)
+}
+
+// ExecContextShort is a wrapper around ExecContext which creates a child
+// context with a timeout of ShortCommandTimeout.
+func (s *SSHMeta) ExecContextShort(ctx context.Context, cmd string, options ...ExecOptions) *CmdRes {
+	shortCtx, cancel := context.WithTimeout(ctx, ShortCommandTimeout)
+	defer cancel()
+	return s.ExecContext(shortCtx, cmd, options...)
 }
 
 // ExecContext returns the results of executing the provided cmd via SSH.
@@ -200,8 +234,8 @@ func (s *SSHMeta) ExecContext(ctx context.Context, cmd string, options ...ExecOp
 		} else {
 			// Log other error types. They are likely from SSH or the network
 			log.WithError(err).Errorf("Error executing command '%s'", cmd)
-			res.err = err
 		}
+		res.err = err
 	}
 
 	res.SendToLog(ops.SkipLog)
@@ -277,6 +311,9 @@ func (s *SSHMeta) ExecInBackground(ctx context.Context, cmd string, options ...E
 					res.success = true
 				}
 			}
+			if !res.success {
+				res.err = err
+			}
 		} else {
 			res.success = true
 			res.exitcode = 0
@@ -286,4 +323,27 @@ func (s *SSHMeta) ExecInBackground(ctx context.Context, cmd string, options ...E
 	}(res)
 
 	return res
+}
+
+// RenderTemplateToFile renders a text/template string into a target filename
+// with specific persmisions. Returns an error if the template cannot be
+// validated or the file cannot be created.
+func (s *SSHMeta) RenderTemplateToFile(filename string, tmplt string, perm os.FileMode) error {
+	content, err := RenderTemplate(tmplt)
+	if err != nil {
+		return err
+	}
+
+	dst := filepath.Join(s.basePath, filename)
+	cmd := fmt.Sprintf("echo '%s' > %s", content, dst)
+	res := s.Exec(cmd)
+	if !res.WasSuccessful() {
+		return fmt.Errorf("%s", res.CombineOutput())
+	}
+	cmd = fmt.Sprintf("chmod %o %s", perm, dst)
+	res = s.Exec(cmd)
+	if !res.WasSuccessful() {
+		return fmt.Errorf("%s", res.CombineOutput())
+	}
+	return nil
 }

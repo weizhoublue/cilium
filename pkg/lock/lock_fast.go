@@ -1,6 +1,4 @@
-// +build !lockdebug
-
-// Copyright 2017 Authors of Cilium
+// Copyright 2017-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build !lockdebug
+
 package lock
 
 import (
@@ -25,10 +25,6 @@ type internalRWMutex struct {
 }
 
 func (i *internalRWMutex) UnlockIgnoreTime() {
-	i.RWMutex.Unlock()
-}
-
-func (i *internalRWMutex) RUnlockIgnoreTime() {
 	i.RWMutex.Unlock()
 }
 

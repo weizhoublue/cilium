@@ -1,4 +1,4 @@
-// Copyright 2019 Authors of Cilium
+// Copyright 2019-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,13 @@
 package datapath
 
 import (
-	"github.com/cilium/cilium/common/addressing"
+	"io"
+
+	"github.com/cilium/cilium/pkg/addressing"
+	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/mac"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -35,11 +39,9 @@ type DeviceConfiguration interface {
 	GetOptions() *option.IntOptions
 }
 
-// EndpointConfiguration provides datapath implementations a clean interface
-// to access endpoint-specific configuration when configuring the datapath.
-type EndpointConfiguration interface {
-	DeviceConfiguration
-
+// LoadTimeConfiguration provides datapath implementations a clean interface
+// to access endpoint-specific configuration that can be changed at load time.
+type LoadTimeConfiguration interface {
 	// GetID returns a locally-significant endpoint identification number.
 	GetID() uint64
 	// StringID returns the string-formatted version of the ID from GetID().
@@ -47,9 +49,21 @@ type EndpointConfiguration interface {
 	// GetIdentity returns a globally-significant numeric security identity.
 	GetIdentity() identity.NumericIdentity
 
+	// GetIdentityLocked returns a globally-significant numeric security
+	// identity while assuming that the backing data structure is locked.
+	// This function should be removed in favour of GetIdentity()
+	GetIdentityLocked() identity.NumericIdentity
+
 	IPv4Address() addressing.CiliumIPv4
 	IPv6Address() addressing.CiliumIPv6
 	GetNodeMAC() mac.MAC
+}
+
+// CompileTimeConfiguration provides datapath implementations a clean interface
+// to access endpoint-specific configuration that can only be changed at
+// compile time.
+type CompileTimeConfiguration interface {
+	DeviceConfiguration
 
 	// TODO: Move this detail into the datapath
 	HasIpvlanDataPath() bool
@@ -72,4 +86,51 @@ type EndpointConfiguration interface {
 	// per endpoint route installed in the host's routing table to point to
 	// the endpoint's interface
 	RequireEndpointRoute() bool
+
+	// GetPolicyVerdictLogFilter returns the PolicyVerdictLogFilter for the endpoint
+	GetPolicyVerdictLogFilter() uint32
+
+	// IsHost returns true if the endpoint is the host endpoint.
+	IsHost() bool
+}
+
+// EndpointConfiguration provides datapath implementations a clean interface
+// to access endpoint-specific configuration when configuring the datapath.
+type EndpointConfiguration interface {
+	CompileTimeConfiguration
+	LoadTimeConfiguration
+}
+
+// ConfigWriter is anything which writes the configuration for various datapath
+// program types.
+type ConfigWriter interface {
+	// WriteNodeConfig writes the implementation-specific configuration of
+	// node-wide options into the specified writer.
+	WriteNodeConfig(io.Writer, *LocalNodeConfiguration) error
+
+	// WriteNetdevConfig writes the implementation-specific configuration
+	// of configurable options to the specified writer. Options specified
+	// here will apply to base programs and not to endpoints, though
+	// endpoints may have equivalent configurable options.
+	WriteNetdevConfig(io.Writer, DeviceConfiguration) error
+
+	// WriteTemplateConfig writes the implementation-specific configuration
+	// of configurable options for BPF templates to the specified writer.
+	WriteTemplateConfig(w io.Writer, cfg EndpointConfiguration) error
+
+	// WriteEndpointConfig writes the implementation-specific configuration
+	// of configurable options for the endpoint to the specified writer.
+	WriteEndpointConfig(w io.Writer, cfg EndpointConfiguration) error
+}
+
+// RemoteSNATDstAddrExclusionCIDR returns a CIDR for SNAT exclusion. Any
+// packet sent from a local endpoint to an IP address belonging to the CIDR
+// should not be SNAT'd.
+func RemoteSNATDstAddrExclusionCIDR() *cidr.CIDR {
+	if c := option.Config.IPv4NativeRoutingCIDR(); c != nil {
+		// native-routing-cidr is set, so use it
+		return c
+	}
+
+	return node.GetIPv4AllocRange()
 }

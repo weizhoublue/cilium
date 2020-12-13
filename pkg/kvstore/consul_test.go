@@ -17,6 +17,7 @@
 package kvstore
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"os"
@@ -38,7 +39,7 @@ func (e *ConsulSuite) SetUpTest(c *C) {
 }
 
 func (e *ConsulSuite) TearDownTest(c *C) {
-	Close()
+	Client().Close()
 }
 
 var handler http.HandlerFunc
@@ -76,7 +77,7 @@ func TestConsulClientOk(t *testing.T) {
 		close(doneC)
 	}
 
-	_, err := newConsulClient(&consulAPI.Config{
+	_, err := newConsulClient(context.TODO(), &consulAPI.Config{
 		Address: ":8000",
 	}, nil)
 

@@ -4,10 +4,6 @@
 
 Update a service
 
-### Synopsis
-
-Update a service
-
 ```
 cilium service update [flags]
 ```
@@ -15,11 +11,17 @@ cilium service update [flags]
 ### Options
 
 ```
-      --backends strings   Backend address or addresses followed by optional weight (<IP:Port>[/weight])
-      --frontend string    Frontend address
-  -h, --help               help for update
-      --id uint            Identifier
-      --rev                Add reverse translation (default true)
+      --backends strings            Backend address or addresses (<IP:Port>)
+      --frontend string             Frontend address
+  -h, --help                        help for update
+      --id uint                     Identifier
+      --k8s-cluster-internal        Set service as cluster-internal for externalTrafficPolicy=Local
+      --k8s-external                Set service as a k8s ExternalIPs
+      --k8s-host-port               Set service as a k8s HostPort
+      --k8s-load-balancer           Set service as a k8s LoadBalancer
+      --k8s-node-port               Set service as a k8s NodePort
+      --k8s-traffic-policy string   Set service with k8s externalTrafficPolicy as {Local,Cluster} (default "Cluster")
+      --local-redirect              Set service as Local Redirect
 ```
 
 ### Options inherited from parent commands

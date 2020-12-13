@@ -1,4 +1,4 @@
-// Copyright 2017 Authors of Cilium
+// Copyright 2017-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,15 +15,15 @@
 package server
 
 import (
-	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/health/models"
 	ciliumModels "github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/health/client"
 	"github.com/cilium/cilium/pkg/health/defaults"
+	"github.com/cilium/cilium/pkg/health/probe"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
@@ -45,7 +45,6 @@ type prober struct {
 	// finished, then prober.Done() will be notified.
 	stop         chan bool
 	proberExited chan bool
-	done         chan bool
 
 	// The lock protects multiple requests attempting to update the status
 	// at the same time - ie, serialize updates between the periodic prober
@@ -75,7 +74,7 @@ func (p *prober) copyResultRLocked(ip string) *models.PathStatus {
 	}
 	for res, value := range paths {
 		if value != nil {
-			*res = &*value
+			*res = value
 		}
 	}
 	return result
@@ -95,23 +94,26 @@ func (p *prober) getResults() *healthReport {
 		}
 		primaryIP := node.PrimaryIP()
 		healthIP := node.HealthIP()
+
+		secondaryAddresses := []*models.PathStatus{}
+		for _, ip := range node.SecondaryIPs() {
+			if addr := p.copyResultRLocked(ip); addr != nil {
+				secondaryAddresses = append(secondaryAddresses, addr)
+			}
+		}
+
 		status := &models.NodeStatus{
 			Name: node.Name,
 			Host: &models.HostStatus{
-				PrimaryAddress: p.copyResultRLocked(primaryIP),
+				PrimaryAddress:     p.copyResultRLocked(primaryIP),
+				SecondaryAddresses: secondaryAddresses,
 			},
 		}
+
 		if healthIP != "" {
 			status.Endpoint = p.copyResultRLocked(healthIP)
 		}
-		secondaryResults := []*models.PathStatus{}
-		for _, addr := range node.SecondaryAddresses {
-			if addr.Enabled {
-				secondaryStatus := p.copyResultRLocked(addr.IP)
-				secondaryResults = append(secondaryResults, secondaryStatus)
-			}
-		}
-		status.Host.SecondaryAddresses = secondaryResults
+
 		resultMap[node.Name] = status
 	}
 
@@ -161,46 +163,35 @@ func resolveIP(n *healthNode, addr *ciliumModels.NodeAddressingElement, proto st
 	return node.Name, ra
 }
 
-// markIPsLocked marks all nodes in the prober for deletion.
-func (p *prober) markIPsLocked() {
-	for ip, node := range p.nodes {
-		node.deletionMark = true
-		p.nodes[ip] = node
-	}
-}
-
-// sweepIPsLocked iterates through nodes in the prober and removes nodes which
-// are marked for deletion.
-func (p *prober) sweepIPsLocked() {
-	for ip, node := range p.nodes {
-		if node.deletionMark {
-			// Remove deleted nodes from:
-			// * Results (accessed from ICMP pinger or TCP prober)
-			// * ICMP pinger
-			// * TCP prober
-			for elem := range node.Addresses() {
-				delete(p.results, ipString(elem.IP))
-				p.RemoveIP(elem.IP) // ICMP pinger
-			}
-			delete(p.nodes, ip) // TCP prober
-		}
-	}
+// RemoveIP removes all traces of the specified IP from the prober, including
+// clearing all cached results, mapping from this IP to a node, and entries in
+// the ICMP and TCP pingers.
+func (p *prober) RemoveIP(ip string) {
+	nodeIP := ipString(ip)
+	delete(p.results, nodeIP)
+	p.Pinger.RemoveIP(ip)   // ICMP pinger
+	delete(p.nodes, nodeIP) // TCP prober
 }
 
 // setNodes sets the list of nodes for the prober, and updates the pinger to
-// start sending pings to all of the nodes.
-// setNodes will steal references to nodes referenced from 'nodes', so the
+// start sending pings to all nodes added.
+// 'removed' nodes will be removed from the pinger to stop sending pings to
+// those removed nodes.
+// setNodes will steal references to nodes referenced from 'added', so the
 // caller should not modify them after a call to setNodes.
-func (p *prober) setNodes(nodes nodeMap) {
+// If a node is updated, it will appear in both maps and will be removed then
+// added (potentially with different information).
+func (p *prober) setNodes(added nodeMap, removed nodeMap) {
 	p.Lock()
 	defer p.Unlock()
 
-	// Mark all nodes for deletion, insert nodes that should not be deleted
-	// then at the end of the function, sweep all nodes that remain as
-	// "to be deleted".
-	p.markIPsLocked()
+	for _, n := range removed {
+		for elem := range n.Addresses() {
+			p.RemoveIP(elem.IP)
+		}
+	}
 
-	for _, n := range nodes {
+	for _, n := range added {
 		for elem, primary := range n.Addresses() {
 			_, addr := resolveIP(&n, elem, "icmp", primary)
 
@@ -222,14 +213,12 @@ func (p *prober) setNodes(nodes nodeMap) {
 			p.results[ip].Icmp = result
 		}
 	}
-
-	p.sweepIPsLocked()
 }
 
 func (p *prober) httpProbe(node string, ip string, port int) *models.ConnectivityStatus {
 	result := &models.ConnectivityStatus{}
 
-	host := fmt.Sprintf("http://%s:%d", ip, port)
+	host := "http://" + net.JoinHostPort(ip, strconv.Itoa(port))
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.NodeName: node,
 		logfields.IPAddr:   ip,
@@ -237,41 +226,30 @@ func (p *prober) httpProbe(node string, ip string, port int) *models.Connectivit
 		"path":             PortToPaths[port],
 	})
 
-	client, err := client.NewClient(host)
+	scopedLog.Debug("Greeting host")
+	start := time.Now()
+	err := probe.GetHello(host)
+	rtt := time.Since(start)
 	if err == nil {
-		scopedLog.Debug("Greeting host")
-		start := time.Now()
-		_, err = client.Restapi.GetHello(nil)
-		rtt := time.Since(start)
-		if err == nil {
-			scopedLog.WithField("rtt", rtt).Debug("Greeting successful")
-			result.Status = ""
-			result.Latency = rtt.Nanoseconds()
-		} else {
-			scopedLog.WithError(err).Debug("Greeting snubbed")
-			result.Status = "Connection timed out"
-		}
+		scopedLog.WithField("rtt", rtt).Debug("Greeting successful")
+		result.Status = ""
+		result.Latency = rtt.Nanoseconds()
 	} else {
-		scopedLog.WithError(err).Info("Failed to express greeting to host")
+		scopedLog.WithError(err).Debug("Greeting failed")
 		result.Status = err.Error()
 	}
 
 	return result
 }
 
-func (p *prober) runHTTPProbe() {
-	startTime := time.Now()
-	p.Lock()
-	p.start = startTime
-	p.Unlock()
+func (p *prober) getIPsByNode() map[string][]*net.IPAddr {
+	p.RLock()
+	defer p.RUnlock()
 
 	// p.nodes is mapped from all known IPs -> nodes in N:M configuration,
 	// so multiple IPs could refer to the same node. To ensure we only
 	// ping each node once, deduplicate nodes into map of nodeName -> []IP.
-	// When probing below, we won't hold the lock on 'p.nodes' so take
-	// a copy of all of the IPs we need to reference.
 	nodes := make(map[string][]*net.IPAddr)
-	p.RLock()
 	for _, node := range p.nodes {
 		if nodes[node.Name] != nil {
 			// Already handled this node.
@@ -284,9 +262,17 @@ func (p *prober) runHTTPProbe() {
 			}
 		}
 	}
-	p.RUnlock()
 
-	for name, ips := range nodes {
+	return nodes
+}
+
+func (p *prober) runHTTPProbe() {
+	startTime := time.Now()
+	p.Lock()
+	p.start = startTime
+	p.Unlock()
+
+	for name, ips := range p.getIPsByNode() {
 		for _, ip := range ips {
 			scopedLog := log.WithFields(logrus.Fields{
 				logfields.NodeName: name,
@@ -321,12 +307,6 @@ func (p *prober) runHTTPProbe() {
 	}
 }
 
-// Done returns a channel that is closed when RunLoop() is stopped by an error.
-// It must be called after the RunLoop() call.
-func (p *prober) Done() <-chan bool {
-	return p.done
-}
-
 // Run sends a single probes out to all of the other cilium nodes to gather
 // connectivity status for the cluster.
 func (p *prober) Run() error {
@@ -341,7 +321,6 @@ func (p *prober) Stop() {
 	p.Pinger.Stop()
 	close(p.stop)
 	<-p.proberExited
-	close(p.done)
 }
 
 // RunLoop periodically sends probes out to all of the other cilium nodes to
@@ -376,7 +355,6 @@ func newProber(s *Server, nodes nodeMap) *prober {
 	prober := &prober{
 		Pinger:       fastping.NewPinger(),
 		server:       s,
-		done:         make(chan bool),
 		proberExited: make(chan bool),
 		stop:         make(chan bool),
 		results:      make(map[ipString]*models.PathStatus),
@@ -384,7 +362,7 @@ func newProber(s *Server, nodes nodeMap) *prober {
 	}
 	prober.MaxRTT = s.ProbeDeadline
 
-	prober.setNodes(nodes)
+	prober.setNodes(nodes, nil)
 	prober.OnRecv = func(addr *net.IPAddr, rtt time.Duration) {
 		prober.Lock()
 		defer prober.Unlock()

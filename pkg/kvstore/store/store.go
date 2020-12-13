@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -64,6 +65,10 @@ type Configuration struct {
 	// are synchronized with the kvstore. This parameter is optional.
 	SynchronizationInterval time.Duration
 
+	// SharedKeyDeleteDelay is the delay before an shared key delete is
+	// handled. This parameter is optional
+	SharedKeyDeleteDelay time.Duration
+
 	// KeyCreator is called to allocate a Key instance when a new shared
 	// key is discovered. This parameter is required.
 	KeyCreator KeyCreator
@@ -74,6 +79,8 @@ type Configuration struct {
 
 	// Observer is the observe that will receive events on key mutations
 	Observer Observer
+
+	Context context.Context
 }
 
 // validate is invoked by JoinSharedStore to validate and complete the
@@ -91,8 +98,16 @@ func (c *Configuration) validate() error {
 		c.SynchronizationInterval = option.Config.KVstorePeriodicSync
 	}
 
+	if c.SharedKeyDeleteDelay == 0 {
+		c.SharedKeyDeleteDelay = defaults.NodeDeleteDelay
+	}
+
 	if c.Backend == nil {
 		c.Backend = kvstore.Client()
+	}
+
+	if c.Context == nil {
+		c.Context = context.Background()
 	}
 
 	return nil
@@ -209,7 +224,7 @@ func JoinSharedStore(c Configuration) (*SharedStore, error) {
 	controllers.UpdateController(s.controllerName,
 		controller.ControllerParams{
 			DoFunc: func(ctx context.Context) error {
-				return s.syncLocalKeys()
+				return s.syncLocalKeys(ctx)
 			},
 			RunInterval: s.conf.SynchronizationInterval,
 		},
@@ -230,9 +245,9 @@ func (s *SharedStore) onUpdate(k Key) {
 	}
 }
 
-// Close stops participation with a shared store. This stops the controller
-// started by JoinSharedStore().
-func (s *SharedStore) Close() {
+// Release frees all resources own by the store but leaves all keys in the
+// kvstore intact
+func (s *SharedStore) Release() {
 	// Wait for all write operations to complete and then block all further
 	// operations
 	s.mutex.Lock()
@@ -243,13 +258,24 @@ func (s *SharedStore) Close() {
 	}
 
 	controllers.RemoveController(s.controllerName)
+}
+
+// Close stops participation with a shared store and removes all keys owned by
+// this node in the kvstore. This stops the controller started by
+// JoinSharedStore().
+func (s *SharedStore) Close(ctx context.Context) {
+	s.Release()
 
 	for name, key := range s.localKeys {
-		if err := s.backend.Delete(s.keyPath(key)); err != nil {
+		if err := s.backend.Delete(ctx, s.keyPath(key)); err != nil {
 			s.getLogger().WithError(err).Warning("Unable to delete key in kvstore")
 		}
 
 		delete(s.localKeys, name)
+		// Since we have received our own notification we also need to remove
+		// it from the shared keys.
+		delete(s.sharedKeys, name)
+
 		s.onDelete(key)
 	}
 }
@@ -262,7 +288,7 @@ func (s *SharedStore) keyPath(key NamedKey) string {
 }
 
 // syncLocalKey synchronizes a key to the kvstore
-func (s *SharedStore) syncLocalKey(key LocalKey) error {
+func (s *SharedStore) syncLocalKey(ctx context.Context, key LocalKey) error {
 	jsonValue, err := key.Marshal()
 	if err != nil {
 		return err
@@ -270,7 +296,7 @@ func (s *SharedStore) syncLocalKey(key LocalKey) error {
 
 	// Update key in kvstore, overwrite an eventual existing key, attach
 	// lease to expire entry when agent dies and never comes back up.
-	if _, err := s.backend.UpdateIfDifferent(context.TODO(), s.keyPath(key), jsonValue, true); err != nil {
+	if _, err := s.backend.UpdateIfDifferent(ctx, s.keyPath(key), jsonValue, true); err != nil {
 		return err
 	}
 
@@ -278,7 +304,7 @@ func (s *SharedStore) syncLocalKey(key LocalKey) error {
 }
 
 // syncLocalKeys synchronizes all local keys with the kvstore
-func (s *SharedStore) syncLocalKeys() error {
+func (s *SharedStore) syncLocalKeys(ctx context.Context) error {
 	// Create a copy of all local keys so we can unlock and sync to kvstore
 	// without holding the lock
 	s.mutex.RLock()
@@ -289,7 +315,7 @@ func (s *SharedStore) syncLocalKeys() error {
 	s.mutex.RUnlock()
 
 	for _, key := range keys {
-		if err := s.syncLocalKey(key); err != nil {
+		if err := s.syncLocalKey(ctx, key); err != nil {
 			return err
 		}
 	}
@@ -308,6 +334,17 @@ func (s *SharedStore) lookupLocalKey(name string) LocalKey {
 	}
 
 	return nil
+}
+
+// NumEntries returns the number of entries in the store
+func (s *SharedStore) NumEntries() int {
+	if s == nil {
+		return 0
+	}
+
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return len(s.sharedKeys)
 }
 
 // SharedKeysMap returns a copy of the SharedKeysMap, the returned map can
@@ -334,30 +371,23 @@ func (s *SharedStore) UpdateLocalKey(key LocalKey) {
 // UpdateLocalKeySync synchronously synchronizes a local key with the kvstore
 // and adds it to the list of local keys to be synchronized if the initial
 // synchronous synchronization was successful
-func (s *SharedStore) UpdateLocalKeySync(key LocalKey) error {
-	s.UpdateLocalKey(key)
-
-	if err := s.syncLocalKey(key); err != nil {
-		s.DeleteLocalKey(key)
-		return err
+func (s *SharedStore) UpdateLocalKeySync(ctx context.Context, key LocalKey) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	err := s.syncLocalKey(ctx, key)
+	if err == nil {
+		s.localKeys[key.GetKeyName()] = key.DeepKeyCopy()
 	}
-
-	return nil
-}
-
-// UpdateKeySync synchronously synchronizes a key with the kvstore.
-func (s *SharedStore) UpdateKeySync(key LocalKey) error {
-	err := s.syncLocalKey(key)
-	if err != nil {
-		s.DeleteLocalKey(key)
-		return err
-	}
-
 	return err
 }
 
+// UpdateKeySync synchronously synchronizes a key with the kvstore.
+func (s *SharedStore) UpdateKeySync(ctx context.Context, key LocalKey) error {
+	return s.syncLocalKey(ctx, key)
+}
+
 // DeleteLocalKey removes a key from being synchronized with the kvstore
-func (s *SharedStore) DeleteLocalKey(key NamedKey) {
+func (s *SharedStore) DeleteLocalKey(ctx context.Context, key NamedKey) {
 	name := key.GetKeyName()
 
 	s.mutex.Lock()
@@ -365,7 +395,7 @@ func (s *SharedStore) DeleteLocalKey(key NamedKey) {
 	delete(s.localKeys, name)
 	s.mutex.Unlock()
 
-	err := s.backend.Delete(s.keyPath(key))
+	err := s.backend.Delete(ctx, s.keyPath(key))
 
 	if ok {
 		if err != nil {
@@ -426,14 +456,26 @@ func (s *SharedStore) updateKey(name string, value []byte) error {
 	return nil
 }
 
-func (s *SharedStore) deleteKey(name string) {
+func (s *SharedStore) deleteSharedKey(name string) {
 	s.mutex.Lock()
 	existingKey, ok := s.sharedKeys[name]
 	delete(s.sharedKeys, name)
 	s.mutex.Unlock()
 
 	if ok {
-		s.onDelete(existingKey)
+		go func() {
+			time.Sleep(s.conf.SharedKeyDeleteDelay)
+			s.mutex.RLock()
+			_, ok := s.sharedKeys[name]
+			s.mutex.RUnlock()
+			if ok {
+				log.Warningf("Received node delete event for node %s which re-appeared within %s",
+					name, s.conf.SharedKeyDeleteDelay)
+				return
+			}
+
+			s.onDelete(existingKey)
+		}()
 	} else {
 		s.getLogger().WithField("key", name).
 			Warning("Unable to find deleted key in local state")
@@ -441,7 +483,7 @@ func (s *SharedStore) deleteKey(name string) {
 }
 
 func (s *SharedStore) listAndStartWatcher() error {
-	listDone := make(chan bool)
+	listDone := make(chan struct{})
 
 	go s.watcher(listDone)
 
@@ -454,8 +496,8 @@ func (s *SharedStore) listAndStartWatcher() error {
 	return nil
 }
 
-func (s *SharedStore) watcher(listDone chan bool) {
-	s.kvstoreWatcher = s.backend.ListAndWatch(s.name+"-watcher", s.conf.Prefix, watcherChanSize)
+func (s *SharedStore) watcher(listDone chan struct{}) {
+	s.kvstoreWatcher = s.backend.ListAndWatch(s.conf.Context, s.name+"-watcher", s.conf.Prefix, watcherChanSize)
 
 	for event := range s.kvstoreWatcher.Events {
 		if event.Typ == kvstore.EventTypeListDone {
@@ -486,9 +528,9 @@ func (s *SharedStore) watcher(listDone chan bool) {
 			if localKey := s.lookupLocalKey(keyName); localKey != nil {
 				logger.Warning("Received delete event for local key. Re-creating the key in the kvstore")
 
-				s.syncLocalKey(localKey)
+				s.syncLocalKey(s.conf.Context, localKey)
 			} else {
-				s.deleteKey(keyName)
+				s.deleteSharedKey(keyName)
 			}
 		}
 	}

@@ -15,9 +15,10 @@
 package proxy
 
 import (
+	"context"
 	"net"
 
-	"github.com/cilium/cilium/pkg/endpointmanager"
+	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
@@ -28,14 +29,25 @@ var (
 	// DefaultEndpointInfoRegistry is the default instance implementing the
 	// EndpointInfoRegistry interface.
 	DefaultEndpointInfoRegistry logger.EndpointInfoRegistry = &defaultEndpointInfoRegistry{}
+	endpointManager             EndpointLookup
+	// Allocator is a package-level variable which is used to lookup security
+	// identities from their numeric representation.
+	// TODO: plumb an allocator in from callers of these functions vs. having
+	// this as a package-level variable.
+	Allocator *cache.CachingIdentityAllocator
 )
+
+// EndpointLookup is any type which maps from IP to the endpoint owning that IP.
+type EndpointLookup interface {
+	LookupIP(ip net.IP) (ep *endpoint.Endpoint)
+}
 
 // defaultEndpointInfoRegistry is the default implementation of the
 // EndpointInfoRegistry interface.
 type defaultEndpointInfoRegistry struct{}
 
 func (r *defaultEndpointInfoRegistry) FillEndpointIdentityByID(id identity.NumericIdentity, info *accesslog.EndpointInfo) bool {
-	identity := cache.LookupIdentityByID(id)
+	identity := Allocator.LookupIdentityByID(context.TODO(), id)
 	if identity == nil {
 		return false
 	}
@@ -48,21 +60,21 @@ func (r *defaultEndpointInfoRegistry) FillEndpointIdentityByID(id identity.Numer
 }
 
 func (r *defaultEndpointInfoRegistry) FillEndpointIdentityByIP(ip net.IP, info *accesslog.EndpointInfo) bool {
-	ep := endpointmanager.LookupIP(ip)
+	ep := endpointManager.LookupIP(ip)
 	if ep == nil {
 		return false
 	}
 
-	if err := ep.RLockAlive(); err != nil {
-		ep.LogDisconnectedMutexAction(err, "before FillEndpointIdentityByIP")
+	id, ipv4, ipv6, labels, labelsSHA256, identity, err := ep.GetProxyInfoByFields()
+	if err != nil {
 		return false
 	}
 
-	info.ID = uint64(ep.ID)
-	info.Identity = uint64(ep.GetIdentity())
-	info.Labels = ep.GetLabels()
-	info.LabelsSHA256 = ep.GetLabelsSHA()
-
-	ep.RUnlock()
+	info.ID = id
+	info.IPv4 = ipv4
+	info.IPv6 = ipv6
+	info.Labels = labels
+	info.LabelsSHA256 = labelsSHA256
+	info.Identity = identity
 	return true
 }

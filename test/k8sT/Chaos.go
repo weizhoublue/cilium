@@ -27,20 +27,22 @@ import (
 var _ = Describe("K8sChaosTest", func() {
 
 	var (
-		kubectl       *helpers.Kubectl
-		demoDSPath    = helpers.ManifestGet("demo_ds.yaml")
-		testDSService = "testds-service"
+		kubectl        *helpers.Kubectl
+		demoDSPath     string
+		ciliumFilename string
+		testDSService  = "testds-service"
 	)
 
 	BeforeAll(func() {
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
-		ProvisionInfraPods(kubectl)
+		demoDSPath = helpers.ManifestGet(kubectl.BasePath(), "demo_ds.yaml")
+
+		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
+		DeployCiliumAndDNS(kubectl, ciliumFilename)
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.KubeSystemNamespace,
-			"cilium service list",
-			"cilium endpoint list")
+		kubectl.CiliumReport("cilium service list", "cilium endpoint list")
 	})
 
 	JustAfterEach(func() {
@@ -48,20 +50,21 @@ var _ = Describe("K8sChaosTest", func() {
 	})
 
 	AfterAll(func() {
-		ExpectAllPodsTerminated(kubectl)
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
+		kubectl.CloseSSHClient()
 	})
 
 	Context("Connectivity demo application", func() {
 		BeforeEach(func() {
-			kubectl.Apply(demoDSPath).ExpectSuccess("DS deployment cannot be applied")
+			kubectl.ApplyDefault(demoDSPath).ExpectSuccess("DS deployment cannot be applied")
 
 			err := kubectl.WaitforPods(
-				helpers.DefaultNamespace, fmt.Sprintf("-l zgroup=testDS"), helpers.HelperTimeout)
+				helpers.DefaultNamespace, "-l zgroup=testDS", helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Pods are not ready after timeout")
 		})
 
 		AfterEach(func() {
-			kubectl.Delete(demoDSPath).ExpectSuccess(
+			kubectl.DeleteLong(demoDSPath).ExpectSuccess(
 				"%s deployment cannot be deleted", demoDSPath)
 			ExpectAllPodsTerminated(kubectl)
 
@@ -116,7 +119,7 @@ var _ = Describe("K8sChaosTest", func() {
 			By("Waiting for deployed pods to be ready")
 			err := kubectl.WaitforPods(
 				helpers.DefaultNamespace,
-				fmt.Sprintf("-l zgroup=testDSClient"), helpers.HelperTimeout)
+				"-l zgroup=testDSClient", helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Pods are not ready after timeout")
 
 			err = kubectl.CiliumEndpointWaitReady()
@@ -127,7 +130,7 @@ var _ = Describe("K8sChaosTest", func() {
 
 			By("Deleting cilium pods")
 			res := kubectl.Exec(fmt.Sprintf("%s -n %s delete pods -l k8s-app=cilium",
-				helpers.KubectlCmd, helpers.KubeSystemNamespace))
+				helpers.KubectlCmd, helpers.CiliumNamespace))
 			res.ExpectSuccess()
 
 			ExpectAllPodsTerminated(kubectl)
@@ -142,7 +145,7 @@ var _ = Describe("K8sChaosTest", func() {
 			By("Uninstall cilium pods")
 
 			res = kubectl.DeleteResource(
-				"ds", fmt.Sprintf("-n %s cilium", helpers.KubeSystemNamespace))
+				"ds", fmt.Sprintf("-n %s cilium", helpers.CiliumNamespace))
 			res.ExpectSuccess("Cilium DS cannot be deleted")
 
 			ExpectAllPodsTerminated(kubectl)
@@ -150,9 +153,8 @@ var _ = Describe("K8sChaosTest", func() {
 			By("Checking connectivity after uninstalling Cilium")
 			connectivityTest()
 
-			By("Install cilium pods")
-
-			err = kubectl.CiliumInstall(helpers.CiliumDefaultDSPatch, helpers.CiliumConfigMapPatch)
+			By("Reinstall cilium DaemonSet")
+			err = kubectl.CiliumInstall(ciliumFilename, map[string]string{})
 			Expect(err).To(BeNil(), "Cilium cannot be installed")
 
 			ExpectCiliumReady(kubectl)
@@ -168,8 +170,8 @@ var _ = Describe("K8sChaosTest", func() {
 	Context("Restart with long lived connections", func() {
 
 		var (
-			netperfManifest    = helpers.ManifestGet("netperf-deployment.yaml")
-			netperfPolicy      = helpers.ManifestGet("netperf-policy.yaml")
+			netperfManifest    string
+			netperfPolicy      string
 			netperfServiceName = "netperf-service"
 			podsIps            map[string]string
 			netperfClient      = "netperf-client"
@@ -177,11 +179,14 @@ var _ = Describe("K8sChaosTest", func() {
 		)
 
 		BeforeAll(func() {
-			kubectl.Apply(netperfManifest).ExpectSuccess("Netperf cannot be deployed")
+			netperfManifest = helpers.ManifestGet(kubectl.BasePath(), "netperf-deployment.yaml")
+			netperfPolicy = helpers.ManifestGet(kubectl.BasePath(), "netperf-policy.yaml")
+
+			kubectl.ApplyDefault(netperfManifest).ExpectSuccess("Netperf cannot be deployed")
 
 			err := kubectl.WaitforPods(
 				helpers.DefaultNamespace,
-				fmt.Sprintf("-l zgroup=testapp"), helpers.HelperTimeout)
+				"-l zgroup=testapp", helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Pods are not ready after timeout")
 
 			podsIps, err = kubectl.GetPodsIPs(helpers.DefaultNamespace, "zgroup=testapp")
@@ -205,7 +210,7 @@ var _ = Describe("K8sChaosTest", func() {
 			By("Deleting all cilium pods")
 			res := kubectl.Exec(fmt.Sprintf(
 				"%s -n %s delete pods -l %s",
-				helpers.KubectlCmd, helpers.KubeSystemNamespace, ciliumFilter))
+				helpers.KubectlCmd, helpers.CiliumNamespace, ciliumFilter))
 			res.ExpectSuccess("Failed to delete cilium pods")
 
 			By("Waiting cilium pods to terminate")
@@ -213,7 +218,7 @@ var _ = Describe("K8sChaosTest", func() {
 
 			By("Waiting for cilium pods to be ready")
 			err := kubectl.WaitforPods(
-				helpers.KubeSystemNamespace, fmt.Sprintf("-l %s", ciliumFilter), helpers.HelperTimeout)
+				helpers.CiliumNamespace, fmt.Sprintf("-l %s", ciliumFilter), helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Pods are not ready after timeout")
 
 			err = kubectl.CiliumEndpointWaitReady()
@@ -223,16 +228,15 @@ var _ = Describe("K8sChaosTest", func() {
 		It("TCP connection is not dropped when cilium restarts", func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			res := kubectl.ExecPodCmdContext(
+			res := kubectl.ExecPodCmdBackground(
 				ctx,
 				helpers.DefaultNamespace,
 				netperfClient,
-				fmt.Sprintf("netperf -l 300 -t TCP_STREAM -H %s", podsIps[netperfServer]))
+				fmt.Sprintf("netperf -l 60 -t TCP_STREAM -H %s", podsIps[netperfServer]))
 
 			restartCilium()
 
 			By("Stopping netperf client test")
-			cancel()
 			res.WaitUntilFinish()
 			res.ExpectSuccess("Failed while cilium was restarting")
 		})
@@ -241,21 +245,20 @@ var _ = Describe("K8sChaosTest", func() {
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			res := kubectl.ExecPodCmdContext(
+			res := kubectl.ExecPodCmdBackground(
 				ctx,
 				helpers.DefaultNamespace,
 				netperfClient,
-				fmt.Sprintf("netperf -l 300 -t TCP_STREAM -H %s", podsIps[netperfServer]))
+				fmt.Sprintf("netperf -l 60 -t TCP_STREAM -H %s", podsIps[netperfServer]))
 
 			By("Installing the L3-L4 Policy")
 			_, err := kubectl.CiliumPolicyAction(
-				helpers.KubeSystemNamespace, netperfPolicy, helpers.KubectlApply, helpers.HelperTimeout)
+				helpers.DefaultNamespace, netperfPolicy, helpers.KubectlApply, helpers.HelperTimeout)
 			Expect(err).Should(BeNil(), "Cannot install %q policy", netperfPolicy)
 
 			restartCilium()
 
 			By("Stopping netperf client test")
-			cancel()
 			res.WaitUntilFinish()
 			res.ExpectSuccess("Failed while cilium was restarting")
 		})

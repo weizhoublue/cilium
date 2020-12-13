@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"github.com/cilium/cilium/pkg/api"
 	"github.com/cilium/cilium/pkg/command"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
+	"github.com/cilium/cilium/pkg/iana"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/k8s"
 	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
@@ -37,8 +39,6 @@ import (
 const (
 	defaultSecurityID = -1
 )
-
-type supportedKinds string
 
 var src, dst, dports []string
 var srcIdentity, dstIdentity int64
@@ -70,23 +70,12 @@ If multiple sources and / or destinations are provided, each source is tested wh
 			Usagef(cmd, "Missing destination argument")
 		}
 
-		// Parse provided labels
 		if len(src) > 0 {
-			srcSlice, err = parseLabels(src)
-			if err != nil {
-				Fatalf("Invalid source: %s", err)
-			}
-
-			srcSlices = append(srcSlices, srcSlice)
+			srcSlices = append(srcSlices, src)
 		}
 
 		if len(dst) > 0 {
-			dstSlice, err = parseLabels(dst)
-			if err != nil {
-				Fatalf("Invalid destination: %s", err)
-			}
-
-			dstSlices = append(dstSlices, dstSlice)
+			dstSlices = append(dstSlices, dst)
 		}
 
 		if len(dports) > 0 {
@@ -143,9 +132,7 @@ If multiple sources and / or destinations are provided, each source is tested wh
 			if err != nil {
 				Fatalf("%s", err)
 			}
-			for _, v := range srcYamlSlices {
-				srcSlices = append(srcSlices, v)
-			}
+			srcSlices = append(srcSlices, srcYamlSlices...)
 		}
 
 		if dstK8sYaml != "" {
@@ -153,9 +140,7 @@ If multiple sources and / or destinations are provided, each source is tested wh
 			if err != nil {
 				Fatalf("%s", err)
 			}
-			for _, v := range dstYamlSlices {
-				dstSlices = append(dstSlices, v)
-			}
+			dstSlices = append(dstSlices, dstYamlSlices...)
 		}
 
 		for _, v := range srcSlices {
@@ -227,13 +212,6 @@ func appendEpLabelsToSlice(labelSlice []string, epID string) []string {
 	return append(labelSlice, lbls...)
 }
 
-func parseLabels(slice []string) ([]string, error) {
-	if len(slice) == 0 {
-		return nil, fmt.Errorf("No labels provided")
-	}
-	return slice, nil
-}
-
 func getSecIDFromK8s(podName string) (string, error) {
 	fmtdPodName := endpointid.NewID(endpointid.PodNamePrefix, podName)
 	_, _, err := endpointid.Parse(fmtdPodName)
@@ -262,7 +240,7 @@ func getSecIDFromK8s(podName string) (string, error) {
 		return "", fmt.Errorf("unable to create k8s client: %s", err)
 	}
 
-	ep, err := ciliumK8sClient.CiliumV2().CiliumEndpoints(namespace).Get(pod, meta_v1.GetOptions{})
+	ep, err := ciliumK8sClient.CiliumV2().CiliumEndpoints(namespace).Get(context.TODO(), pod, meta_v1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("unable to get pod %s in namespace %s", pod, namespace)
 	}
@@ -276,7 +254,7 @@ func getSecIDFromK8s(podName string) (string, error) {
 }
 
 // parseL4PortsSlice parses a given `slice` of strings. Each string should be in
-// the form of `<port>[/<protocol>]`, where the `<port>` is an integer and
+// the form of `<port>[/<protocol>]`, where the `<port>` is an integer or a port name and
 // `<protocol>` is an optional layer 4 protocol `tcp` or `udp`. In case
 // `protocol` is not present, or is set to `any`, the parsed port will be set to
 // `models.PortProtocolAny`.
@@ -298,13 +276,19 @@ func parseL4PortsSlice(slice []string) ([]*models.Port, error) {
 		default:
 			return nil, fmt.Errorf("invalid format %q. Should be <port>[/<protocol>]", v)
 		}
+		port := 0
 		portStr := vSplit[0]
-		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid port %q: %s", portStr, err)
+		if !iana.IsSvcName(portStr) {
+			var err error
+			port, err = strconv.Atoi(portStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid port %q: %s", portStr, err)
+			}
+			portStr = ""
 		}
 		l4 := &models.Port{
 			Port:     uint16(port),
+			Name:     portStr,
 			Protocol: protoStr,
 		}
 		rules = append(rules, l4)

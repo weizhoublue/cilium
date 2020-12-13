@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,11 +20,11 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/debug"
+	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/lock"
-	uuidfactor "github.com/cilium/cilium/pkg/uuid"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/pborman/uuid"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
@@ -38,11 +38,15 @@ var (
 	// released lock. The only possibility of concurrent access is if a
 	// consumer is *still* holding the lock but this is highly unlikely
 	// given the duration of this timeout.
-	staleLockTimeout = time.Duration(30) * time.Second
+	staleLockTimeout = defaults.KVStoreStaleLockTimeout
 )
 
-type kvLocker interface {
-	Unlock() error
+type KVLocker interface {
+	Unlock(ctx context.Context) error
+	// Comparator returns an object that should be used by the KVStore to make
+	// sure if the lock is still valid for its client or nil if no such
+	// verification exists.
+	Comparator() interface{}
 }
 
 // getLockPath returns the lock path representation of the given path.
@@ -61,13 +65,6 @@ type pathLocks struct {
 }
 
 func init() {
-	go func() {
-		for {
-			kvstoreLocks.runGC()
-			time.Sleep(staleLockTimeout)
-		}
-	}()
-
 	debug.RegisterStatusObject("kvstore-locks", &kvstoreLocks)
 }
 
@@ -95,7 +92,7 @@ func (pl *pathLocks) lock(ctx context.Context, path string) (id uuid.UUID, err e
 	for {
 		pl.mutex.Lock()
 		if _, ok := pl.lockPaths[path]; !ok {
-			id = uuidfactor.NewUUID()
+			id = uuid.New()
 			pl.lockPaths[path] = lockOwner{
 				created: time.Now(),
 				id:      id,
@@ -116,7 +113,7 @@ func (pl *pathLocks) lock(ctx context.Context, path string) (id uuid.UUID, err e
 
 func (pl *pathLocks) unlock(path string, id uuid.UUID) {
 	pl.mutex.Lock()
-	if owner, ok := pl.lockPaths[path]; ok && uuid.Equal(owner.id, id) {
+	if owner, ok := pl.lockPaths[path]; ok && owner.id == id {
 		delete(pl.lockPaths, path)
 	}
 	pl.mutex.Unlock()
@@ -126,7 +123,7 @@ func (pl *pathLocks) unlock(path string, id uuid.UUID) {
 type Lock struct {
 	path   string
 	id     uuid.UUID
-	kvLock kvLocker
+	kvLock KVLocker
 }
 
 // LockPath locks the specified path. The key for the lock is not the path
@@ -134,13 +131,13 @@ type Lock struct {
 // returned also contains a patch specific local Mutex which will be held.
 //
 // It is required to call Unlock() on the returned Lock to unlock
-func LockPath(ctx context.Context, path string) (l *Lock, err error) {
+func LockPath(ctx context.Context, backend BackendOperations, path string) (l *Lock, err error) {
 	id, err := kvstoreLocks.lock(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 
-	lock, err := Client().LockPath(ctx, path)
+	lock, err := backend.LockPath(ctx, path)
 	if err != nil {
 		kvstoreLocks.unlock(path, id)
 		Trace("Failed to lock", err, logrus.Fields{fieldKey: path})
@@ -152,14 +149,21 @@ func LockPath(ctx context.Context, path string) (l *Lock, err error) {
 	return &Lock{kvLock: lock, path: path, id: id}, err
 }
 
+// RunLockGC inspects all local kvstore locks to determine whether they have
+// been held longer than the stale lock timeout, and if so, unlocks them
+// forceably.
+func RunLockGC() {
+	kvstoreLocks.runGC()
+}
+
 // Unlock unlocks a lock
-func (l *Lock) Unlock() error {
+func (l *Lock) Unlock(ctx context.Context) error {
 	if l == nil {
 		return nil
 	}
 
 	// Unlock kvstore mutex first
-	err := l.kvLock.Unlock()
+	err := l.kvLock.Unlock(ctx)
 	if err != nil {
 		log.WithError(err).WithField("path", l.path).Error("Unable to unlock kvstore lock")
 	}
@@ -169,4 +173,8 @@ func (l *Lock) Unlock() error {
 	Trace("Unlocked", nil, logrus.Fields{fieldKey: l.path})
 
 	return err
+}
+
+func (l *Lock) Comparator() interface{} {
+	return l.kvLock.Comparator()
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,11 +20,6 @@ import (
 
 type healthNode struct {
 	*models.NodeElement
-
-	// During setNodes(), we perform mark-and-sweep to get rid of IPs that
-	// should no longer be probed. If deletionMark is true after the set
-	// of nodes is updated, this node can be removed.
-	deletionMark bool
 }
 
 // NewHealthNode creates a new node structure based on the specified model.
@@ -40,6 +35,26 @@ func (n *healthNode) PrimaryIP() string {
 		return n.NodeElement.PrimaryAddress.IPV4.IP
 	}
 	return n.NodeElement.PrimaryAddress.IPV6.IP
+}
+
+// SecondaryIPs return a list of IP addresses corresponding to secondary addresses
+// of the node. If both IPV4 and IPV6 is enabled then primary IPV6 is also
+// returned in the list, since in that case we assume that IPV4 is the primary
+// address of the node, see the above function PrimaryIP().
+func (n *healthNode) SecondaryIPs() []string {
+	var addresses []string
+
+	if n.NodeElement.PrimaryAddress.IPV4.Enabled && n.NodeElement.PrimaryAddress.IPV6.Enabled {
+		addresses = append(addresses, n.NodeElement.PrimaryAddress.IPV6.IP)
+	}
+
+	for _, addr := range n.NodeElement.SecondaryAddresses {
+		if addr.Enabled {
+			addresses = append(addresses, addr.IP)
+		}
+	}
+
+	return addresses
 }
 
 // HealthIP returns the IP address of the health endpoint for the node.

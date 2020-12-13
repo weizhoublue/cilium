@@ -26,10 +26,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cilium/cilium/pkg/datapath/linux"
+	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/datapath/linux/config"
+	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/elf"
-	bpfconfig "github.com/cilium/cilium/pkg/maps/configmap"
+	"github.com/cilium/cilium/pkg/maps/callsmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/testutils"
 
 	"github.com/vishvananda/netlink"
@@ -46,6 +50,7 @@ var (
 
 	dirInfo *directoryInfo
 	ep      = testutils.NewTestEndpoint()
+	hostEp  = testutils.NewTestHostEndpoint()
 	bpfDir  = filepath.Join(testutils.CiliumRootDir, "bpf")
 )
 
@@ -64,24 +69,29 @@ func (s *LoaderTestSuite) SetUpSuite(c *C) {
 		fmt.Sprintf("-I%s", filepath.Join(bpfDir, "include")),
 	})
 
-	sourceFile := filepath.Join(bpfDir, endpointProg)
-	err := os.Symlink(sourceFile, endpointProg)
+	err := bpf.ConfigureResourceLimits()
 	c.Assert(err, IsNil)
+	sourceFile := filepath.Join(bpfDir, endpointProg)
+	err = os.Symlink(sourceFile, endpointProg)
+	c.Assert(err, IsNil)
+	sourceFile = filepath.Join(bpfDir, hostEndpointProg)
+	err = os.Symlink(sourceFile, hostEndpointProg)
+	c.Assert(err, IsNil)
+
+	// Set datapath in ipvlan mode to avoid loading the second master device.
+	// Loading that second device requires a proper compilation of the
+	// bpf_host.o object file with the adtual endpoint configurations, and not
+	// just the template compilation as we test here.
+	option.Config.DatapathMode = datapathOption.DatapathModeIpvlan
 }
 
 func (s *LoaderTestSuite) TearDownSuite(c *C) {
 	SetTestIncludes(nil)
 	os.RemoveAll(endpointProg)
+	os.RemoveAll(hostEndpointProg)
 }
 
 func (s *LoaderTestSuite) TearDownTest(c *C) {
-	// Old map names as created by older versions of these tests
-	//
-	// FIXME GH-6701: Remove for 1.5.0
-	os.Remove("/sys/fs/bpf/tc/globals/cilium_policy_foo")
-	os.Remove("/sys/fs/bpf/tc/globals/cilium_calls_111")
-	os.Remove("/sys/fs/bpf/tc/globals/cilium_ep_config_111")
-
 	files, err := filepath.Glob("/sys/fs/bpf/tc/globals/test_*")
 	if err != nil {
 		panic(err)
@@ -158,14 +168,26 @@ func getDirs(tmpDir string) *directoryInfo {
 	}
 }
 
-// TestCompileAndLoad checks that the datapath can be compiled and loaded.
-func (s *LoaderTestSuite) TestCompileAndLoad(c *C) {
+func (s *LoaderTestSuite) testCompileAndLoad(c *C, ep *testutils.TestEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
-	stats := &SpanStat{}
+	stats := &metrics.SpanStat{}
 
-	err := compileAndLoad(ctx, &ep, dirInfo, stats)
+	l := &Loader{}
+	err := l.compileAndLoad(ctx, ep, dirInfo, stats)
 	c.Assert(err, IsNil)
+}
+
+// TestCompileAndLoadDefaultEndpoint checks that the datapath can be compiled
+// and loaded.
+func (s *LoaderTestSuite) TestCompileAndLoadDefaultEndpoint(c *C) {
+	s.testCompileAndLoad(c, &ep)
+}
+
+// TestCompileAndLoadHostEndpoint is the same as
+// TestCompileAndLoadDefaultEndpoint, but for the host endpoint.
+func (s *LoaderTestSuite) TestCompileAndLoadHostEndpoint(c *C) {
+	s.testCompileAndLoad(c, &hostEp)
 }
 
 // TestReload compiles and attaches the datapath multiple times.
@@ -173,24 +195,23 @@ func (s *LoaderTestSuite) TestReload(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	err := compileDatapath(ctx, dirInfo, true, log)
+	err := compileDatapath(ctx, dirInfo, false, log)
 	c.Assert(err, IsNil)
 
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
-	err = replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress)
+	l := &Loader{}
+	err = l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress)
 	c.Assert(err, IsNil)
 
-	err = replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress)
+	err = l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress)
 	c.Assert(err, IsNil)
 }
 
-// TestCompileFailure attempts to compile then cancels the context and ensures
-// that the failure paths may be hit.
-func (s *LoaderTestSuite) TestCompileFailure(c *C) {
+func (s *LoaderTestSuite) testCompileFailure(c *C, ep *testutils.TestEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	exit := make(chan bool)
+	exit := make(chan struct{})
 	defer close(exit)
 	go func() {
 		select {
@@ -201,13 +222,26 @@ func (s *LoaderTestSuite) TestCompileFailure(c *C) {
 		}
 	}()
 
+	l := &Loader{}
 	timeout := time.Now().Add(contextTimeout)
 	var err error
-	stats := &SpanStat{}
+	stats := &metrics.SpanStat{}
 	for err == nil && time.Now().Before(timeout) {
-		err = compileAndLoad(ctx, &ep, dirInfo, stats)
+		err = l.compileAndLoad(ctx, ep, dirInfo, stats)
 	}
 	c.Assert(err, NotNil)
+}
+
+// TestCompileFailureDefaultEndpoint attempts to compile then cancels the
+// context and ensures that the failure paths may be hit.
+func (s *LoaderTestSuite) TestCompileFailureDefaultEndpoint(c *C) {
+	s.testCompileFailure(c, &ep)
+}
+
+// TestCompileFailureHostEndpoint is the same as
+// TestCompileFailureDefaultEndpoint, but for the host endpoint.
+func (s *LoaderTestSuite) TestCompileFailureHostEndpoint(c *C) {
+	s.testCompileFailure(c, &hostEp)
 }
 
 // BenchmarkCompileOnly benchmarks the just the entire compilation process.
@@ -217,8 +251,7 @@ func BenchmarkCompileOnly(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		debug := false // Otherwise we compile lots more.
-		if err := compileDatapath(ctx, dirInfo, debug, log); err != nil {
+		if err := compileDatapath(ctx, dirInfo, false, log); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -226,13 +259,15 @@ func BenchmarkCompileOnly(b *testing.B) {
 
 // BenchmarkCompileAndLoad benchmarks the entire compilation + loading process.
 func BenchmarkCompileAndLoad(b *testing.B) {
-	stats := &SpanStat{}
+	stats := &metrics.SpanStat{}
 	ctx, cancel := context.WithTimeout(context.Background(), benchTimeout)
 	defer cancel()
 
+	l := &Loader{}
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := compileAndLoad(ctx, &ep, dirInfo, stats); err != nil {
+		if err := l.compileAndLoad(ctx, &ep, dirInfo, stats); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -247,10 +282,12 @@ func BenchmarkReplaceDatapath(b *testing.B) {
 	if err := compileDatapath(ctx, dirInfo, false, log); err != nil {
 		b.Fatal(err)
 	}
+
+	l := &Loader{}
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress); err != nil {
+		if err := l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -275,8 +312,7 @@ func BenchmarkCompileOrLoad(b *testing.B) {
 
 	elfMapPrefixes = []string{
 		fmt.Sprintf("test_%s", policymap.MapName),
-		fmt.Sprintf("test_%s", CallsMapName),
-		fmt.Sprintf("test_%s", bpfconfig.MapNamePrefix),
+		fmt.Sprintf("test_%s", callsmap.MapName),
 	}
 
 	sourceFile := filepath.Join(bpfDir, endpointProg)
@@ -300,15 +336,16 @@ func BenchmarkCompileOrLoad(b *testing.B) {
 	}
 	defer os.RemoveAll(epDir)
 
-	templateCache = newObjectCache(linux.NewDatapath(linux.DatapathConfiguration{}), nil, tmpDir)
-	if err := CompileOrLoad(ctx, &ep, nil); err != nil {
+	l := &Loader{}
+	l.templateCache = newObjectCache(&config.HeaderfileWriter{}, nil, tmpDir)
+	if err := l.CompileOrLoad(ctx, &ep, nil); err != nil {
 		log.Warningf("Failure in %s: %s", tmpDir, err)
 		time.Sleep(1 * time.Minute)
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := CompileOrLoad(ctx, &ep, nil); err != nil {
+		if err := l.CompileOrLoad(ctx, &ep, nil); err != nil {
 			b.Fatal(err)
 		}
 	}

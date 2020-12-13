@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _gs_guide:
 
@@ -23,28 +23,31 @@ Installation
    :maxdepth: 1
    :glob:
 
-   minikube
-   microk8s
+   k8s-install-sandbox
    k8s-install-self-managed
    k8s-install-managed
    k8s-installers
    cni-chaining
+   external-workloads
 
-Security Tutorials
-------------------
+Network Policy Security Tutorials
+---------------------------------
 
 .. toctree::
    :maxdepth: 1
    :glob:
 
    http
-   dns 
+   dns
+   tls-visibility
    kafka
    grpc
    elasticsearch
    cassandra
    memcached
    aws
+   policy-creation
+   host-firewall
 
 Advanced Networking
 -------------------
@@ -52,11 +55,19 @@ Advanced Networking
    :maxdepth: 1
    :glob:
 
+   aws-eni
    kube-router
+   bird
    clustermesh
    flannel-integration
    ipvlan
    encryption
+   host-services
+   kubeproxy-free
+   bandwidth-manager
+   kata
+   ipam
+   local-redirect-policy
 
 Operations
 ----------
@@ -65,6 +76,7 @@ Operations
    :maxdepth: 1
    :glob:
 
+   hubble
    grafana
 
 Istio
@@ -84,9 +96,7 @@ Other Orchestrators
    :glob:
 
    docker
-   mesos
 
 The best way to get help if you get stuck is to ask a question on the `Cilium
 Slack channel <https://cilium.herokuapp.com>`_.  With Cilium contributors
 across the globe, there is almost always someone available to help.
-

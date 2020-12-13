@@ -19,14 +19,20 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/metrics"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
-const (
-	metricLabelReason = "reason"
-)
+// MetricsObserver is the interface a metrics collector has to implement in
+// order to collect trigger metrics
+type MetricsObserver interface {
+	// PostRun is called after a trigger run with the call duration, the
+	// latency between 1st queue request and the call run and the number of
+	// queued events folded into the last run
+	PostRun(callDuration, latency time.Duration, folds int)
+
+	// QueueEvent is called when Trigger() is called to schedule a trigger
+	// run
+	QueueEvent(reason string)
+}
 
 // Parameters are the user specified parameters
 type Parameters struct {
@@ -38,8 +44,7 @@ type Parameters struct {
 	// while respecting MinInterval and serialization
 	TriggerFunc func(reasons []string)
 
-	// PrometheusMetrics enables use of a prometheus metric. Name must be set
-	PrometheusMetrics bool
+	MetricsObserver MetricsObserver
 
 	// Name is the unique name of the trigger. It must be provided in a
 	// format compatible to be used as prometheus name string.
@@ -84,14 +89,10 @@ type Trigger struct {
 	lastTrigger time.Time
 
 	// wakeupCan is used to wake up the background trigger routine
-	wakeupChan chan bool
+	wakeupChan chan struct{}
 
 	// closeChan is used to stop the background trigger routine
 	closeChan chan struct{}
-
-	triggerReasons metrics.CounterVec
-	triggerFolds   prometheus.Gauge
-	callDurations  prometheus.ObserverVec
 
 	// numFolds is the current count of folds that happened into the
 	// currently scheduled trigger
@@ -113,13 +114,9 @@ func NewTrigger(p Parameters) (*Trigger, error) {
 		return nil, fmt.Errorf("trigger function is nil")
 	}
 
-	if p.PrometheusMetrics && p.Name == "" {
-		return nil, fmt.Errorf("trigger name must be provided when enabling metrics")
-	}
-
 	t := &Trigger{
 		params:        p,
-		wakeupChan:    make(chan bool, 1),
+		wakeupChan:    make(chan struct{}, 1),
 		closeChan:     make(chan struct{}, 1),
 		foldedReasons: newReasonStack(),
 	}
@@ -127,44 +124,6 @@ func NewTrigger(p Parameters) (*Trigger, error) {
 	// Guarantee that initial trigger has no delay
 	if p.MinInterval > time.Duration(0) {
 		t.lastTrigger = time.Now().Add(-1 * p.MinInterval)
-	}
-
-	if p.PrometheusMetrics {
-		t.triggerReasons = prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: "triggers",
-			Name:      p.Name + "_total",
-			Help:      "Total number of trigger invocations labelled by reason",
-		}, []string{metricLabelReason})
-
-		if err := metrics.Register(t.triggerReasons); err != nil {
-			return nil, fmt.Errorf("unable to register prometheus collector: %s", err)
-		}
-
-		t.triggerFolds = prometheus.NewGauge(prometheus.GaugeOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: "triggers",
-			Name:      p.Name + "_folds",
-			Help:      "Current level of trigger folds",
-		})
-
-		if err := metrics.Register(t.triggerFolds); err != nil {
-			metrics.Unregister(t.triggerReasons)
-			return nil, fmt.Errorf("unable to register prometheus collector: %s", err)
-		}
-
-		t.callDurations = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: "triggers",
-			Name:      p.Name + "_call_duration_seconds",
-			Help:      "Length of duration trigger used to execute",
-		}, []string{"type"})
-
-		if err := metrics.Register(t.callDurations); err != nil {
-			metrics.Unregister(t.triggerReasons)
-			metrics.Unregister(t.triggerFolds)
-			return nil, err
-		}
 	}
 
 	go t.waiter()
@@ -197,12 +156,12 @@ func (t *Trigger) TriggerWithReason(reason string) {
 	t.foldedReasons.add(reason)
 	t.mutex.Unlock()
 
-	if t.params.PrometheusMetrics {
-		t.triggerReasons.WithLabelValues(reason).Inc()
+	if t.params.MetricsObserver != nil {
+		t.params.MetricsObserver.QueueEvent(reason)
 	}
 
 	select {
-	case t.wakeupChan <- true:
+	case t.wakeupChan <- struct{}{}:
 	default:
 	}
 }
@@ -218,11 +177,6 @@ func (t *Trigger) Trigger() {
 // Shutdown stops the trigger mechanism
 func (t *Trigger) Shutdown() {
 	close(t.closeChan)
-	if t.params.PrometheusMetrics {
-		metrics.Unregister(t.triggerReasons)
-		metrics.Unregister(t.triggerFolds)
-		metrics.Unregister(t.callDurations)
-	}
 }
 
 func (t *Trigger) waiter() {
@@ -251,11 +205,9 @@ func (t *Trigger) waiter() {
 			beforeTrigger := time.Now()
 			t.params.TriggerFunc(reasons)
 
-			if t.params.PrometheusMetrics {
+			if t.params.MetricsObserver != nil {
 				callDuration := time.Since(beforeTrigger)
-				t.callDurations.WithLabelValues("duration").Observe(callDuration.Seconds())
-				t.callDurations.WithLabelValues("latency").Observe(callLatency.Seconds())
-				t.triggerFolds.Set(float64(numFolds))
+				t.params.MetricsObserver.PostRun(callDuration, callLatency, numFolds)
 			}
 		}
 

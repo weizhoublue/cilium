@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +17,11 @@ package api
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
+
+	"github.com/miekg/dns"
 )
 
 var (
@@ -28,11 +31,25 @@ var (
 	// allowedPatternChars tests that the MatchPattern field contains only the
 	// characters we want in our wilcard scheme.
 	allowedPatternChars = regexp.MustCompile("^[-a-zA-Z0-9.*]+$") // the * inside the [] is a literal *
+
+	// FQDNMatchNameRegexString is a regex string which matches what's expected
+	// in the MatchName field in the FQDNSelector. This should be kept in-sync
+	// with the marker comment for validation. There's no way to use a Golang
+	// variable in the marker comment, so it's left up to the developer.
+	FQDNMatchNameRegexString = `^([-a-zA-Z0-9_]+[.]?)+$`
+
+	// FQDNMatchPatternRegexString is a regex string which matches what's expected
+	// in the MatchPattern field in the FQDNSelector. This should be kept in-sync
+	// with the marker comment for validation. There's no way to use a Golang
+	// variable in the marker comment, so it's left up to the developer.
+	FQDNMatchPatternRegexString = `^([-a-zA-Z0-9_*]+[.]?)+$`
 )
 
 type FQDNSelector struct {
 	// MatchName matches literal DNS names. A trailing "." is automatically added
 	// when missing.
+	//
+	// +kubebuilder:validation:Pattern=`^([-a-zA-Z0-9_]+[.]?)+$`
 	MatchName string `json:"matchName,omitempty"`
 
 	// MatchPattern allows using wildcards to match DNS names. All wildcards are
@@ -51,11 +68,13 @@ type FQDNSelector struct {
 	// begins with "sub"
 	//   sub.cilium.io and subdomain.cilium.io match, www.cilium.io,
 	//   blog.cilium.io, cilium.io and google.com do not
+	//
+	// +kubebuilder:validation:Pattern=`^([-a-zA-Z0-9_*]+[.]?)+$`
 	MatchPattern string `json:"matchPattern,omitempty"`
 }
 
 func (s *FQDNSelector) String() string {
-	return fmt.Sprintf("MatchName: %s, MatchPattern %s", s.MatchName, s.MatchPattern)
+	return fmt.Sprintf("MatchName: %s, MatchPattern: %s", s.MatchName, s.MatchPattern)
 }
 
 // sanitize for FQDNSelector is a little wonky. While we do more processing
@@ -74,6 +93,21 @@ func (s *FQDNSelector) sanitize() error {
 	}
 	_, err := matchpattern.Validate(s.MatchPattern)
 	return err
+}
+
+// ToRegex converts the given FQDNSelector to its corresponding regular
+// expression. If the MatchName field is set in the selector, it performs all
+// needed formatting to ensure that the field is a valid regular expression.
+func (s *FQDNSelector) ToRegex() (*regexp.Regexp, error) {
+	var preparedMatch string
+	if s.MatchName != "" {
+		preparedMatch = strings.ToLower(dns.Fqdn(s.MatchName))
+	} else {
+		preparedMatch = matchpattern.Sanitize(s.MatchPattern)
+	}
+
+	regex, err := matchpattern.Validate(preparedMatch)
+	return regex, err
 }
 
 // PortRuleDNS is a list of allowed DNS lookups.
@@ -99,7 +133,7 @@ func (r *PortRuleDNS) Sanitize() error {
 // any toFQDNs rules means the endpoint must enforce policy, but the IPs are later
 // added as toCIDRSet entries and processed as such.
 func (s *FQDNSelector) GetAsEndpointSelectors() EndpointSelectorSlice {
-	return []EndpointSelector{endpointSelectorNone}
+	return []EndpointSelector{EndpointSelectorNone}
 }
 
 // FQDNSelectorSlice is a wrapper type for []FQDNSelector to make is simpler to

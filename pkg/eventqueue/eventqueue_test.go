@@ -84,8 +84,9 @@ func (s *EventQueueSuite) TestDrained(c *C) {
 
 func (s *EventQueueSuite) TestNilEvent(c *C) {
 	q := NewEventQueue()
-	res := q.Enqueue(nil)
+	res, err := q.Enqueue(nil)
 	c.Assert(res, IsNil)
+	c.Assert(err, Not(IsNil))
 }
 
 func (s *EventQueueSuite) TestNewEvent(c *C) {
@@ -105,14 +106,16 @@ func (s *EventQueueSuite) TestEventCancelAfterQueueClosed(c *C) {
 	q := NewEventQueue()
 	q.Run()
 	ev := NewEvent(&DummyEvent{})
-	q.Enqueue(ev)
+	_, err := q.Enqueue(ev)
+	c.Assert(err, IsNil)
 
 	// Event should not have been cancelled since queue was not closed.
 	c.Assert(ev.WasCancelled(), Equals, false)
 	q.Stop()
 
 	ev = NewEvent(&DummyEvent{})
-	q.Enqueue(ev)
+	_, err = q.Enqueue(ev)
+	c.Assert(err, IsNil)
 	c.Assert(ev.WasCancelled(), Equals, true)
 }
 
@@ -142,19 +145,25 @@ func (s *EventQueueSuite) TestDrain(c *C) {
 	nh3 := CreateHangEvent()
 
 	ev := NewEvent(nh1)
-	q.Enqueue(ev)
+	_, err := q.Enqueue(ev)
+	c.Assert(err, IsNil)
 
 	ev2 := NewEvent(nh2)
 	ev3 := NewEvent(nh3)
 
-	q.Enqueue(ev2)
+	_, err = q.Enqueue(ev2)
+	c.Assert(err, IsNil)
 
-	var rcvChan <-chan interface{}
+	var (
+		rcvChan <-chan interface{}
+		err2    error
+	)
 
 	enq := make(chan struct{})
 
 	go func() {
-		rcvChan = q.Enqueue(ev3)
+		rcvChan, err2 = q.Enqueue(ev3)
+		c.Assert(err2, IsNil)
 		enq <- struct{}{}
 	}()
 
@@ -162,32 +171,69 @@ func (s *EventQueueSuite) TestDrain(c *C) {
 
 	// Ensure that the event is enqueued. Because nh2.Channel hasn't been closed
 	// We know that the event hasn't been handled yet.
-	select {
-	case <-enq:
-		break
-	}
+	<-enq
 
 	// Stop queue in goroutine so we don't block on all events being processed
 	// (because nh2 nor nh3 haven't had their channels closed yet).
 	go q.Stop()
 
 	// Ensure channel has began to drain after stopping.
-	select {
-	case <-q.drain:
-	}
+	<-q.drain
 
 	// Allow nh2 handling to unblock so we can wait for ev3 to be cancelled.
 	close(nh2.Channel)
 
 	// Event was drained, so it should have been cancelled.
-	select {
-	case _, ok := <-rcvChan:
-		c.Assert(ok, Equals, false)
-		c.Assert(ev3.WasCancelled(), Equals, true)
+	_, ok := <-rcvChan
+	c.Assert(ok, Equals, false)
+	c.Assert(ev3.WasCancelled(), Equals, true)
 
-		// Event wasn't processed because it was drained. See Handle() for
-		// NewHangEvent.
-		c.Assert(nh3.processed, Equals, false)
+	// Event wasn't processed because it was drained. See Handle() for
+	// NewHangEvent.
+	c.Assert(nh3.processed, Equals, false)
+}
+
+func (s *EventQueueSuite) TestEnqueueTwice(c *C) {
+	q := NewEventQueue()
+	q.Run()
+
+	ev := NewEvent(&DummyEvent{})
+	res, err := q.Enqueue(ev)
+	c.Assert(err, IsNil)
+	select {
+	case <-res:
+	case <-time.After(5 * time.Second):
+		c.Fail()
 	}
 
+	res, err = q.Enqueue(ev)
+	c.Assert(res, IsNil)
+	c.Assert(err, Not(IsNil))
+
+	q.Stop()
+	q.WaitToBeDrained()
+}
+
+func (s *EventQueueSuite) TestForcefulDraining(c *C) {
+	// This will test enqueuing an event when the queue was never run and was
+	// stopped and drained. The behavior expected is that the event will
+	// successfully be enqueued (channel returned is non-nil & no error), and
+	// after the event is stopped and drained, the returned channel will
+	// unblock.
+
+	q := NewEventQueue()
+
+	ev := NewEvent(&DummyEvent{})
+	res, err := q.Enqueue(ev)
+	c.Assert(res, Not(IsNil))
+	c.Assert(err, IsNil)
+
+	q.Stop()
+	q.WaitToBeDrained()
+
+	select {
+	case <-res:
+	case <-time.After(5 * time.Second):
+		c.Fail()
+	}
 }

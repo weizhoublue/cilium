@@ -11,17 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package aws
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 
+	"github.com/cilium/cilium/pkg/aws/endpoints"
+	"github.com/cilium/cilium/pkg/policy/api"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/external"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/cilium/cilium/pkg/policy/api"
 )
 
 const (
@@ -41,12 +45,12 @@ func init() {
 }
 
 // GetIPsFromGroup will return the list of the ips for the given group filter
-func GetIPsFromGroup(group *api.ToGroups) ([]net.IP, error) {
+func GetIPsFromGroup(ctx context.Context, group *api.ToGroups) ([]net.IP, error) {
 	result := []net.IP{}
 	if group.AWS == nil {
 		return result, fmt.Errorf("no aws data available")
 	}
-	return getInstancesIpsFromFilter(group.AWS)
+	return getInstancesIpsFromFilter(ctx, group.AWS)
 }
 
 // initializeAWSAccount retrieve the env variables from the runtime and it
@@ -58,12 +62,13 @@ func initializeAWSAccount(region string) (*aws.Config, error) {
 	}
 	cfg.Region = region
 	cfg.LogLevel = awsLogLevel
+	cfg.EndpointResolver = aws.EndpointResolverFunc(endpoints.Resolver)
 	return &cfg, nil
 }
 
 // getInstancesFromFilter returns the instances IPs in aws EC2 filter by the
 // given filter
-func getInstancesIpsFromFilter(filter *api.AWSGroup) ([]net.IP, error) {
+func getInstancesIpsFromFilter(ctx context.Context, filter *api.AWSGroup) ([]net.IP, error) {
 	region := filter.Region
 	if filter.Region == "" {
 		region = getDefaultRegion()
@@ -96,11 +101,11 @@ func getInstancesIpsFromFilter(filter *api.AWSGroup) ([]net.IP, error) {
 	}
 	svc := ec2.New(*cfg)
 	req := svc.DescribeInstancesRequest(input)
-	result, err := req.Send()
+	result, err := req.Send(ctx)
 	if err != nil {
 		return []net.IP{}, fmt.Errorf("Cannot retrieve aws information: %s", err)
 	}
-	return awsDumpIpsFromRequest(result), nil
+	return awsDumpIpsFromRequest(result.DescribeInstancesOutput), nil
 }
 
 // getDefaultRegion returns the given region of the default one.

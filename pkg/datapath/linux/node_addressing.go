@@ -1,4 +1,4 @@
-// Copyright 2018-2019 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,11 +19,53 @@ import (
 
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/defaults"
+	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/node"
+
+	"github.com/vishvananda/netlink"
 )
 
 // FIXME: This currently maps to the code in pkg/node/node_address.go. That
 // code should really move into this package.
+
+func listLocalAddresses(family int) ([]net.IP, error) {
+	ipsToExclude := node.GetExcludedIPs()
+	addrs, err := netlink.AddrList(nil, family)
+	if err != nil {
+		return nil, err
+	}
+
+	var addresses []net.IP
+
+	for _, addr := range addrs {
+		if addr.Scope == int(netlink.SCOPE_LINK) {
+			continue
+		}
+		if ip.IsExcluded(ipsToExclude, addr.IP) {
+			continue
+		}
+		if addr.IP.IsLoopback() {
+			continue
+		}
+
+		addresses = append(addresses, addr.IP)
+	}
+
+	if hostDevice, err := netlink.LinkByName(defaults.HostDevice); hostDevice != nil && err == nil {
+		addrs, err = netlink.AddrList(hostDevice, family)
+		if err != nil {
+			return nil, err
+		}
+		for _, addr := range addrs {
+			if addr.Scope == int(netlink.SCOPE_LINK) {
+				addresses = append(addresses, addr.IP)
+			}
+		}
+	}
+
+	return addresses, nil
+}
 
 type addressFamilyIPv4 struct{}
 
@@ -39,6 +81,18 @@ func (a *addressFamilyIPv4) AllocationCIDR() *cidr.CIDR {
 	return node.GetIPv4AllocRange()
 }
 
+func (a *addressFamilyIPv4) LocalAddresses() ([]net.IP, error) {
+	return listLocalAddresses(netlink.FAMILY_V4)
+}
+
+// LoadBalancerNodeAddresses returns all IPv4 node addresses on which the
+// loadbalancer should implement HostPort and NodePort services.
+func (a *addressFamilyIPv4) LoadBalancerNodeAddresses() []net.IP {
+	addrs := node.GetNodePortIPv4Addrs()
+	addrs = append(addrs, net.IPv4zero)
+	return addrs
+}
+
 type addressFamilyIPv6 struct{}
 
 func (a *addressFamilyIPv6) Router() net.IP {
@@ -51,6 +105,18 @@ func (a *addressFamilyIPv6) PrimaryExternal() net.IP {
 
 func (a *addressFamilyIPv6) AllocationCIDR() *cidr.CIDR {
 	return node.GetIPv6AllocRange()
+}
+
+func (a *addressFamilyIPv6) LocalAddresses() ([]net.IP, error) {
+	return listLocalAddresses(netlink.FAMILY_V6)
+}
+
+// LoadBalancerNodeAddresses returns all IPv6 node addresses on which the
+// loadbalancer should implement HostPort and NodePort services.
+func (a *addressFamilyIPv6) LoadBalancerNodeAddresses() []net.IP {
+	addrs := node.GetNodePortIPv6Addrs()
+	addrs = append(addrs, net.IPv6zero)
+	return addrs
 }
 
 type linuxNodeAddressing struct {

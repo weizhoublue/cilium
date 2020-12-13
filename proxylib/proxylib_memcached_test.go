@@ -30,7 +30,6 @@ import (
 )
 
 var setHelloText = []byte("set key 0 0 5\r\nhello\r\n")
-var setHelloTextNoreply = []byte("set key 0 0 5 noreply\r\nhello\r\n")
 
 var getKeysText = []byte("get key1 key2 key3\r\n")
 var gatKeysText = []byte("gat 5 key1 key2 key3\r\n")
@@ -144,7 +143,7 @@ func TestMemcache(t *testing.T) {
 		    remote_policies: 4
             l7_proto: "memcache"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 %s
 		      >
 		    >

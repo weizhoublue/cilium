@@ -1,26 +1,12 @@
-/*
- *  Copyright (C) 2016-2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 /*
  * Drop & error notification via perf event ring buffer
  *
  * API:
- * int send_drop_notify(skb, src, dst, dst_id, reason, exitcode, __u8 direction)
- * int send_drop_notify_error(skb, error, exitcode, __u8 direction)
+ * int send_drop_notify(ctx, src, dst, dst_id, reason, exitcode, __u8 direction)
+ * int send_drop_notify_error(ctx, error, exitcode, __u8 direction)
  *
  * If DROP_NOTIFY is not defined, the API will be compiled in as a NOP.
  */
@@ -35,50 +21,44 @@
 #include "metrics.h"
 
 #ifdef DROP_NOTIFY
-
 struct drop_notify {
-	NOTIFY_COMMON_HDR
-	__u32		len_orig;
-	__u32		len_cap;
+	NOTIFY_CAPTURE_HDR
 	__u32		src_label;
 	__u32		dst_label;
 	__u32		dst_id;
 	__u32		unused;
 };
 
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_DROP_NOTIFY) int __send_drop_notify(struct __sk_buff *skb)
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_DROP_NOTIFY)
+int __send_drop_notify(struct __ctx_buff *ctx)
 {
-	uint64_t skb_len = (uint64_t)skb->len, cap_len = min((uint64_t)TRACE_PAYLOAD_LEN, (uint64_t)skb_len);
-	uint32_t hash = get_hash_recalc(skb);
-	struct drop_notify msg = {
-		.type = CILIUM_NOTIFY_DROP,
-		.source = EVENT_SOURCE,
-		.hash = hash,
-		.len_orig = skb_len,
-		.len_cap = cap_len,
-		.src_label = skb->cb[0],
-		.dst_label = skb->cb[1],
-		.dst_id = skb->cb[3],
-		.unused = 0,
-	};
-	// mask needed to calm verifier
-	int error = skb->cb[2] & 0xFFFFFFFF;
+	/* Mask needed to calm verifier. */
+	int error = ctx_load_meta(ctx, 2) & 0xFFFFFFFF;
+	__u64 ctx_len = ctx_full_len(ctx);
+	__u64 cap_len = min_t(__u64, TRACE_PAYLOAD_LEN, ctx_len);
+	struct drop_notify msg;
 
 	if (error < 0)
 		error = -error;
 
-	msg.subtype = error;
+	msg = (typeof(msg)) {
+		__notify_common_hdr(CILIUM_NOTIFY_DROP, error),
+		__notify_pktcap_hdr(ctx_len, cap_len),
+		.src_label	= ctx_load_meta(ctx, 0),
+		.dst_label	= ctx_load_meta(ctx, 1),
+		.dst_id		= ctx_load_meta(ctx, 3),
+	};
 
-	skb_event_output(skb, &EVENTS_MAP,
+	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));
 
-	return skb->cb[4];
+	return ctx_load_meta(ctx, 4);
 }
 
 /**
  * send_drop_notify
- * @skb:	socket buffer
+ * @ctx:	socket buffer
  * @src:	source identity
  * @dst:	destination identity
  * @dst_id:	designated destination endpoint ID
@@ -89,37 +69,37 @@ __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_DROP_NOTIFY) int __send_drop_notify
  *
  * NOTE: This is terminal function and will cause the BPF program to exit
  */
-static inline int send_drop_notify(struct __sk_buff *skb, __u32 src, __u32 dst,
-				   __u32 dst_id, int reason, int exitcode, __u8 direction)
+static __always_inline int send_drop_notify(struct __ctx_buff *ctx, __u32 src,
+					    __u32 dst, __u32 dst_id, int reason,
+					    int exitcode, __u8 direction)
 {
-	skb->cb[0] = src;
-	skb->cb[1] = dst;
-	skb->cb[2] = reason;
-	skb->cb[3] = dst_id;
-	skb->cb[4] = exitcode;
+	ctx_store_meta(ctx, 0, src);
+	ctx_store_meta(ctx, 1, dst);
+	ctx_store_meta(ctx, 2, reason);
+	ctx_store_meta(ctx, 3, dst_id);
+	ctx_store_meta(ctx, 4, exitcode);
 
-	update_metrics(skb->len, direction, -reason);
-
-	ep_tail_call(skb, CILIUM_CALL_DROP_NOTIFY);
+	update_metrics(ctx_full_len(ctx), direction, -reason);
+	ep_tail_call(ctx, CILIUM_CALL_DROP_NOTIFY);
 
 	return exitcode;
 }
-
 #else
-
-static inline int send_drop_notify(struct __sk_buff *skb, __u32 src, __u32 dst,
-				   __u32 dst_id, int reason, int exitcode, __u8 direction)
+static __always_inline
+int send_drop_notify(struct __ctx_buff *ctx, __u32 src __maybe_unused,
+		     __u32 dst __maybe_unused, __u32 dst_id __maybe_unused,
+		     int reason, int exitcode, __u8 direction)
 {
-	update_metrics(skb->len, direction, -reason);
+	update_metrics(ctx_full_len(ctx), direction, -reason);
 	return exitcode;
 }
+#endif /* DROP_NOTIFY */
 
-#endif
-
-static inline int send_drop_notify_error(struct __sk_buff *skb, int error,
-                                         int exitcode, __u8 direction)
+static __always_inline int send_drop_notify_error(struct __ctx_buff *ctx, __u32 src,
+						  int error, int exitcode,
+						  __u8 direction)
 {
-	return send_drop_notify(skb, 0, 0, 0, error, exitcode, direction);
+	return send_drop_notify(ctx, src, 0, 0, error, exitcode, direction);
 }
 
 #endif /* __LIB_DROP__ */

@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 **********************
 Installer Integrations
@@ -19,6 +19,7 @@ any installer.
 
    k8s-install-kops
    k8s-install-kubespray
+   k8s-install-kubeadm
 
 External Guides
 ===============

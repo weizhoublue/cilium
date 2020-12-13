@@ -15,9 +15,13 @@
 package clustermesh
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/lock"
 	nodemanager "github.com/cilium/cilium/pkg/node/manager"
@@ -55,6 +59,21 @@ type Configuration struct {
 	NodeManager *nodemanager.Manager
 
 	nodeObserver store.Observer
+
+	// RemoteIdentityWatcher provides identities that have been allocated on a
+	// remote cluster.
+	RemoteIdentityWatcher RemoteIdentityWatcher
+}
+
+// RemoteIdentityWatcher is any type which provides identities that have been
+// allocated on a remote cluster.
+type RemoteIdentityWatcher interface {
+	// WatchRemoteIdentities starts watching for identities in another kvstore and
+	// syncs all identities to the local identity cache.
+	WatchRemoteIdentities(backend kvstore.BackendOperations) (*allocator.RemoteCache, error)
+
+	// Close stops the watcher.
+	Close()
 }
 
 // NodeObserver returns the node store observer of the configuration
@@ -119,7 +138,6 @@ func (cm *ClusterMesh) Close() {
 		cluster.onRemove()
 		delete(cm.clusters, name)
 	}
-
 	cm.controllers.RemoveAllAndWait()
 }
 
@@ -130,6 +148,7 @@ func (cm *ClusterMesh) newRemoteCluster(name, path string) *remoteCluster {
 		mesh:        cm,
 		changed:     make(chan bool, configNotificationsChannelSize),
 		controllers: controller.NewManager(),
+		swg:         lock.NewStoppableWaitGroup(),
 	}
 }
 
@@ -152,7 +171,7 @@ func (cm *ClusterMesh) add(name, path string) {
 	log.WithField(fieldClusterName, name).Debug("Remote cluster configuration added")
 
 	if inserted {
-		cluster.onInsert()
+		cluster.onInsert(cm.conf.RemoteIdentityWatcher)
 	} else {
 		// signal a change in configuration
 		cluster.changed <- true
@@ -186,4 +205,40 @@ func (cm *ClusterMesh) NumReadyClusters() int {
 	}
 
 	return nready
+}
+
+// ClustersSynced returns after all clusters were synchronized with the bpf
+// datapath.
+func (cm *ClusterMesh) ClustersSynced(ctx context.Context) error {
+	cm.mutex.RLock()
+	swgs := make([]*lock.StoppableWaitGroup, 0, len(cm.clusters))
+	for _, cluster := range cm.clusters {
+		swgs = append(swgs, cluster.swg)
+	}
+	cm.mutex.RUnlock()
+
+	for _, swg := range swgs {
+		select {
+		case <-swg.WaitChannel():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// Status returns the status of the ClusterMesh subsystem
+func (cm *ClusterMesh) Status() (status *models.ClusterMeshStatus) {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
+
+	status = &models.ClusterMeshStatus{
+		NumGlobalServices: int64(cm.globalServices.size()),
+	}
+
+	for _, cm := range cm.clusters {
+		status.Clusters = append(status.Clusters, cm.status())
+	}
+
+	return
 }

@@ -28,6 +28,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cilium/cilium/pkg/lock"
+	ciliumTestConfig "github.com/cilium/cilium/test/config"
+
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/config"
 )
@@ -36,6 +39,7 @@ type scope struct {
 	parent        *scope
 	children      []*scope
 	counter       int32
+	mutex         *lock.Mutex
 	before        []func()
 	after         []func()
 	afterEach     []func()
@@ -46,12 +50,17 @@ type scope struct {
 	normalTests   int
 	focusedTests  int
 	focused       bool
+	text          string
 }
 
 var (
-	currentScope        = &scope{}
-	rootScope           = currentScope
-	countersInitialized bool
+	currentScope = &scope{
+		text:    "EntireTestsuite",
+		counter: -1,
+		mutex:   &lock.Mutex{},
+	}
+
+	rootScope = currentScope
 
 	// failEnabled for tests that have failed on JustAfterEach function we need
 	// to handle differently, because `ginkgo.Fail` do a panic, and all the
@@ -61,6 +70,10 @@ var (
 	failEnabled     = true
 	afterEachFailed = map[string]bool{}
 	afterEachCB     = map[string]func(){}
+
+	// We wrap various ginkgo function here to track invocations and determine
+	// when to call AfterAll. When using a new ginkgo equivalent to It or
+	// Measure, it may need a matching wrapper similar to wrapItFunc.
 
 	Context                               = wrapContextFunc(ginkgo.Context, false)
 	FContext                              = wrapContextFunc(ginkgo.FContext, true)
@@ -74,7 +87,7 @@ var (
 	FIt                                   = wrapItFunc(ginkgo.FIt, true)
 	PIt                                   = ginkgo.PIt
 	XIt                                   = ginkgo.XIt
-	Measure                               = ginkgo.Measure
+	Measure                               = wrapMeasureFunc(ginkgo.Measure, false)
 	JustBeforeEach                        = ginkgo.JustBeforeEach
 	BeforeSuite                           = ginkgo.BeforeSuite
 	AfterSuite                            = ginkgo.AfterSuite
@@ -106,6 +119,40 @@ func init() {
 
 	config.Flags(commandFlags, "ginkgo", true)
 	commandFlags.Parse(args)
+	ciliumTestConfig.CiliumTestConfig.ParseFlags()
+}
+
+func (s *scope) isUnset() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return (s.counter == -1)
+}
+
+func (s *scope) isZero() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return (s.counter == 0)
+}
+
+func (s *scope) setSafely(val int) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.counter = int32(val)
+}
+
+func (s *scope) decrementSafely() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.counter--
+	if s.counter < 0 {
+		panic(fmt.Sprintf("ERROR: unexpected negative scope counter value: %d", s.counter))
+	}
+}
+
+func CurrnetScopeCounter() int32 {
+	currentScope.mutex.Lock()
+	defer currentScope.mutex.Unlock()
+	return currentScope.counter
 }
 
 // By allows you to better document large Its.
@@ -121,7 +168,7 @@ func By(message string, optionalValues ...interface{}) {
 	if len(optionalValues) > 0 {
 		message = fmt.Sprintf(message, optionalValues...)
 	}
-	fullmessage := fmt.Sprintf("STEP: %s", message)
+	fullmessage := fmt.Sprintf("%s STEP: %s", time.Now().Format("15:04:05"), message)
 	GinkgoPrint(fullmessage)
 }
 
@@ -149,9 +196,15 @@ func BeforeAll(body func()) bool {
 			currentScope.before = nil
 			return true
 		}
-		currentScope.before = append(currentScope.before, body)
-		return BeforeEach(func() {})
+
+		contextName := currentScope.text
+		currentScope.before = append(currentScope.before, func() {
+			By("Running BeforeAll block for %s", contextName)
+			body()
+		})
+		return beforeEach(func() {})
 	}
+
 	return true
 }
 
@@ -162,8 +215,12 @@ func AfterAll(body func()) bool {
 			currentScope.before = nil
 			return true
 		}
-		currentScope.after = append(currentScope.after, body)
-		return AfterEach(func() {})
+		contextName := currentScope.text
+		currentScope.after = append(currentScope.after, func() {
+			By("Running AfterAll block for %s", contextName)
+			body()
+		})
+		return afterEach(func() {})
 	}
 	return true
 }
@@ -176,8 +233,12 @@ func JustAfterEach(body func()) bool {
 			currentScope.before = nil
 			return true
 		}
-		currentScope.justAfterEach = append(currentScope.justAfterEach, body)
-		return AfterEach(func() {})
+		contextName := currentScope.text
+		currentScope.justAfterEach = append(currentScope.justAfterEach, func() {
+			By("Running JustAfterEach block for %s", contextName)
+			body()
+		})
+		return afterEach(func() {})
 	}
 	return true
 }
@@ -190,8 +251,12 @@ func AfterFailed(body func()) bool {
 			currentScope.before = nil
 			return true
 		}
-		currentScope.afterFail = append(currentScope.afterFail, body)
-		return AfterEach(func() {})
+		contextName := currentScope.text
+		currentScope.afterFail = append(currentScope.afterFail, func() {
+			By("Running AfterFailed block for %s", contextName)
+			body()
+		})
+		return afterEach(func() {})
 	}
 	return true
 }
@@ -243,6 +308,17 @@ func runAllAfterEach(cs *scope, testName string) {
 // already executed for the given test.
 var afterFailedStatus map[string]bool = map[string]bool{}
 
+func testFailed(testName string) bool {
+	hasFailed, _ := afterEachFailed[testName]
+	return ginkgo.CurrentGinkgoTestDescription().Failed || hasFailed
+}
+
+// TestFailed returns true if the current test has failed.
+func TestFailed() bool {
+	testName := ginkgo.CurrentGinkgoTestDescription().FullTestText
+	return testFailed(testName)
+}
+
 // runAllAfterFail runs all the afterFail functions for the given
 // scope and parent scopes. This function make sure that all the `AfterFail`
 // functions are called before AfterEach.
@@ -252,8 +328,7 @@ func runAllAfterFail(cs *scope, testName string) {
 		return
 	}
 
-	hasFailed, _ := afterEachFailed[testName]
-	if (ginkgo.CurrentGinkgoTestDescription().Failed || hasFailed) && len(cs.afterFail) > 0 {
+	if testFailed(testName) && len(cs.afterFail) > 0 {
 		GinkgoPrint("===================== TEST FAILED =====================")
 		for _, body := range cs.afterFail {
 			body()
@@ -274,7 +349,7 @@ func RunAfterEach(cs *scope) {
 	}
 
 	// Decrement the test number due test or BeforeEach has been run.
-	atomic.AddInt32(&cs.counter, -1)
+	cs.decrementSafely()
 
 	// Disabling the `ginkgo.Fail` function to avoid the panic and be able to
 	// gather all the logs.
@@ -308,14 +383,11 @@ func RunAfterEach(cs *scope) {
 	}
 
 	// Only run afterAll when all the counters are 0 and all afterEach are executed
-	after := func() {
-		if cs.counter == 0 && cs.after != nil {
-			for _, after := range cs.after {
-				after()
-			}
+	if cs.isZero() && cs.after != nil {
+		for _, after := range cs.after {
+			after()
 		}
 	}
-	after()
 
 	cb := afterEachCB[testName]
 	if cb != nil {
@@ -325,6 +397,17 @@ func RunAfterEach(cs *scope) {
 
 // AfterEach runs the function after each test in context
 func AfterEach(body func(), timeout ...float64) bool {
+	var contextName string
+	if currentScope != nil {
+		contextName = currentScope.text
+	}
+	return afterEach(func() {
+		By("Running AfterEach for block %s", contextName)
+		body()
+	}, timeout...)
+}
+
+func afterEach(body func(), timeout ...float64) bool {
 	if currentScope == nil {
 		return ginkgo.AfterEach(body, timeout...)
 	}
@@ -344,7 +427,18 @@ func AfterEach(body func(), timeout ...float64) bool {
 }
 
 // BeforeEach runs the function before each test in context
-func BeforeEach(body interface{}, timeout ...float64) bool {
+func BeforeEach(body func(), timeout ...float64) bool {
+	var contextName string
+	if currentScope != nil {
+		contextName = currentScope.text
+	}
+	return beforeEach(func() {
+		By("Running BeforeEach block for %s", contextName)
+		body()
+	}, timeout...)
+}
+
+func beforeEach(body interface{}, timeout ...float64) bool {
 	if currentScope == nil {
 		return ginkgo.BeforeEach(body, timeout...)
 	}
@@ -372,7 +466,13 @@ func wrapContextFunc(fn func(string, func()) bool, focused bool) func(string, fu
 		if currentScope == nil {
 			return fn(text, body)
 		}
-		newScope := &scope{parent: currentScope, focused: focused}
+		newScope := &scope{
+			text:    currentScope.text + " " + text,
+			parent:  currentScope,
+			focused: focused,
+			mutex:   &lock.Mutex{},
+			counter: -1,
+		}
 		currentScope.children = append(currentScope.children, newScope)
 		currentScope = newScope
 		res := fn(text, body)
@@ -391,18 +491,22 @@ func wrapNilContextFunc(fn func(string, func()) bool) func(string, func()) bool 
 	}
 }
 
+// wrapItFunc wraps gingko.Measure to track invocations and correctly
+// execute AfterAll. This is tracked via scope.focusedTests and .normalTests.
+// This function is similar to wrapMeasureFunc.
 func wrapItFunc(fn func(string, interface{}, ...float64) bool, focused bool) func(string, interface{}, ...float64) bool {
-	if !countersInitialized {
-		countersInitialized = true
+	if rootScope.isUnset() {
+		rootScope.setSafely(0)
 		BeforeSuite(func() {
-			calculateCounters(rootScope, false)
+			c, _ := calculateCounters(rootScope, false)
+			rootScope.setSafely(c)
 		})
 	}
 	return func(text string, body interface{}, timeout ...float64) bool {
 		if currentScope == nil {
 			return fn(text, body, timeout...)
 		}
-		if focused || isTestFocussed(text) {
+		if focused || isTestFocused(currentScope.text+" "+text) {
 			currentScope.focusedTests++
 		} else {
 			currentScope.normalTests++
@@ -411,15 +515,39 @@ func wrapItFunc(fn func(string, interface{}, ...float64) bool, focused bool) fun
 	}
 }
 
-// isTestFocussed checks the value of FocusString and return true if the given
-// text name is focussed, returns false if the test is not focussed.
-func isTestFocussed(text string) bool {
+// wrapMeasureFunc wraps gingko.Measure to track invocations and correctly
+// execute AfterAll. This is tracked via scope.focusedTests and .normalTests.
+// This function is similar to wrapItFunc.
+func wrapMeasureFunc(fn func(text string, body interface{}, samples int) bool, focused bool) func(text string, body interface{}, samples int) bool {
+	if rootScope.isUnset() {
+		rootScope.setSafely(0)
+		BeforeSuite(func() {
+			c, _ := calculateCounters(rootScope, false)
+			rootScope.setSafely(c)
+		})
+	}
+	return func(text string, body interface{}, samples int) bool {
+		if currentScope == nil {
+			return fn(text, body, samples)
+		}
+		if focused || isTestFocused(currentScope.text+" "+text) {
+			currentScope.focusedTests++
+		} else {
+			currentScope.normalTests++
+		}
+		return fn(text, wrapTest(body), samples)
+	}
+}
+
+// isTestFocused checks the value of FocusString and return true if the given
+// text name is focussed, returns false if the test is not focused.
+func isTestFocused(text string) bool {
 	if config.GinkgoConfig.FocusString == "" {
 		return false
 	}
 
 	focusFilter := regexp.MustCompile(config.GinkgoConfig.FocusString)
-	return focusFilter.Match([]byte(text))
+	return focusFilter.MatchString(text)
 }
 
 func applyAdvice(f interface{}, before, after func()) interface{} {
@@ -448,13 +576,21 @@ func wrapTest(f interface{}) interface{} {
 	return applyAdvice(f, nil, after)
 }
 
+// calculateCounters initialises the tracking counters that determine when
+// AfterAll should be called. It is not idempotent and should be guarded
+// against repeated initializations.
 func calculateCounters(s *scope, focusedOnly bool) (int, bool) {
 	count := s.focusedTests
 	haveFocused := s.focusedTests > 0
-	var focusedChildren int
+	focusedChildren := 0
 	for _, child := range s.children {
 		if child.focused {
+			if !child.isUnset() {
+				panic("unexepcted redundant recursive call")
+			}
+			child.setSafely(0)
 			c, _ := calculateCounters(child, false)
+			child.setSafely(c)
 			focusedChildren += c
 		}
 	}
@@ -462,10 +598,15 @@ func calculateCounters(s *scope, focusedOnly bool) (int, bool) {
 		haveFocused = true
 		count += focusedChildren
 	}
-	var normalChildren int
+	normalChildren := 0
 	for _, child := range s.children {
 		if !child.focused {
+			if !child.isUnset() {
+				panic("unexepcted redundant recursive call")
+			}
+			child.setSafely(0)
 			c, f := calculateCounters(child, focusedOnly || haveFocused)
+			child.setSafely(c)
 			if f {
 				haveFocused = true
 				count += c
@@ -477,13 +618,13 @@ func calculateCounters(s *scope, focusedOnly bool) (int, bool) {
 	if !focusedOnly && !haveFocused {
 		count += s.normalTests + normalChildren
 	}
-	s.counter = int32(count)
 	return count, haveFocused
 }
 
 // FailWithToggle wraps `ginkgo.Fail` function to have a option to disable the
 // panic when something fails when is running on AfterEach.
 func FailWithToggle(message string, callerSkip ...int) {
+	GinkgoPrint("FAIL: " + message)
 
 	if len(callerSkip) > 0 {
 		callerSkip[0] = callerSkip[0] + 1
@@ -499,4 +640,32 @@ func FailWithToggle(message string, callerSkip ...int) {
 	afterEachCB[testName] = func() {
 		ginkgo.Fail(message, callerSkip...)
 	}
+}
+
+// SkipContextIf is a wrapper for the Context block which is being executed
+// if the given condition is NOT met.
+func SkipContextIf(condition func() bool, text string, body func()) bool {
+	if condition() {
+		return It(text, func() {
+			Skip("skipping due to unmet condition")
+		})
+	}
+
+	return Context(text, body)
+}
+
+// SkipItIf executes the given body if the given condition is NOT met.
+func SkipItIf(condition func() bool, text string, body func(), timeout ...float64) bool {
+	if condition() {
+		return It(text, func() {
+			Skip("skipping due to unmet condition")
+		})
+	}
+
+	return It(text, body, timeout...)
+}
+
+// Failf calls Fail with a formatted string
+func Failf(msg string, args ...interface{}) {
+	Fail(fmt.Sprintf(msg, args...))
 }

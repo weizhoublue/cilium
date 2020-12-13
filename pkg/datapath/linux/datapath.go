@@ -16,7 +16,10 @@ package linux
 
 import (
 	"github.com/cilium/cilium/pkg/datapath"
-	"github.com/cilium/cilium/pkg/datapath/iptables"
+	"github.com/cilium/cilium/pkg/datapath/connector"
+	"github.com/cilium/cilium/pkg/datapath/linux/config"
+	"github.com/cilium/cilium/pkg/datapath/loader"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 // DatapathConfiguration is the static configuration of the datapath. The
@@ -29,19 +32,31 @@ type DatapathConfiguration struct {
 }
 
 type linuxDatapath struct {
+	datapath.ConfigWriter
+	datapath.IptablesManager
 	node           datapath.NodeHandler
 	nodeAddressing datapath.NodeAddressing
 	config         DatapathConfiguration
+	loader         *loader.Loader
 }
 
 // NewDatapath creates a new Linux datapath
-func NewDatapath(config DatapathConfiguration) datapath.Datapath {
+func NewDatapath(cfg DatapathConfiguration, ruleManager datapath.IptablesManager) datapath.Datapath {
 	dp := &linuxDatapath{
-		nodeAddressing: NewNodeAddressing(),
-		config:         config,
+		ConfigWriter:    &config.HeaderfileWriter{},
+		IptablesManager: ruleManager,
+		nodeAddressing:  NewNodeAddressing(),
+		config:          cfg,
+		loader:          loader.NewLoader(canDisableDwarfRelocations),
 	}
 
-	dp.node = NewNodeHandler(config, dp.nodeAddressing)
+	dp.node = NewNodeHandler(cfg, dp.nodeAddressing)
+
+	if cfg.EncryptInterface != "" {
+		if err := connector.DisableRpFilter(cfg.EncryptInterface); err != nil {
+			log.WithField(logfields.Interface, cfg.EncryptInterface).Warn("Rpfilter could not be disabled, node to node encryption may fail")
+		}
+	}
 
 	return dp
 }
@@ -57,10 +72,6 @@ func (l *linuxDatapath) LocalNodeAddressing() datapath.NodeAddressing {
 	return l.nodeAddressing
 }
 
-func (l *linuxDatapath) InstallProxyRules(proxyPort uint16, ingress bool, name string) error {
-	return iptables.InstallProxyRules(proxyPort, ingress, name)
-}
-
-func (l *linuxDatapath) RemoveProxyRules(proxyPort uint16, ingress bool, name string) error {
-	return iptables.RemoveProxyRules(proxyPort, ingress, name)
+func (l *linuxDatapath) Loader() datapath.Loader {
+	return l.loader
 }

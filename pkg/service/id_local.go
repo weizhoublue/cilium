@@ -81,9 +81,12 @@ func (alloc *IDAllocator) acquireLocalID(svc loadbalancer.L3n4Addr, desiredID ui
 	}
 
 	if desiredID != 0 {
-		if _, ok := alloc.entitiesID[desiredID]; !ok {
+		foundSVC, ok := alloc.entitiesID[desiredID]
+		if !ok {
 			return alloc.addID(svc, desiredID), nil
 		}
+		return nil, fmt.Errorf("Service ID %d is already registered to %q",
+			desiredID, foundSVC)
 	}
 
 	startingID := alloc.nextID
@@ -92,7 +95,7 @@ func (alloc *IDAllocator) acquireLocalID(svc loadbalancer.L3n4Addr, desiredID ui
 		if alloc.nextID == startingID && rollover {
 			break
 		} else if alloc.nextID == alloc.maxID {
-			alloc.nextID = FirstFreeServiceID
+			alloc.nextID = alloc.initNextID
 			rollover = true
 		}
 

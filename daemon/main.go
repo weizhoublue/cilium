@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,26 +15,9 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"path"
-
-	"github.com/cilium/cilium/cilium/cmd"
-	"github.com/cilium/cilium/monitor"
+	"github.com/cilium/cilium/daemon/cmd"
 )
 
 func main() {
-	base := path.Base(os.Args[0])
-
-	switch base {
-	case "cilium-agent":
-		daemonMain()
-	case "cilium":
-		cmd.Execute()
-	case "cilium-node-monitor":
-		monitor.Execute()
-	default:
-		panic(fmt.Sprintf("Invalid executable name: %s. Only \"cilium-agent\", "+
-			"\"cilium\" or \"cilium-node-monitor\" is supported.", base))
-	}
+	cmd.Execute()
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,14 +16,20 @@ package endpoint
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	nextDirectorySuffix       = "_next"
+	nextFailedDirectorySuffix = "_next_fail"
+	backupDirectorySuffix     = "_stale"
 )
 
 // DirectoryPath returns the directory name for this endpoint bpf program.
@@ -34,7 +40,7 @@ func (e *Endpoint) DirectoryPath() string {
 // FailedDirectoryPath returns the directory name for this endpoint bpf program
 // failed builds.
 func (e *Endpoint) FailedDirectoryPath() string {
-	return filepath.Join(".", fmt.Sprintf("%d%s", e.ID, "_next_fail"))
+	return filepath.Join(".", fmt.Sprintf("%d%s", e.ID, nextFailedDirectorySuffix))
 }
 
 // StateDirectoryPath returns the directory name for this endpoint bpf program.
@@ -45,11 +51,37 @@ func (e *Endpoint) StateDirectoryPath() string {
 // NextDirectoryPath returns the directory name for this endpoint bpf program
 // next bpf builds.
 func (e *Endpoint) NextDirectoryPath() string {
-	return filepath.Join(".", fmt.Sprintf("%d%s", e.ID, "_next"))
+	return filepath.Join(".", fmt.Sprintf("%d%s", e.ID, nextDirectorySuffix))
 }
 
 func (e *Endpoint) backupDirectoryPath() string {
-	return e.DirectoryPath() + "_stale"
+	return e.DirectoryPath() + backupDirectorySuffix
+}
+
+// moveNewFilesTo copies all files, that do not exist in newDir, from oldDir.
+func moveNewFilesTo(oldDir, newDir string) error {
+	oldFiles, err := ioutil.ReadDir(oldDir)
+	if err != nil {
+		return err
+	}
+	newFiles, err := ioutil.ReadDir(newDir)
+	if err != nil {
+		return err
+	}
+
+	for _, oldFile := range oldFiles {
+		exists := false
+		for _, newFile := range newFiles {
+			if oldFile.Name() == newFile.Name() {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			os.Rename(filepath.Join(oldDir, oldFile.Name()), filepath.Join(newDir, oldFile.Name()))
+		}
+	}
+	return nil
 }
 
 // synchronizeDirectories moves the files related to endpoint BPF program
@@ -57,8 +89,8 @@ func (e *Endpoint) backupDirectoryPath() string {
 // necessary for the endpoint.
 // Returns the original regenerationError if regenerationError was non-nil,
 // or if any updates to directories for the endpoint's directories fails.
-// Must be called with endpoint.Mutex held.
-func (e *Endpoint) synchronizeDirectories(origDir string, compilationExecuted bool) error {
+// Must be called with endpoint.mutex Lock()ed.
+func (e *Endpoint) synchronizeDirectories(origDir string, stateDirComplete bool) error {
 	scopedLog := e.getLogger()
 	scopedLog.Debug("synchronizing directories")
 
@@ -109,9 +141,9 @@ func (e *Endpoint) synchronizeDirectories(origDir string, compilationExecuted bo
 
 		// If the compilation was skipped then we need to copy the old
 		// bpf objects into the new directory
-		if !compilationExecuted {
-			scopedLog.Debug("compilation was skipped; moving old BPF objects into new directory")
-			err := common.MoveNewFilesTo(backupDir, origDir)
+		if !stateDirComplete {
+			scopedLog.Debug("some BPF state files were not recreated; moving old BPF objects into new directory")
+			err := moveNewFilesTo(backupDir, origDir)
 			if err != nil {
 				log.WithError(err).Debugf("unable to copy old bpf object "+
 					"files from %s into the new directory %s.", backupDir, origDir)

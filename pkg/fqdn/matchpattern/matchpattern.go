@@ -22,7 +22,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-const allowedDNSCharsREGroup = "[-a-zA-Z0-9]"
+const allowedDNSCharsREGroup = "[-a-zA-Z0-9_]"
 
 // Validate ensures that pattern is a parseable matchPattern. It returns the
 // regexp generated when validating.
@@ -32,7 +32,7 @@ func Validate(pattern string) (matcher *regexp.Regexp, err error) {
 
 	// error check
 	if strings.ContainsAny(pattern, "[]+{},") {
-		return nil, errors.New(`Only alphanumeric ASCII characters, the hyphen "-", "." and "*" are allowed in a matchPattern`)
+		return nil, errors.New(`Only alphanumeric ASCII characters, the hyphen "-", underscore "_", "." and "*" are allowed in a matchPattern`)
 	}
 
 	return regexp.Compile(ToRegexp(pattern))
@@ -57,7 +57,7 @@ func ToRegexp(pattern string) string {
 
 	// handle the * match-all case. This will filter down to the end.
 	if pattern == "*" {
-		pattern = "(" + allowedDNSCharsREGroup + "+.)+"
+		return "(^(" + allowedDNSCharsREGroup + "+[.])+$)|(^[.]$)"
 	}
 
 	// base case. * becomes .*, but only for DNS valid characters

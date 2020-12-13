@@ -28,24 +28,33 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/envoy/xds"
-	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
+	"github.com/cilium/cilium/pkg/policy/api/kafka"
 	"github.com/cilium/cilium/pkg/proxy/logger"
 
-	"github.com/cilium/proxy/go/cilium/api"
-	envoy_api_v2 "github.com/cilium/proxy/go/envoy/api/v2"
-	envoy_api_v2_core "github.com/cilium/proxy/go/envoy/api/v2/core"
-	envoy_api_v2_listener "github.com/cilium/proxy/go/envoy/api/v2/listener"
-	envoy_api_v2_route "github.com/cilium/proxy/go/envoy/api/v2/route"
-	envoy_config_bootstrap_v2 "github.com/cilium/proxy/go/envoy/config/bootstrap/v2"
+	cilium "github.com/cilium/proxy/go/cilium/api"
+	envoy_config_bootstrap "github.com/cilium/proxy/go/envoy/config/bootstrap/v3"
+	envoy_config_cluster "github.com/cilium/proxy/go/envoy/config/cluster/v3"
+	envoy_config_core "github.com/cilium/proxy/go/envoy/config/core/v3"
+	envoy_config_endpoint "github.com/cilium/proxy/go/envoy/config/endpoint/v3"
+	envoy_config_listener "github.com/cilium/proxy/go/envoy/config/listener/v3"
+	envoy_config_route "github.com/cilium/proxy/go/envoy/config/route/v3"
+	envoy_config_http "github.com/cilium/proxy/go/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_mongo_proxy "github.com/cilium/proxy/go/envoy/extensions/filters/network/mongo_proxy/v3"
+	envoy_mysql_proxy "github.com/cilium/proxy/go/envoy/extensions/filters/network/mysql_proxy/v3"
+	envoy_config_tcp "github.com/cilium/proxy/go/envoy/extensions/filters/network/tcp_proxy/v3"
+	envoy_type_matcher "github.com/cilium/proxy/go/envoy/type/matcher/v3"
+
 	"github.com/golang/protobuf/proto"
+	"github.com/golang/protobuf/ptypes"
+	"github.com/golang/protobuf/ptypes/any"
 	"github.com/golang/protobuf/ptypes/duration"
-	"github.com/golang/protobuf/ptypes/struct"
 	"github.com/golang/protobuf/ptypes/wrappers"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -53,16 +62,21 @@ var (
 	// to any L4 port.
 	allowAllPortNetworkPolicy = []*cilium.PortNetworkPolicy{
 		// Allow all TCP traffic to any port.
-		{Protocol: envoy_api_v2_core.SocketAddress_TCP},
+		{Protocol: envoy_config_core.SocketAddress_TCP},
 		// Allow all UDP traffic to any port.
-		{Protocol: envoy_api_v2_core.SocketAddress_UDP},
+		// UDP rules not sent to Envoy for now.
+		// {Protocol: envoy_config_core.SocketAddress_UDP},
 	}
 )
 
 const (
-	egressClusterName  = "egress-cluster"
-	ingressClusterName = "ingress-cluster"
-	EnvoyTimeout       = 300 * time.Second // must be smaller than endpoint.EndpointGenerationTimeout
+	adminClusterName      = "envoy-admin"
+	egressClusterName     = "egress-cluster"
+	egressTLSClusterName  = "egress-cluster-tls"
+	ingressClusterName    = "ingress-cluster"
+	ingressTLSClusterName = "ingress-cluster-tls"
+	metricsListenerName   = "envoy-prometheus-metrics-listener"
+	EnvoyTimeout          = 300 * time.Second // must be smaller than endpoint.EndpointGenerationTimeout
 )
 
 type Listener struct {
@@ -83,14 +97,8 @@ type XDSServer struct {
 	// socketPath is the path to the gRPC UNIX domain socket.
 	socketPath string
 
-	// listenerProto is a generic Envoy Listener protobuf. Immutable.
-	listenerProto *envoy_api_v2.Listener
-
-	// httpFilterChainProto is a generic Envoy HTTP connection manager filter chain protobuf. Immutable.
-	httpFilterChainProto *envoy_api_v2_listener.FilterChain
-
-	// tcpFilterChainProto is a generic Envoy TCP proxy filter chain protobuf. Immutable.
-	tcpFilterChainProto *envoy_api_v2_listener.FilterChain
+	// accessLogPath is the path to the L7 access logs
+	accessLogPath string
 
 	// mutex protects accesses to the configuration resources below.
 	mutex lock.RWMutex
@@ -109,8 +117,8 @@ type XDSServer struct {
 	// Envoy proxies.
 	networkPolicyCache *xds.Cache
 
-	// NetworkPolicyMutator wraps networkPolicyCache to publish route
-	// configuration updates to Envoy proxies.
+	// NetworkPolicyMutator wraps networkPolicyCache to publish policy
+	// updates to Envoy proxies.
 	// Exported for testing only!
 	NetworkPolicyMutator xds.AckingResourceMutator
 
@@ -127,16 +135,17 @@ func getXDSPath(stateDir string) string {
 	return filepath.Join(stateDir, "xds.sock")
 }
 
+func toAny(pb proto.Message) *any.Any {
+	a, err := ptypes.MarshalAny(pb)
+	if err != nil {
+		panic(err.Error())
+	}
+	return a
+}
+
 // StartXDSServer configures and starts the xDS GRPC server.
 func StartXDSServer(stateDir string) *XDSServer {
 	xdsPath := getXDSPath(stateDir)
-	accessLogPath := getAccessLogPath(stateDir)
-	denied403body := option.Config.HTTP403Message
-	requestTimeout := option.Config.HTTPRequestTimeout // seconds
-	idleTimeout := option.Config.HTTPIdleTimeout       // seconds
-	maxGRPCTimeout := option.Config.HTTPMaxGRPCTimeout // seconds
-	numRetries := option.Config.HTTPRetryCount
-	retryTimeout := option.Config.HTTPRetryTimeout //seconds
 
 	os.Remove(xdsPath)
 	socketListener, err := net.ListenUnix("unix", &net.UnixAddr{Name: xdsPath, Net: "unix"})
@@ -151,14 +160,14 @@ func StartXDSServer(stateDir string) *XDSServer {
 	}
 
 	ldsCache := xds.NewCache()
-	ldsMutator := xds.NewAckingResourceMutatorWrapper(ldsCache, xds.IstioNodeToIP)
+	ldsMutator := xds.NewAckingResourceMutatorWrapper(ldsCache)
 	ldsConfig := &xds.ResourceTypeConfiguration{
 		Source:      ldsCache,
 		AckObserver: ldsMutator,
 	}
 
 	npdsCache := xds.NewCache()
-	npdsMutator := xds.NewAckingResourceMutatorWrapper(npdsCache, xds.IstioNodeToIP)
+	npdsMutator := xds.NewAckingResourceMutatorWrapper(npdsCache)
 	npdsConfig := &xds.ResourceTypeConfiguration{
 		Source:      npdsCache,
 		AckObserver: npdsMutator,
@@ -166,152 +175,14 @@ func StartXDSServer(stateDir string) *XDSServer {
 
 	nphdsConfig := &xds.ResourceTypeConfiguration{
 		Source:      NetworkPolicyHostsCache,
-		AckObserver: nil, // We don't wait for ACKs for those resources.
+		AckObserver: &NetworkPolicyHostsCache,
 	}
 
 	stopServer := startXDSGRPCServer(socketListener, ldsConfig, npdsConfig, nphdsConfig, 5*time.Second)
 
-	listenerProto := &envoy_api_v2.Listener{
-		Address: &envoy_api_v2_core.Address{
-			Address: &envoy_api_v2_core.Address_SocketAddress{
-				SocketAddress: &envoy_api_v2_core.SocketAddress{
-					Protocol:   envoy_api_v2_core.SocketAddress_TCP,
-					Address:    "::",
-					Ipv4Compat: true,
-					// PortSpecifier: &envoy_api_v2_core.SocketAddress_PortValue{0},
-				},
-			},
-		},
-		Transparent: &wrappers.BoolValue{Value: true},
-		// FilterChains: []*envoy_api_v2_listener.FilterChain
-		ListenerFilters: []*envoy_api_v2_listener.ListenerFilter{{
-			Name: "cilium.bpf_metadata",
-			ConfigType: &envoy_api_v2_listener.ListenerFilter_Config{
-				Config: &structpb.Struct{Fields: map[string]*structpb.Value{
-					"is_ingress": {Kind: &structpb.Value_BoolValue{BoolValue: false}},
-					"bpf_root":   {Kind: &structpb.Value_StringValue{StringValue: bpf.GetMapRoot()}},
-				}},
-			},
-		}},
-	}
-
-	httpFilterChainProto := &envoy_api_v2_listener.FilterChain{
-		Filters: []*envoy_api_v2_listener.Filter{{
-			Name: "cilium.network",
-		}, {
-			Name: "envoy.http_connection_manager",
-			ConfigType: &envoy_api_v2_listener.Filter_Config{
-				Config: &structpb.Struct{Fields: map[string]*structpb.Value{
-					"stat_prefix": {Kind: &structpb.Value_StringValue{StringValue: "proxy"}},
-					"http_filters": {Kind: &structpb.Value_ListValue{ListValue: &structpb.ListValue{Values: []*structpb.Value{
-						{Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-							"name": {Kind: &structpb.Value_StringValue{StringValue: "cilium.l7policy"}},
-							"config": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-								"access_log_path": {Kind: &structpb.Value_StringValue{StringValue: accessLogPath}},
-								"denied_403_body": {Kind: &structpb.Value_StringValue{StringValue: denied403body}},
-							}}}},
-						}}}},
-						{Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-							"name":   {Kind: &structpb.Value_StringValue{StringValue: "envoy.router"}},
-							"config": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{}}}},
-						}}}},
-					}}}},
-					"stream_idle_timeout": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{}}}},
-					"route_config": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-						"virtual_hosts": {Kind: &structpb.Value_ListValue{ListValue: &structpb.ListValue{Values: []*structpb.Value{
-							{Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-								"name": {Kind: &structpb.Value_StringValue{StringValue: "default_route"}},
-								"domains": {Kind: &structpb.Value_ListValue{ListValue: &structpb.ListValue{Values: []*structpb.Value{
-									{Kind: &structpb.Value_StringValue{StringValue: "*"}},
-								}}}},
-								"routes": {Kind: &structpb.Value_ListValue{ListValue: &structpb.ListValue{Values: []*structpb.Value{
-									{Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-										"match": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-											"prefix": {Kind: &structpb.Value_StringValue{StringValue: "/"}},
-											"grpc":   {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{}}}},
-										}}}},
-										"route": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-											// "cluster":          {Kind: &structpb.Value_StringValue{StringValue: "cluster1"}},
-											"timeout": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-												"seconds": {Kind: &structpb.Value_NumberValue{NumberValue: float64(requestTimeout)}},
-											}}}},
-											"max_grpc_timeout": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-												"seconds": {Kind: &structpb.Value_NumberValue{NumberValue: float64(maxGRPCTimeout)}},
-											}}}},
-											"retry_policy": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-												"retry_on":    {Kind: &structpb.Value_StringValue{StringValue: "5xx"}},
-												"num_retries": {Kind: &structpb.Value_NumberValue{NumberValue: float64(numRetries)}},
-												"per_try_timeout": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-													"seconds": {Kind: &structpb.Value_NumberValue{NumberValue: float64(retryTimeout)}},
-												}}}},
-											}}}},
-										}}}},
-									}}}},
-									{Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-										"match": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-											"prefix": {Kind: &structpb.Value_StringValue{StringValue: "/"}},
-										}}}},
-										"route": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-											// "cluster":          {Kind: &structpb.Value_StringValue{StringValue: "cluster1"}},
-											"timeout": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-												"seconds": {Kind: &structpb.Value_NumberValue{NumberValue: float64(requestTimeout)}},
-											}}}},
-											// "idle_timeout": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-											// "seconds": {Kind: &structpb.Value_NumberValue{NumberValue: float64(idleTimeout)}},
-											// }}}},
-											"retry_policy": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-												"retry_on":    {Kind: &structpb.Value_StringValue{StringValue: "5xx"}},
-												"num_retries": {Kind: &structpb.Value_NumberValue{NumberValue: float64(numRetries)}},
-												"per_try_timeout": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-													"seconds": {Kind: &structpb.Value_NumberValue{NumberValue: float64(retryTimeout)}},
-												}}}},
-											}}}},
-										}}}},
-									}}}},
-								}}}},
-							}}}},
-						}}}},
-					}}}},
-				}},
-			},
-		}},
-	}
-
-	// Idle timeout can only be specified if non-zero
-	if idleTimeout > 0 {
-		httpFilterChainProto.Filters[1].ConfigType.(*envoy_api_v2_listener.Filter_Config).Config.Fields["route_config"].GetStructValue().Fields["virtual_hosts"].GetListValue().Values[0].GetStructValue().Fields["routes"].GetListValue().Values[1].GetStructValue().Fields["route"].GetStructValue().Fields["idle_timeout"] = &structpb.Value{Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{"seconds": {Kind: &structpb.Value_NumberValue{NumberValue: float64(idleTimeout)}}}}}}
-	}
-
-	tcpFilterChainProto := &envoy_api_v2_listener.FilterChain{
-		Filters: []*envoy_api_v2_listener.Filter{{
-			Name: "cilium.network",
-			ConfigType: &envoy_api_v2_listener.Filter_Config{
-				Config: &structpb.Struct{Fields: map[string]*structpb.Value{
-					"proxylib": {Kind: &structpb.Value_StringValue{StringValue: "libcilium.so"}},
-					"proxylib_params": {Kind: &structpb.Value_StructValue{StructValue: &structpb.Struct{Fields: map[string]*structpb.Value{
-						"access-log-path": {Kind: &structpb.Value_StringValue{StringValue: accessLogPath}},
-						"xds-path":        {Kind: &structpb.Value_StringValue{StringValue: xdsPath}},
-					}}}},
-					// "l7_proto": {Kind: &structpb.Value_StringValue{StringValue: "parsername"}},
-					// "policy_name": {Kind: &structpb.Value_StringValue{StringValue: "1.2.3.4"}},
-				}},
-			},
-		}, {
-			Name: "envoy.tcp_proxy",
-			ConfigType: &envoy_api_v2_listener.Filter_Config{
-				Config: &structpb.Struct{Fields: map[string]*structpb.Value{
-					"stat_prefix": {Kind: &structpb.Value_StringValue{StringValue: "tcp_proxy"}},
-					// "cluster":     {Kind: &structpb.Value_StringValue{StringValue: "cluster1"}},
-				}},
-			},
-		}},
-	}
-
 	return &XDSServer{
 		socketPath:             xdsPath,
-		listenerProto:          listenerProto,
-		httpFilterChainProto:   httpFilterChainProto,
-		tcpFilterChainProto:    tcpFilterChainProto,
+		accessLogPath:          getAccessLogPath(stateDir),
 		listenerMutator:        ldsMutator,
 		listeners:              make(map[string]*Listener),
 		networkPolicyCache:     npdsCache,
@@ -321,10 +192,255 @@ func StartXDSServer(stateDir string) *XDSServer {
 	}
 }
 
-// AddListener adds a listener to a running Envoy proxy.
-func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, port uint16, isIngress bool, wg *completion.WaitGroup) {
-	log.Debugf("Envoy: %s AddListener %s", kind, name)
+func (s *XDSServer) getHttpFilterChainProto(clusterName string, tls bool) *envoy_config_listener.FilterChain {
+	denied403body := option.Config.HTTP403Message
+	requestTimeout := int64(option.Config.HTTPRequestTimeout) // seconds
+	idleTimeout := int64(option.Config.HTTPIdleTimeout)       // seconds
+	maxGRPCTimeout := int64(option.Config.HTTPMaxGRPCTimeout) // seconds
+	numRetries := uint32(option.Config.HTTPRetryCount)
+	retryTimeout := int64(option.Config.HTTPRetryTimeout) //seconds
 
+	hcmConfig := &envoy_config_http.HttpConnectionManager{
+		StatPrefix: "proxy",
+		HttpFilters: []*envoy_config_http.HttpFilter{{
+			Name: "cilium.l7policy",
+			ConfigType: &envoy_config_http.HttpFilter_TypedConfig{
+				TypedConfig: toAny(&cilium.L7Policy{
+					AccessLogPath:  s.accessLogPath,
+					Denied_403Body: denied403body,
+				}),
+			},
+		}, {
+			Name: "envoy.filters.http.router",
+		}},
+		StreamIdleTimeout: &duration.Duration{}, // 0 == disabled
+		RouteSpecifier: &envoy_config_http.HttpConnectionManager_RouteConfig{
+			RouteConfig: &envoy_config_route.RouteConfiguration{
+				VirtualHosts: []*envoy_config_route.VirtualHost{{
+					Name:    "default_route",
+					Domains: []string{"*"},
+					Routes: []*envoy_config_route.Route{{
+						Match: &envoy_config_route.RouteMatch{
+							PathSpecifier: &envoy_config_route.RouteMatch_Prefix{Prefix: "/"},
+							Grpc:          &envoy_config_route.RouteMatch_GrpcRouteMatchOptions{},
+						},
+						Action: &envoy_config_route.Route_Route{
+							Route: &envoy_config_route.RouteAction{
+								ClusterSpecifier: &envoy_config_route.RouteAction_Cluster{
+									Cluster: clusterName,
+								},
+								Timeout:        &duration.Duration{Seconds: requestTimeout},
+								MaxGrpcTimeout: &duration.Duration{Seconds: maxGRPCTimeout},
+								RetryPolicy: &envoy_config_route.RetryPolicy{
+									RetryOn:       "5xx",
+									NumRetries:    &wrappers.UInt32Value{Value: numRetries},
+									PerTryTimeout: &duration.Duration{Seconds: retryTimeout},
+								},
+							},
+						},
+					}, {
+						Match: &envoy_config_route.RouteMatch{
+							PathSpecifier: &envoy_config_route.RouteMatch_Prefix{Prefix: "/"},
+						},
+						Action: &envoy_config_route.Route_Route{
+							Route: &envoy_config_route.RouteAction{
+								ClusterSpecifier: &envoy_config_route.RouteAction_Cluster{
+									Cluster: clusterName,
+								},
+								Timeout: &duration.Duration{Seconds: requestTimeout},
+								//IdleTimeout: &duration.Duration{Seconds: idleTimeout},
+								RetryPolicy: &envoy_config_route.RetryPolicy{
+									RetryOn:       "5xx",
+									NumRetries:    &wrappers.UInt32Value{Value: numRetries},
+									PerTryTimeout: &duration.Duration{Seconds: retryTimeout},
+								},
+							},
+						},
+					}},
+				}},
+			},
+		},
+	}
+
+	// Idle timeout can only be specified if non-zero
+	if idleTimeout > 0 {
+		hcmConfig.GetRouteConfig().VirtualHosts[0].Routes[1].GetRoute().IdleTimeout = &duration.Duration{Seconds: idleTimeout}
+	}
+
+	chain := &envoy_config_listener.FilterChain{
+		Filters: []*envoy_config_listener.Filter{{
+			Name: "cilium.network",
+		}, {
+			Name: "envoy.filters.network.http_connection_manager",
+			ConfigType: &envoy_config_listener.Filter_TypedConfig{
+				TypedConfig: toAny(hcmConfig),
+			},
+		}},
+	}
+
+	if tls {
+		chain.FilterChainMatch = &envoy_config_listener.FilterChainMatch{
+			TransportProtocol: "tls",
+		}
+		chain.TransportSocket = &envoy_config_core.TransportSocket{
+			Name: "cilium.tls_wrapper",
+		}
+	}
+
+	return chain
+}
+
+// getTcpFilterChainProto creates a TCP filter chain with the Cilium network filter.
+// By default, the returned chain can be used with the Cilium Go extensions L7 parsers
+// in 'proxylib' directory in the Cilium repo.
+// When optional 'filterName' is given, it is configured as the first filter in the chain
+// and 'proxylib' is not configured. In this case the returned filter chain is only used
+// if the applicable network policy specifies 'filterName' as the L7 parser.
+func (s *XDSServer) getTcpFilterChainProto(clusterName string, filterName string, config *any.Any) *envoy_config_listener.FilterChain {
+	var filters []*envoy_config_listener.Filter
+
+	// 1. Add the filter 'filterName' to the beginning of the TCP chain with optional 'config', if needed.
+	if filterName != "" {
+		filter := &envoy_config_listener.Filter{Name: filterName}
+		if config != nil {
+			filter.ConfigType = &envoy_config_listener.Filter_TypedConfig{
+				TypedConfig: config,
+			}
+		}
+		filters = append(filters, filter)
+	}
+
+	// 2. Add Cilium Network filter.
+	var ciliumConfig *cilium.NetworkFilter
+	if filterName == "" {
+		// Use proxylib by default
+		ciliumConfig = &cilium.NetworkFilter{
+			Proxylib: "libcilium.so",
+			ProxylibParams: map[string]string{
+				"access-log-path": s.accessLogPath,
+				"xds-path":        s.socketPath,
+			},
+		}
+	} else {
+		// Envoy metadata logging requires accesslog path
+		ciliumConfig = &cilium.NetworkFilter{
+			AccessLogPath: s.accessLogPath,
+		}
+	}
+	filters = append(filters, &envoy_config_listener.Filter{
+		Name: "cilium.network",
+		ConfigType: &envoy_config_listener.Filter_TypedConfig{
+			TypedConfig: toAny(ciliumConfig),
+		},
+	})
+
+	// 3. Add the TCP proxy filter.
+	filters = append(filters, &envoy_config_listener.Filter{
+		Name: "envoy.filters.network.tcp_proxy",
+		ConfigType: &envoy_config_listener.Filter_TypedConfig{
+			TypedConfig: toAny(&envoy_config_tcp.TcpProxy{
+				StatPrefix: "tcp_proxy",
+				ClusterSpecifier: &envoy_config_tcp.TcpProxy_Cluster{
+					Cluster: clusterName,
+				},
+			}),
+		},
+	})
+
+	chain := &envoy_config_listener.FilterChain{
+		Filters: filters,
+		FilterChainMatch: &envoy_config_listener.FilterChainMatch{
+			// must have transport match, otherwise TLS inspector will be automatically inserted
+			TransportProtocol: "raw_buffer",
+		},
+	}
+
+	if filterName != "" {
+		// Add filter chain match for 'filterName' so that connections for which policy says to use this L7
+		// are handled by this filter chain.
+		chain.FilterChainMatch.ApplicationProtocols = []string{filterName}
+	}
+
+	return chain
+}
+
+// AddMetricsListener adds a prometheus metrics listener to Envoy.
+// We could do this in the bootstrap config, but then a failure to bind to the configured port
+// would fail starting Envoy.
+func (s *XDSServer) AddMetricsListener(port uint16, wg *completion.WaitGroup) {
+	if port == 0 {
+		return // 0 == disabled
+	}
+
+	log.WithField(logfields.Port, port).Debug("Envoy: AddMetricsListener")
+
+	s.addListener(metricsListenerName, port, func() *envoy_config_listener.Listener {
+		hcmConfig := &envoy_config_http.HttpConnectionManager{
+			StatPrefix: metricsListenerName,
+			HttpFilters: []*envoy_config_http.HttpFilter{{
+				Name: "envoy.filters.http.router",
+			}},
+			StreamIdleTimeout: &duration.Duration{}, // 0 == disabled
+			RouteSpecifier: &envoy_config_http.HttpConnectionManager_RouteConfig{
+				RouteConfig: &envoy_config_route.RouteConfiguration{
+					VirtualHosts: []*envoy_config_route.VirtualHost{{
+						Name:    "prometheus_metrics_route",
+						Domains: []string{"*"},
+						Routes: []*envoy_config_route.Route{{
+							Match: &envoy_config_route.RouteMatch{
+								PathSpecifier: &envoy_config_route.RouteMatch_Prefix{Prefix: "/metrics"},
+							},
+							Action: &envoy_config_route.Route_Route{
+								Route: &envoy_config_route.RouteAction{
+									ClusterSpecifier: &envoy_config_route.RouteAction_Cluster{
+										Cluster: adminClusterName,
+									},
+									PrefixRewrite: "/stats/prometheus",
+								},
+							},
+						}},
+					}},
+				},
+			},
+		}
+
+		listenerConf := &envoy_config_listener.Listener{
+			Name: metricsListenerName,
+			Address: &envoy_config_core.Address{
+				Address: &envoy_config_core.Address_SocketAddress{
+					SocketAddress: &envoy_config_core.SocketAddress{
+						Protocol:      envoy_config_core.SocketAddress_TCP,
+						Address:       "::",
+						Ipv4Compat:    true,
+						PortSpecifier: &envoy_config_core.SocketAddress_PortValue{PortValue: uint32(port)},
+					},
+				},
+			},
+			FilterChains: []*envoy_config_listener.FilterChain{{
+				Filters: []*envoy_config_listener.Filter{{
+					Name: "envoy.filters.network.http_connection_manager",
+					ConfigType: &envoy_config_listener.Filter_TypedConfig{
+						TypedConfig: toAny(hcmConfig),
+					},
+				}},
+			}},
+		}
+
+		return listenerConf
+	}, wg, func(err error) {
+		if err != nil {
+			log.WithField(logfields.Port, port).WithError(err).Debug("Envoy: Adding metrics listener failed")
+			// Remove the added listener in case of a failure
+			s.RemoveListener(metricsListenerName, nil)
+		} else {
+			log.WithField(logfields.Port, port).Info("Envoy: Listening for prometheus metrics")
+		}
+	})
+}
+
+// addListener either reuses an existing listener with 'name', or creates a new one.
+// 'listenerConf()' is only called if a new listener is being created.
+func (s *XDSServer) addListener(name string, port uint16, listenerConf func() *envoy_config_listener.Listener, wg *completion.WaitGroup, cb func(err error)) {
 	s.mutex.Lock()
 	listener := s.listeners[name]
 	if listener == nil {
@@ -351,34 +467,8 @@ func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, port uint
 	}
 	listener.mutex.Unlock() // Listener locked again in callbacks below
 
-	clusterName := egressClusterName
-	if isIngress {
-		clusterName = ingressClusterName
-	}
-
-	// Fill in the listener-specific parts.
-	listenerConf := proto.Clone(s.listenerProto).(*envoy_api_v2.Listener)
-	if kind == policy.ParserTypeHTTP {
-		listenerConf.FilterChains = append(listenerConf.FilterChains, proto.Clone(s.httpFilterChainProto).(*envoy_api_v2_listener.FilterChain))
-		// listenerConf.FilterChains[0].Filters[1].ConfigType.(*envoy_api_v2_listener.Filter_Config).Config.Fields["http_filters"].GetListValue().Values[0].GetStructValue().Fields["config"].GetStructValue().Fields["policy_name"] = &structpb.Value{Kind: &structpb.Value_StringValue{StringValue: endpointPolicyName}}
-		routes := listenerConf.FilterChains[0].Filters[1].ConfigType.(*envoy_api_v2_listener.Filter_Config).Config.Fields["route_config"].GetStructValue().Fields["virtual_hosts"].GetListValue().Values[0].GetStructValue().Fields["routes"].GetListValue().Values
-		routes[0].GetStructValue().Fields["route"].GetStructValue().Fields["cluster"] = &structpb.Value{Kind: &structpb.Value_StringValue{StringValue: clusterName}}
-		routes[1].GetStructValue().Fields["route"].GetStructValue().Fields["cluster"] = &structpb.Value{Kind: &structpb.Value_StringValue{StringValue: clusterName}}
-	} else {
-		listenerConf.FilterChains = append(listenerConf.FilterChains, proto.Clone(s.tcpFilterChainProto).(*envoy_api_v2_listener.FilterChain))
-		// listenerConf.FilterChains[0].Filters[0].ConfigType.(*envoy_api_v2_listener.Filter_Config).Config.Fields["policy_name"] = &structpb.Value{Kind: &structpb.Value_StringValue{StringValue: endpointPolicyName}}
-		// listenerConf.FilterChains[0].Filters[0].ConfigType.(*envoy_api_v2_listener.Filter_Config).Config.Fields["l7_proto"] = &structpb.Value{Kind: &structpb.Value_StringValue{StringValue: kind.String()}}
-		listenerConf.FilterChains[0].Filters[1].ConfigType.(*envoy_api_v2_listener.Filter_Config).Config.Fields["cluster"] = &structpb.Value{Kind: &structpb.Value_StringValue{StringValue: clusterName}}
-	}
-
-	listenerConf.Name = name
-	listenerConf.Address.GetSocketAddress().PortSpecifier = &envoy_api_v2_core.SocketAddress_PortValue{PortValue: uint32(port)}
-	if isIngress {
-		listenerConf.ListenerFilters[0].ConfigType.(*envoy_api_v2_listener.ListenerFilter_Config).Config.Fields["is_ingress"].GetKind().(*structpb.Value_BoolValue).BoolValue = true
-	}
-
-	s.listenerMutator.Upsert(ListenerTypeURL, name, listenerConf, []string{"127.0.0.1"},
-		wg.AddCompletionWithCallback(func(err error) {
+	s.listenerMutator.Upsert(ListenerTypeURL, name, listenerConf(), []string{"127.0.0.1"}, wg,
+		func(err error) {
 			// listener might have already been removed, so we can't look again
 			// but we still need to complete all the completions in case
 			// someone is still waiting!
@@ -396,15 +486,104 @@ func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, port uint
 			}
 			listener.waiters = nil
 			listener.mutex.Unlock()
-		}))
+
+			if cb != nil {
+				cb(err)
+			}
+		})
 	s.mutex.Unlock()
+}
+
+func (s *XDSServer) getListenerConf(name string, kind policy.L7ParserType, port uint16, isIngress bool, mayUseOriginalSourceAddr bool) *envoy_config_listener.Listener {
+	clusterName := egressClusterName
+	socketMark := int64(0xB00)
+	if isIngress {
+		clusterName = ingressClusterName
+		socketMark = 0xA00
+	}
+
+	listenerConf := &envoy_config_listener.Listener{
+		Name: name,
+		Address: &envoy_config_core.Address{
+			Address: &envoy_config_core.Address_SocketAddress{
+				SocketAddress: &envoy_config_core.SocketAddress{
+					Protocol:      envoy_config_core.SocketAddress_TCP,
+					Address:       "::",
+					Ipv4Compat:    true,
+					PortSpecifier: &envoy_config_core.SocketAddress_PortValue{PortValue: uint32(port)},
+				},
+			},
+		},
+		Transparent: &wrappers.BoolValue{Value: true},
+		SocketOptions: []*envoy_config_core.SocketOption{{
+			Description: "Listener socket mark",
+			Level:       unix.SOL_SOCKET,
+			Name:        unix.SO_MARK,
+			Value:       &envoy_config_core.SocketOption_IntValue{IntValue: socketMark},
+			State:       envoy_config_core.SocketOption_STATE_PREBIND,
+		}},
+		// FilterChains: []*envoy_config_listener.FilterChain
+		ListenerFilters: []*envoy_config_listener.ListenerFilter{{
+			Name: "cilium.bpf_metadata",
+			ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
+				TypedConfig: toAny(&cilium.BpfMetadata{
+					IsIngress:                   isIngress,
+					MayUseOriginalSourceAddress: mayUseOriginalSourceAddr,
+					BpfRoot:                     bpf.GetMapRoot(),
+				}),
+			},
+		}},
+	}
+
+	// Add filter chains
+	if kind == policy.ParserTypeHTTP {
+		// Use tls_inspector only with HTTP, insert as the first filter
+		listenerConf.ListenerFilters = append([]*envoy_config_listener.ListenerFilter{{
+			Name: "envoy.filters.listener.tls_inspector",
+		}}, listenerConf.ListenerFilters...)
+
+		listenerConf.FilterChains = append(listenerConf.FilterChains, s.getHttpFilterChainProto(clusterName, false))
+
+		// Add a TLS variant
+		tlsClusterName := egressTLSClusterName
+		if isIngress {
+			tlsClusterName = ingressTLSClusterName
+		}
+		listenerConf.FilterChains = append(listenerConf.FilterChains, s.getHttpFilterChainProto(tlsClusterName, true))
+	} else {
+		// Default TCP chain, takes care of all parsers in proxylib
+		listenerConf.FilterChains = append(listenerConf.FilterChains, s.getTcpFilterChainProto(clusterName, "", nil))
+
+		// Experimental TCP chain for MySQL 5.x
+		listenerConf.FilterChains = append(listenerConf.FilterChains, s.getTcpFilterChainProto(clusterName,
+			"envoy.filters.network.mysql_proxy", toAny(&envoy_mysql_proxy.MySQLProxy{
+				StatPrefix: "mysql",
+			})))
+
+		// Experimental TCP chain for MongoDB
+		listenerConf.FilterChains = append(listenerConf.FilterChains, s.getTcpFilterChainProto(clusterName,
+			"envoy.filters.network.mongo_proxy", toAny(&envoy_mongo_proxy.MongoProxy{
+				StatPrefix:          "mongo",
+				EmitDynamicMetadata: true,
+			})))
+	}
+	return listenerConf
+}
+
+// AddListener adds a listener to a running Envoy proxy.
+func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, port uint16, isIngress bool, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup) {
+	log.Debugf("Envoy: %s AddListener %s (mayUseOriginalSourceAddr: %v)", kind, name, mayUseOriginalSourceAddr)
+
+	s.addListener(name, port, func() *envoy_config_listener.Listener {
+		return s.getListenerConf(name, kind, port, isIngress, mayUseOriginalSourceAddr)
+	}, wg, nil)
 }
 
 // RemoveListener removes an existing Envoy Listener.
 func (s *XDSServer) RemoveListener(name string, wg *completion.WaitGroup) xds.AckingResourceMutatorRevertFunc {
-	log.Debugf("Envoy: removeListener %s", name)
+	log.Debugf("Envoy: RemoveListener %s", name)
 
-	var listenerRevertFunc func(*completion.Completion)
+	var listenerRevertFunc xds.AckingResourceMutatorRevertFunc
 
 	s.mutex.Lock()
 	listener, ok := s.listeners[name]
@@ -412,7 +591,7 @@ func (s *XDSServer) RemoveListener(name string, wg *completion.WaitGroup) xds.Ac
 		listener.count--
 		if listener.count == 0 {
 			delete(s.listeners, name)
-			listenerRevertFunc = s.listenerMutator.Delete(ListenerTypeURL, name, []string{"127.0.0.1"}, wg.AddCompletion())
+			listenerRevertFunc = s.listenerMutator.Delete(ListenerTypeURL, name, []string{"127.0.0.1"}, wg, nil)
 		}
 	} else {
 		// Bail out if this listener does not exist
@@ -436,19 +615,136 @@ func (s *XDSServer) stop() {
 	os.Remove(s.socketPath)
 }
 
-func getL7Rule(l7 *api.PortRuleL7) *cilium.L7NetworkPolicyRule {
-	rule := &cilium.L7NetworkPolicyRule{Rule: make(map[string]string, len(*l7))}
-
-	for k, v := range *l7 {
-		rule.Rule[k] = v
+func getL7Rules(l7Rules []api.PortRuleL7, l7Proto string) *cilium.L7NetworkPolicyRules {
+	allowRules := make([]*cilium.L7NetworkPolicyRule, 0, len(l7Rules))
+	denyRules := make([]*cilium.L7NetworkPolicyRule, 0, len(l7Rules))
+	useEnvoyMetadataMatcher := false
+	if strings.HasPrefix(l7Proto, "envoy.") {
+		useEnvoyMetadataMatcher = true
+	}
+	for _, l7 := range l7Rules {
+		if useEnvoyMetadataMatcher {
+			envoyFilterName := l7Proto
+			rule := &cilium.L7NetworkPolicyRule{MetadataRule: make([]*envoy_type_matcher.MetadataMatcher, 0, len(l7))}
+			denyRule := false
+			for k, v := range l7 {
+				switch k {
+				case "action":
+					switch v {
+					case "deny":
+						denyRule = true
+					}
+				default:
+					// map key to path segments and value to value matcher
+					// For now only one path segment is allowed
+					segments := strings.Split(k, "/")
+					var path []*envoy_type_matcher.MetadataMatcher_PathSegment
+					for _, key := range segments {
+						path = append(path, &envoy_type_matcher.MetadataMatcher_PathSegment{
+							Segment: &envoy_type_matcher.MetadataMatcher_PathSegment_Key{Key: key},
+						})
+					}
+					var value *envoy_type_matcher.ValueMatcher
+					if len(v) == 0 {
+						value = &envoy_type_matcher.ValueMatcher{
+							MatchPattern: &envoy_type_matcher.ValueMatcher_PresentMatch{
+								PresentMatch: true,
+							}}
+					} else {
+						value = &envoy_type_matcher.ValueMatcher{
+							MatchPattern: &envoy_type_matcher.ValueMatcher_ListMatch{
+								ListMatch: &envoy_type_matcher.ListMatcher{
+									MatchPattern: &envoy_type_matcher.ListMatcher_OneOf{
+										OneOf: &envoy_type_matcher.ValueMatcher{
+											MatchPattern: &envoy_type_matcher.ValueMatcher_StringMatch{
+												StringMatch: &envoy_type_matcher.StringMatcher{
+													MatchPattern: &envoy_type_matcher.StringMatcher_Exact{
+														Exact: v,
+													},
+													IgnoreCase: false,
+												},
+											},
+										},
+									},
+								},
+							}}
+					}
+					rule.MetadataRule = append(rule.MetadataRule, &envoy_type_matcher.MetadataMatcher{
+						Filter: envoyFilterName,
+						Path:   path,
+						Value:  value,
+					})
+				}
+			}
+			if denyRule {
+				denyRules = append(denyRules, rule)
+			} else {
+				allowRules = append(allowRules, rule)
+			}
+		} else {
+			// proxylib go extension key/value policy
+			rule := &cilium.L7NetworkPolicyRule{Rule: make(map[string]string, len(l7))}
+			for k, v := range l7 {
+				rule.Rule[k] = v
+			}
+			allowRules = append(allowRules, rule)
+		}
 	}
 
-	return rule // No ruleRef
+	rules := &cilium.L7NetworkPolicyRules{}
+	if len(allowRules) > 0 {
+		rules.L7AllowRules = allowRules
+	}
+	if len(denyRules) > 0 {
+		rules.L7DenyRules = denyRules
+	}
+	return rules
 }
 
-func getHTTPRule(h *api.PortRuleHTTP) (headers []*envoy_api_v2_route.HeaderMatcher, ruleRef string) {
+func getKafkaL7Rules(l7Rules []kafka.PortRule) *cilium.KafkaNetworkPolicyRules {
+	allowRules := make([]*cilium.KafkaNetworkPolicyRule, 0, len(l7Rules))
+	for _, kr := range l7Rules {
+		rule := &cilium.KafkaNetworkPolicyRule{
+			ApiVersion: kr.GetAPIVersion(),
+			ApiKeys:    kr.GetAPIKeys(),
+			ClientId:   kr.ClientID,
+			Topic:      kr.Topic,
+		}
+		allowRules = append(allowRules, rule)
+	}
+
+	rules := &cilium.KafkaNetworkPolicyRules{}
+	if len(allowRules) > 0 {
+		rules.KafkaRules = allowRules
+	}
+	return rules
+}
+
+func getSecretString(certManager policy.CertificateManager, hdr *api.HeaderMatch, ns string) (string, error) {
+	value := ""
+	var err error
+	if hdr.Secret != nil {
+		if certManager == nil {
+			err = fmt.Errorf("HeaderMatches: Nil certManager")
+		} else {
+			value, err = certManager.GetSecretString(context.TODO(), hdr.Secret, ns)
+		}
+	}
+	// Only use Value if secret was not obtained
+	if value == "" && hdr.Value != "" {
+		value = hdr.Value
+		if err != nil {
+			log.WithError(err).Debug("HeaderMatches: Using a default value due to k8s secret not being available")
+			err = nil
+		}
+	}
+
+	return value, err
+}
+
+func getHTTPRule(certManager policy.CertificateManager, h *api.PortRuleHTTP, ns string) (*cilium.HttpNetworkPolicyRule, bool) {
 	// Count the number of header matches we need
-	cnt := len(h.Headers)
+	cnt := len(h.Headers) + len(h.HeaderMatches)
 	if h.Path != "" {
 		cnt++
 	}
@@ -459,105 +755,216 @@ func getHTTPRule(h *api.PortRuleHTTP) (headers []*envoy_api_v2_route.HeaderMatch
 		cnt++
 	}
 
-	headers = make([]*envoy_api_v2_route.HeaderMatcher, 0, cnt)
+	googleRe2 := &envoy_type_matcher.RegexMatcher_GoogleRe2{GoogleRe2: &envoy_type_matcher.RegexMatcher_GoogleRE2{}}
+
+	headers := make([]*envoy_config_route.HeaderMatcher, 0, cnt)
 	if h.Path != "" {
-		headers = append(headers, &envoy_api_v2_route.HeaderMatcher{Name: ":path",
-			HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_RegexMatch{RegexMatch: h.Path}})
-		ruleRef = `PathRegexp("` + h.Path + `")`
+		headers = append(headers, &envoy_config_route.HeaderMatcher{
+			Name: ":path",
+			HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_SafeRegexMatch{
+				SafeRegexMatch: &envoy_type_matcher.RegexMatcher{
+					EngineType: googleRe2,
+					Regex:      h.Path,
+				}}})
 	}
 	if h.Method != "" {
-		headers = append(headers, &envoy_api_v2_route.HeaderMatcher{Name: ":method",
-			HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_RegexMatch{RegexMatch: h.Method}})
-		if ruleRef != "" {
-			ruleRef += " && "
-		}
-		ruleRef += `MethodRegexp("` + h.Method + `")`
+		headers = append(headers, &envoy_config_route.HeaderMatcher{
+			Name: ":method",
+			HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_SafeRegexMatch{
+				SafeRegexMatch: &envoy_type_matcher.RegexMatcher{
+					EngineType: googleRe2,
+					Regex:      h.Method,
+				}}})
 	}
-
 	if h.Host != "" {
-		headers = append(headers, &envoy_api_v2_route.HeaderMatcher{Name: ":authority",
-			HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_RegexMatch{RegexMatch: h.Host}})
-		if ruleRef != "" {
-			ruleRef += " && "
-		}
-		ruleRef += `HostRegexp("` + h.Host + `")`
+		headers = append(headers, &envoy_config_route.HeaderMatcher{
+			Name: ":authority",
+			HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_SafeRegexMatch{
+				SafeRegexMatch: &envoy_type_matcher.RegexMatcher{
+					EngineType: googleRe2,
+					Regex:      h.Host,
+				}}})
 	}
 	for _, hdr := range h.Headers {
 		strs := strings.SplitN(hdr, " ", 2)
-		if ruleRef != "" {
-			ruleRef += " && "
-		}
-		ruleRef += `Header("`
 		if len(strs) == 2 {
 			// Remove ':' in "X-Key: true"
 			key := strings.TrimRight(strs[0], ":")
 			// Header presence and matching (literal) value needed.
-			headers = append(headers, &envoy_api_v2_route.HeaderMatcher{Name: key,
-				HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_ExactMatch{ExactMatch: strs[1]}})
-			ruleRef += key + `","` + strs[1]
+			headers = append(headers, &envoy_config_route.HeaderMatcher{Name: key,
+				HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_ExactMatch{ExactMatch: strs[1]}})
 		} else {
 			// Only header presence needed
-			headers = append(headers, &envoy_api_v2_route.HeaderMatcher{Name: strs[0],
-				HeaderMatchSpecifier: &envoy_api_v2_route.HeaderMatcher_PresentMatch{PresentMatch: true}})
-			ruleRef += strs[0]
+			headers = append(headers, &envoy_config_route.HeaderMatcher{Name: strs[0],
+				HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_PresentMatch{PresentMatch: true}})
 		}
-		ruleRef += `")`
+	}
+
+	headerMatches := make([]*cilium.HeaderMatch, 0, len(h.HeaderMatches))
+	for _, hdr := range h.HeaderMatches {
+		var mismatch_action cilium.HeaderMatch_MismatchAction
+		switch hdr.Mismatch {
+		case api.MismatchActionLog:
+			mismatch_action = cilium.HeaderMatch_CONTINUE_ON_MISMATCH
+		case api.MismatchActionAdd:
+			mismatch_action = cilium.HeaderMatch_ADD_ON_MISMATCH
+		case api.MismatchActionDelete:
+			mismatch_action = cilium.HeaderMatch_DELETE_ON_MISMATCH
+		case api.MismatchActionReplace:
+			mismatch_action = cilium.HeaderMatch_REPLACE_ON_MISMATCH
+		default:
+			mismatch_action = cilium.HeaderMatch_FAIL_ON_MISMATCH
+		}
+		// Fetch the secret
+		value, err := getSecretString(certManager, hdr, ns)
+		if err != nil {
+			log.WithError(err).Warning("Failed fetching K8s Secret, header match will fail")
+			// Envoy treats an empty exact match value as matching ANY value; adding
+			// InvertMatch: true here will cause this rule to NEVER match.
+			headers = append(headers, &envoy_config_route.HeaderMatcher{Name: hdr.Name,
+				HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_ExactMatch{ExactMatch: ""},
+				InvertMatch:          true})
+		} else {
+			// Header presence and matching (literal) value needed.
+			if mismatch_action == cilium.HeaderMatch_FAIL_ON_MISMATCH {
+				if value != "" {
+					headers = append(headers, &envoy_config_route.HeaderMatcher{Name: hdr.Name,
+						HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_ExactMatch{ExactMatch: value}})
+				} else {
+					// Only header presence needed
+					headers = append(headers, &envoy_config_route.HeaderMatcher{Name: hdr.Name,
+						HeaderMatchSpecifier: &envoy_config_route.HeaderMatcher_PresentMatch{PresentMatch: true}})
+				}
+			} else {
+				log.Debugf("HeaderMatches: Adding %s: %s", hdr.Name, value)
+				headerMatches = append(headerMatches, &cilium.HeaderMatch{
+					MismatchAction: mismatch_action,
+					Name:           hdr.Name,
+					Value:          value,
+				})
+			}
+		}
 	}
 	if len(headers) == 0 {
 		headers = nil
 	} else {
 		SortHeaderMatchers(headers)
 	}
-	return
+	if len(headerMatches) == 0 {
+		headerMatches = nil
+	} else {
+		// Optimally we should sort the headerMatches to avoid
+		// updating the policy if only the order of the rules
+		// has changed. Right now, when 'headerMatches' is a
+		// slice (rather than a map) the order only changes if
+		// the order of the rules in the imported policies
+		// changes, so there is minimal likelihood of
+		// unnecessary policy updates.
+
+		// SortHeaderMatches(headerMatches)
+	}
+
+	return &cilium.HttpNetworkPolicyRule{Headers: headers, HeaderMatches: headerMatches}, len(headerMatches) == 0
 }
 
-func createBootstrap(filePath string, name, cluster, version string, xdsSock, egressClusterName, ingressClusterName string, adminPath string) {
+func createBootstrap(filePath string, nodeId, cluster string, xdsSock, egressClusterName, ingressClusterName string, adminPath string) {
 	connectTimeout := int64(option.Config.ProxyConnectTimeout) // in seconds
 
-	bs := &envoy_config_bootstrap_v2.Bootstrap{
-		Node: &envoy_api_v2_core.Node{Id: name, Cluster: cluster, Metadata: nil, Locality: nil, BuildVersion: version},
-		StaticResources: &envoy_config_bootstrap_v2.Bootstrap_StaticResources{
-			Clusters: []*envoy_api_v2.Cluster{
+	bs := &envoy_config_bootstrap.Bootstrap{
+		Node: &envoy_config_core.Node{Id: nodeId, Cluster: cluster},
+		StaticResources: &envoy_config_bootstrap.Bootstrap_StaticResources{
+			Clusters: []*envoy_config_cluster.Cluster{
 				{
 					Name:                 egressClusterName,
-					ClusterDiscoveryType: &envoy_api_v2.Cluster_Type{Type: envoy_api_v2.Cluster_ORIGINAL_DST},
+					ClusterDiscoveryType: &envoy_config_cluster.Cluster_Type{Type: envoy_config_cluster.Cluster_ORIGINAL_DST},
 					ConnectTimeout:       &duration.Duration{Seconds: connectTimeout, Nanos: 0},
 					CleanupInterval:      &duration.Duration{Seconds: connectTimeout, Nanos: 500000000},
-					LbPolicy:             envoy_api_v2.Cluster_ORIGINAL_DST_LB,
-					ProtocolSelection:    envoy_api_v2.Cluster_USE_DOWNSTREAM_PROTOCOL,
+					LbPolicy:             envoy_config_cluster.Cluster_CLUSTER_PROVIDED,
+					ProtocolSelection:    envoy_config_cluster.Cluster_USE_DOWNSTREAM_PROTOCOL,
+				},
+				{
+					Name:                 egressTLSClusterName,
+					ClusterDiscoveryType: &envoy_config_cluster.Cluster_Type{Type: envoy_config_cluster.Cluster_ORIGINAL_DST},
+					ConnectTimeout:       &duration.Duration{Seconds: connectTimeout, Nanos: 0},
+					CleanupInterval:      &duration.Duration{Seconds: connectTimeout, Nanos: 500000000},
+					LbPolicy:             envoy_config_cluster.Cluster_CLUSTER_PROVIDED,
+					ProtocolSelection:    envoy_config_cluster.Cluster_USE_DOWNSTREAM_PROTOCOL,
+					TransportSocket:      &envoy_config_core.TransportSocket{Name: "cilium.tls_wrapper"},
 				},
 				{
 					Name:                 ingressClusterName,
-					ClusterDiscoveryType: &envoy_api_v2.Cluster_Type{Type: envoy_api_v2.Cluster_ORIGINAL_DST},
+					ClusterDiscoveryType: &envoy_config_cluster.Cluster_Type{Type: envoy_config_cluster.Cluster_ORIGINAL_DST},
 					ConnectTimeout:       &duration.Duration{Seconds: connectTimeout, Nanos: 0},
 					CleanupInterval:      &duration.Duration{Seconds: connectTimeout, Nanos: 500000000},
-					LbPolicy:             envoy_api_v2.Cluster_ORIGINAL_DST_LB,
-					ProtocolSelection:    envoy_api_v2.Cluster_USE_DOWNSTREAM_PROTOCOL,
+					LbPolicy:             envoy_config_cluster.Cluster_CLUSTER_PROVIDED,
+					ProtocolSelection:    envoy_config_cluster.Cluster_USE_DOWNSTREAM_PROTOCOL,
+				},
+				{
+					Name:                 ingressTLSClusterName,
+					ClusterDiscoveryType: &envoy_config_cluster.Cluster_Type{Type: envoy_config_cluster.Cluster_ORIGINAL_DST},
+					ConnectTimeout:       &duration.Duration{Seconds: connectTimeout, Nanos: 0},
+					CleanupInterval:      &duration.Duration{Seconds: connectTimeout, Nanos: 500000000},
+					LbPolicy:             envoy_config_cluster.Cluster_CLUSTER_PROVIDED,
+					ProtocolSelection:    envoy_config_cluster.Cluster_USE_DOWNSTREAM_PROTOCOL,
+					TransportSocket:      &envoy_config_core.TransportSocket{Name: "cilium.tls_wrapper"},
 				},
 				{
 					Name:                 "xds-grpc-cilium",
-					ClusterDiscoveryType: &envoy_api_v2.Cluster_Type{Type: envoy_api_v2.Cluster_STATIC},
+					ClusterDiscoveryType: &envoy_config_cluster.Cluster_Type{Type: envoy_config_cluster.Cluster_STATIC},
 					ConnectTimeout:       &duration.Duration{Seconds: connectTimeout, Nanos: 0},
-					LbPolicy:             envoy_api_v2.Cluster_ROUND_ROBIN,
-					Hosts: []*envoy_api_v2_core.Address{
-						{
-							Address: &envoy_api_v2_core.Address_Pipe{
-								Pipe: &envoy_api_v2_core.Pipe{Path: xdsSock}},
-						},
+					LbPolicy:             envoy_config_cluster.Cluster_ROUND_ROBIN,
+					LoadAssignment: &envoy_config_endpoint.ClusterLoadAssignment{
+						ClusterName: "xds-grpc-cilium",
+						Endpoints: []*envoy_config_endpoint.LocalityLbEndpoints{{
+							LbEndpoints: []*envoy_config_endpoint.LbEndpoint{{
+								HostIdentifier: &envoy_config_endpoint.LbEndpoint_Endpoint{
+									Endpoint: &envoy_config_endpoint.Endpoint{
+										Address: &envoy_config_core.Address{
+											Address: &envoy_config_core.Address_Pipe{
+												Pipe: &envoy_config_core.Pipe{Path: xdsSock}},
+										},
+									},
+								},
+							}},
+						}},
 					},
-					Http2ProtocolOptions: &envoy_api_v2_core.Http2ProtocolOptions{},
+					Http2ProtocolOptions: &envoy_config_core.Http2ProtocolOptions{},
+				},
+				{
+					Name:                 adminClusterName,
+					ClusterDiscoveryType: &envoy_config_cluster.Cluster_Type{Type: envoy_config_cluster.Cluster_STATIC},
+					ConnectTimeout:       &duration.Duration{Seconds: connectTimeout, Nanos: 0},
+					LbPolicy:             envoy_config_cluster.Cluster_ROUND_ROBIN,
+					LoadAssignment: &envoy_config_endpoint.ClusterLoadAssignment{
+						ClusterName: adminClusterName,
+						Endpoints: []*envoy_config_endpoint.LocalityLbEndpoints{{
+							LbEndpoints: []*envoy_config_endpoint.LbEndpoint{{
+								HostIdentifier: &envoy_config_endpoint.LbEndpoint_Endpoint{
+									Endpoint: &envoy_config_endpoint.Endpoint{
+										Address: &envoy_config_core.Address{
+											Address: &envoy_config_core.Address_Pipe{
+												Pipe: &envoy_config_core.Pipe{Path: adminPath}},
+										},
+									},
+								},
+							}},
+						}},
+					},
 				},
 			},
 		},
-		DynamicResources: &envoy_config_bootstrap_v2.Bootstrap_DynamicResources{
-			LdsConfig: &envoy_api_v2_core.ConfigSource{
-				ConfigSourceSpecifier: &envoy_api_v2_core.ConfigSource_ApiConfigSource{
-					ApiConfigSource: &envoy_api_v2_core.ApiConfigSource{
-						ApiType: envoy_api_v2_core.ApiConfigSource_GRPC,
-						GrpcServices: []*envoy_api_v2_core.GrpcService{
+		DynamicResources: &envoy_config_bootstrap.Bootstrap_DynamicResources{
+			LdsConfig: &envoy_config_core.ConfigSource{
+				ResourceApiVersion: envoy_config_core.ApiVersion_V3,
+				ConfigSourceSpecifier: &envoy_config_core.ConfigSource_ApiConfigSource{
+					ApiConfigSource: &envoy_config_core.ApiConfigSource{
+						ApiType:                   envoy_config_core.ApiConfigSource_GRPC,
+						TransportApiVersion:       envoy_config_core.ApiVersion_V3,
+						SetNodeOnFirstMessageOnly: true,
+						GrpcServices: []*envoy_config_core.GrpcService{
 							{
-								TargetSpecifier: &envoy_api_v2_core.GrpcService_EnvoyGrpc_{
-									EnvoyGrpc: &envoy_api_v2_core.GrpcService_EnvoyGrpc{
+								TargetSpecifier: &envoy_config_core.GrpcService_EnvoyGrpc_{
+									EnvoyGrpc: &envoy_config_core.GrpcService_EnvoyGrpc{
 										ClusterName: "xds-grpc-cilium",
 									},
 								},
@@ -567,11 +974,11 @@ func createBootstrap(filePath string, name, cluster, version string, xdsSock, eg
 				},
 			},
 		},
-		Admin: &envoy_config_bootstrap_v2.Admin{
+		Admin: &envoy_config_bootstrap.Admin{
 			AccessLogPath: "/dev/null",
-			Address: &envoy_api_v2_core.Address{
-				Address: &envoy_api_v2_core.Address_Pipe{
-					Pipe: &envoy_api_v2_core.Pipe{Path: adminPath},
+			Address: &envoy_config_core.Address{
+				Address: &envoy_config_core.Address_Pipe{
+					Pipe: &envoy_config_core.Pipe{Path: adminPath},
 				},
 			},
 		},
@@ -588,51 +995,98 @@ func createBootstrap(filePath string, name, cluster, version string, xdsSock, eg
 	}
 }
 
-func getPortNetworkPolicyRule(sel api.EndpointSelector, l7Parser policy.L7ParserType, l7Rules api.L7Rules,
-	labelsMap, deniedIdentities cache.IdentityCache) *cilium.PortNetworkPolicyRule {
-	// In case the endpoint selector is a wildcard and there are no denied
-	// identities, optimize the policy by setting an empty remote policies list
-	// to match all remote policies.
-	var remotePolicies []uint64
-	if !sel.IsWildcard() || len(deniedIdentities) > 0 {
-		for id, labels := range labelsMap {
-			_, ok := deniedIdentities[id]
-			if !ok && sel.Matches(labels) {
-				remotePolicies = append(remotePolicies, uint64(id))
+func getCiliumTLSContext(tls *policy.TLSContext) *cilium.TLSContext {
+	return &cilium.TLSContext{
+		TrustedCa:        tls.TrustedCA,
+		CertificateChain: tls.CertificateChain,
+		PrivateKey:       tls.PrivateKey,
+	}
+}
+
+func GetEnvoyHTTPRules(certManager policy.CertificateManager, l7Rules *api.L7Rules, ns string) (*cilium.HttpNetworkPolicyRules, bool) {
+	if len(l7Rules.HTTP) > 0 { // Just cautious. This should never be false.
+		// Assume none of the rules have side-effects so that rule evaluation can
+		// be stopped as soon as the first allowing rule is found. 'canShortCircuit'
+		// is set to 'false' below if any rules with side effects are encountered,
+		// causing all the applicable rules to be evaluated instead.
+		canShortCircuit := true
+		httpRules := make([]*cilium.HttpNetworkPolicyRule, 0, len(l7Rules.HTTP))
+		for _, l7 := range l7Rules.HTTP {
+			var cs bool
+			rule, cs := getHTTPRule(certManager, &l7, ns)
+			httpRules = append(httpRules, rule)
+			if !cs {
+				canShortCircuit = false
 			}
+		}
+		SortHTTPNetworkPolicyRules(httpRules)
+		return &cilium.HttpNetworkPolicyRules{
+			HttpRules: httpRules,
+		}, canShortCircuit
+	}
+	return nil, true
+}
+
+func getPortNetworkPolicyRule(sel policy.CachedSelector, wildcard bool, l7Parser policy.L7ParserType, l7Rules *policy.PerSelectorPolicy) (*cilium.PortNetworkPolicyRule, bool) {
+	r := &cilium.PortNetworkPolicyRule{}
+
+	// Optimize the policy if the endpoint selector is a wildcard by
+	// keeping remote policies list empty to match all remote policies.
+	if !wildcard {
+		for _, id := range sel.GetSelections() {
+			r.RemotePolicies = append(r.RemotePolicies, uint64(id))
 		}
 
 		// No remote policies would match this rule. Discard it.
-		if len(remotePolicies) == 0 {
-			return nil
+		if len(r.RemotePolicies) == 0 {
+			return nil, true
 		}
-
-		sort.Slice(remotePolicies, func(i, j int) bool {
-			return remotePolicies[i] < remotePolicies[j]
-		})
 	}
 
-	r := &cilium.PortNetworkPolicyRule{
-		RemotePolicies: remotePolicies,
+	if l7Rules == nil {
+		// L3/L4 only rule, everything in L7 is allowed && no TLS
+		return r, true
 	}
 
+	if l7Rules.TerminatingTLS != nil {
+		r.DownstreamTlsContext = getCiliumTLSContext(l7Rules.TerminatingTLS)
+	}
+	if l7Rules.OriginatingTLS != nil {
+		r.UpstreamTlsContext = getCiliumTLSContext(l7Rules.OriginatingTLS)
+	}
+
+	// Assume none of the rules have side-effects so that rule evaluation can
+	// be stopped as soon as the first allowing rule is found. 'canShortCircuit'
+	// is set to 'false' below if any rules with side effects are encountered,
+	// causing all the applicable rules to be evaluated instead.
+	canShortCircuit := true
 	switch l7Parser {
 	case policy.ParserTypeHTTP:
-		if len(l7Rules.HTTP) > 0 { // Just cautious. This should never be false.
-			httpRules := make([]*cilium.HttpNetworkPolicyRule, 0, len(l7Rules.HTTP))
-			for _, l7 := range l7Rules.HTTP {
-				headers, _ := getHTTPRule(&l7)
-				httpRules = append(httpRules, &cilium.HttpNetworkPolicyRule{Headers: headers})
+		// 'r.L7' is an interface which must not be set to a typed 'nil',
+		// so check if we have any rules
+		if len(l7Rules.HTTP) > 0 {
+			// Use L7 rules computed earlier?
+			var httpRules *cilium.HttpNetworkPolicyRules
+			if l7Rules.EnvoyHTTPRules != nil {
+				httpRules = l7Rules.EnvoyHTTPRules
+				canShortCircuit = l7Rules.CanShortCircuit
+			} else {
+				httpRules, canShortCircuit = GetEnvoyHTTPRules(nil, &l7Rules.L7Rules, "")
 			}
-			SortHTTPNetworkPolicyRules(httpRules)
 			r.L7 = &cilium.PortNetworkPolicyRule_HttpRules{
-				HttpRules: &cilium.HttpNetworkPolicyRules{
-					HttpRules: httpRules,
-				},
+				HttpRules: httpRules,
 			}
 		}
+
 	case policy.ParserTypeKafka:
-		// TODO: Support Kafka. For now, just ignore any Kafka L7 rule.
+		// Kafka is implemented as an Envoy Go Extension
+		if len(l7Rules.Kafka) > 0 {
+			// L7 rules are not sorted
+			r.L7Proto = l7Parser.String()
+			r.L7 = &cilium.PortNetworkPolicyRule_KafkaRules{
+				KafkaRules: getKafkaL7Rules(l7Rules.Kafka),
+			}
+		}
 
 	case policy.ParserTypeDNS:
 		// TODO: Support DNS. For now, just ignore any DNS L7 rule.
@@ -640,25 +1094,87 @@ func getPortNetworkPolicyRule(sel api.EndpointSelector, l7Parser policy.L7Parser
 	default:
 		// Assume unknown parser types use a Key-Value Pair policy
 		if len(l7Rules.L7) > 0 {
-			kvpRules := make([]*cilium.L7NetworkPolicyRule, 0, len(l7Rules.L7))
-			for _, l7 := range l7Rules.L7 {
-				kvpRules = append(kvpRules, getL7Rule(&l7))
-			}
 			// L7 rules are not sorted
 			r.L7Proto = l7Parser.String()
 			r.L7 = &cilium.PortNetworkPolicyRule_L7Rules{
-				L7Rules: &cilium.L7NetworkPolicyRules{
-					L7Rules: kvpRules,
-				},
+				L7Rules: getL7Rules(l7Rules.L7, r.L7Proto),
 			}
 		}
 	}
 
-	return r
+	return r, canShortCircuit
 }
 
-func getDirectionNetworkPolicy(l4Policy policy.L4PolicyMap, policyEnforced bool,
-	labelsMap, deniedIdentities cache.IdentityCache) []*cilium.PortNetworkPolicy {
+// getWildcardNetworkPolicyRule returns the rule for port 0, which
+// will be considered after port-specific rules.
+func getWildcardNetworkPolicyRule(selectors policy.L7DataMap) *cilium.PortNetworkPolicyRule {
+	// selections are pre-sorted, so sorting is only needed if merging selections from multiple selectors
+	if len(selectors) == 1 {
+		for sel := range selectors {
+			if sel.IsWildcard() {
+				return &cilium.PortNetworkPolicyRule{}
+			}
+			selections := sel.GetSelections()
+			if len(selections) == 0 {
+				// No remote policies would match this rule. Discard it.
+				return nil
+			}
+			// convert from []uint32 to []uint64
+			remotePolicies := make([]uint64, len(selections))
+			for i, id := range selections {
+				remotePolicies[i] = uint64(id)
+			}
+			return &cilium.PortNetworkPolicyRule{
+				RemotePolicies: remotePolicies,
+			}
+		}
+	}
+
+	// Use map to remove duplicates
+	remoteMap := make(map[uint64]struct{})
+	wildcardFound := false
+	for sel, l7 := range selectors {
+		if sel.IsWildcard() {
+			wildcardFound = true
+			break
+		}
+
+		for _, id := range sel.GetSelections() {
+			remoteMap[uint64(id)] = struct{}{}
+		}
+
+		if !l7.IsEmpty() {
+			// If it is not empty then we issue the warning.
+			// Deny rules don't support L7 therefore for the deny case
+			// l7.IsEmpty() will always return true.
+			log.Warningf("L3-only rule for selector %v surprisingly has L7 rules (%v)!", sel, *l7)
+		}
+	}
+
+	if wildcardFound {
+		// Optimize the policy if the endpoint selector is a wildcard by
+		// keeping remote policies list empty to match all remote policies.
+		remoteMap = nil
+	} else if len(remoteMap) == 0 {
+		// No remote policies would match this rule. Discard it.
+		return nil
+	}
+
+	// Convert to a sorted slice
+	remotePolicies := make([]uint64, 0, len(remoteMap))
+	for id := range remoteMap {
+		remotePolicies = append(remotePolicies, id)
+	}
+	sort.Slice(remotePolicies, func(i, j int) bool {
+		return remotePolicies[i] < remotePolicies[j]
+	})
+
+	return &cilium.PortNetworkPolicyRule{
+		RemotePolicies: remotePolicies,
+	}
+}
+
+func getDirectionNetworkPolicy(ep logger.EndpointUpdater, l4Policy policy.L4PolicyMap, policyEnforced bool) []*cilium.PortNetworkPolicy {
 	if !policyEnforced {
 		// Return an allow-all policy.
 		return allowAllPortNetworkPolicy
@@ -669,78 +1185,140 @@ func getDirectionNetworkPolicy(l4Policy policy.L4PolicyMap, policyEnforced bool,
 	}
 
 	PerPortPolicies := make([]*cilium.PortNetworkPolicy, 0, len(l4Policy))
-
 	for _, l4 := range l4Policy {
-		var protocol envoy_api_v2_core.SocketAddress_Protocol
+		var protocol envoy_config_core.SocketAddress_Protocol
 		switch l4.Protocol {
 		case api.ProtoTCP:
-			protocol = envoy_api_v2_core.SocketAddress_TCP
+			protocol = envoy_config_core.SocketAddress_TCP
 		case api.ProtoUDP:
-			protocol = envoy_api_v2_core.SocketAddress_UDP
+			// UDP rules not sent to Envoy for now.
+			continue
 		}
 
-		pnp := &cilium.PortNetworkPolicy{
-			Port:     uint32(l4.Port),
-			Protocol: protocol,
-			Rules:    make([]*cilium.PortNetworkPolicyRule, 0, len(l4.L7RulesPerEp)),
-		}
-
-		allowAll := false
-		for sel, l7 := range l4.L7RulesPerEp {
-			rule := getPortNetworkPolicyRule(sel, l4.L7Parser, l7, labelsMap, deniedIdentities)
-			if rule != nil {
-				if len(rule.RemotePolicies) == 0 && rule.L7 == nil {
-					// Got an allow-all rule, which would short-circuit all of
-					// the other rules. Just set no rules, which has the same
-					// effect of allowing all.
-					allowAll = true
-					pnp.Rules = nil
-					break
-				}
-
-				pnp.Rules = append(pnp.Rules, rule)
+		port := uint16(l4.Port)
+		if port == 0 && l4.PortName != "" {
+			port = ep.GetNamedPortLocked(l4.Ingress, l4.PortName, uint8(l4.U8Proto))
+			if port == 0 {
+				continue
 			}
+		}
+
+		rules := make([]*cilium.PortNetworkPolicyRule, 0, len(l4.L7RulesPerSelector))
+		allowAll := false
+
+		// Assume none of the rules have side-effects so that rule evaluation can
+		// be stopped as soon as the first allowing rule is found. 'canShortCircuit'
+		// is set to 'false' below if any rules with side effects are encountered,
+		// causing all the applicable rules to be evaluated instead.
+		canShortCircuit := true
+
+		if port == 0 {
+			// L3-only rule, must generate L7 allow-all in case there are other
+			// port-specific rules. Otherwise traffic from allowed remotes could be dropped.
+			rule := getWildcardNetworkPolicyRule(l4.L7RulesPerSelector)
+			if rule != nil {
+				if len(rule.RemotePolicies) == 0 {
+					// Got an allow-all rule, which can short-circuit all of
+					// the other rules.
+					allowAll = true
+				}
+				rules = append(rules, rule)
+			}
+		} else {
+			nSelectors := len(l4.L7RulesPerSelector)
+			for sel, l7 := range l4.L7RulesPerSelector {
+				// A single selector is effectively a wildcard, as bpf passes through
+				// only allowed l3. If there are multiple selectors for this l4-filter
+				// then the proxy may need to drop some allowed l3 due to l7 rules potentially
+				// being different between the selectors.
+				wildcard := nSelectors == 1 || sel.IsWildcard()
+				rule, cs := getPortNetworkPolicyRule(sel, wildcard, l4.L7Parser, l7)
+				if rule != nil {
+					if !cs {
+						canShortCircuit = false
+					}
+					if len(rule.RemotePolicies) == 0 && rule.L7 == nil {
+						// Got an allow-all rule, which can short-circuit all of
+						// the other rules.
+						allowAll = true
+					}
+					rules = append(rules, rule)
+				}
+			}
+		}
+		// Short-circuit rules if a rule allows all and all other rules can be short-circuited
+		if allowAll && canShortCircuit {
+			log.Debug("Short circuiting HTTP rules due to rule allowing all and no other rules needing attention")
+			rules = nil
 		}
 
 		// No rule for this port matches any remote identity.
 		// This means that no traffic was explicitly allowed for this port.
 		// In this case, just don't generate any PortNetworkPolicy for this
 		// port.
-		if !allowAll && len(pnp.Rules) == 0 {
+		if !allowAll && len(rules) == 0 {
 			continue
 		}
 
-		SortPortNetworkPolicyRules(pnp.Rules)
-
-		PerPortPolicies = append(PerPortPolicies, pnp)
+		PerPortPolicies = append(PerPortPolicies, &cilium.PortNetworkPolicy{
+			Port:     uint32(port),
+			Protocol: protocol,
+			Rules:    SortPortNetworkPolicyRules(rules),
+		})
 	}
 
 	if len(PerPortPolicies) == 0 {
 		return nil
 	}
 
-	SortPortNetworkPolicies(PerPortPolicies)
-
-	return PerPortPolicies
+	return SortPortNetworkPolicies(PerPortPolicies)
 }
 
 // getNetworkPolicy converts a network policy into a cilium.NetworkPolicy.
-func getNetworkPolicy(name string, id identity.NumericIdentity, conntrackName string, policy *policy.L4Policy,
-	ingressPolicyEnforced, egressPolicyEnforced bool, labelsMap,
-	deniedIngressIdentities, deniedEgressIdentities cache.IdentityCache) *cilium.NetworkPolicy {
+func getNetworkPolicy(ep logger.EndpointUpdater, name string, policy *policy.L4Policy,
+	ingressPolicyEnforced, egressPolicyEnforced bool) *cilium.NetworkPolicy {
 	p := &cilium.NetworkPolicy{
 		Name:             name,
-		Policy:           uint64(id),
-		ConntrackMapName: conntrackName,
+		Policy:           uint64(ep.GetIdentityLocked()),
+		ConntrackMapName: ep.ConntrackNameLocked(),
 	}
 
 	// If no policy, deny all traffic. Otherwise, convert the policies for ingress and egress.
 	if policy != nil {
-		p.IngressPerPortPolicies = getDirectionNetworkPolicy(policy.Ingress, ingressPolicyEnforced, labelsMap, deniedIngressIdentities)
-		p.EgressPerPortPolicies = getDirectionNetworkPolicy(policy.Egress, egressPolicyEnforced, labelsMap, deniedEgressIdentities)
+		p.IngressPerPortPolicies = getDirectionNetworkPolicy(ep, policy.Ingress, ingressPolicyEnforced)
+		p.EgressPerPortPolicies = getDirectionNetworkPolicy(ep, policy.Egress, egressPolicyEnforced)
 	}
 
 	return p
+}
+
+// return the Envoy proxy node IDs that need to ACK the policy.
+func getNodeIDs(ep logger.EndpointUpdater, policy *policy.L4Policy) []string {
+	nodeIDs := make([]string, 0, 1)
+	if ep.HasSidecarProxy() {
+		// Istio sidecars have the Cilium bpf metadata filter
+		// statically configured running the NPDS client, so
+		// we may unconditionally wait for ACKs from the
+		// sidecars.
+		// Sidecar's IPv4 address is used as the node ID.
+		ipv4 := ep.GetIPv4Address()
+		if ipv4 == "" {
+			log.Error("Envoy: Sidecar proxy has no IPv4 address")
+		} else {
+			nodeIDs = append(nodeIDs, ipv4)
+		}
+	} else {
+		// Host proxy uses "127.0.0.1" as the nodeID
+		nodeIDs = append(nodeIDs, "127.0.0.1")
+	}
+	// Require additional ACK from proxylib if policy has proxylib redirects
+	// Note that if a previous policy had a proxylib redirect and this one does not,
+	// we only wait for the ACK from the main Envoy node ID.
+	if policy.HasProxylibRedirect() {
+		// Proxylib uses "127.0.0.2" as the nodeID
+		nodeIDs = append(nodeIDs, "127.0.0.2")
+	}
+	return nodeIDs
 }
 
 // UpdateNetworkPolicy adds or updates a network policy in the set published
@@ -748,9 +1326,7 @@ func getNetworkPolicy(name string, id identity.NumericIdentity, conntrackName st
 // When the proxy acknowledges the network policy update, it will result in
 // a subsequent call to the endpoint's OnProxyPolicyUpdate() function.
 func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *policy.L4Policy,
-	ingressPolicyEnforced, egressPolicyEnforced bool, labelsMap,
-	deniedIngressIdentities, deniedEgressIdentities cache.IdentityCache, wg *completion.WaitGroup) (error, func() error) {
-
+	ingressPolicyEnforced, egressPolicyEnforced bool, wg *completion.WaitGroup) (error, func() error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -759,13 +1335,12 @@ func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *polic
 		ep.GetIPv6Address(),
 		ep.GetIPv4Address(),
 	}
-	var policies []*cilium.NetworkPolicy
+	policies := make([]*cilium.NetworkPolicy, 0, len(ips))
 	for _, ip := range ips {
 		if ip == "" {
 			continue
 		}
-		networkPolicy := getNetworkPolicy(ip, ep.GetIdentity(), ep.ConntrackName(), policy, ingressPolicyEnforced, egressPolicyEnforced,
-			labelsMap, deniedIngressIdentities, deniedEgressIdentities)
+		networkPolicy := getNetworkPolicy(ep, ip, policy, ingressPolicyEnforced, egressPolicyEnforced)
 		err := networkPolicy.Validate()
 		if err != nil {
 			return fmt.Errorf("error validating generated NetworkPolicy for %s: %s", ip, err), nil
@@ -773,39 +1348,12 @@ func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *polic
 		policies = append(policies, networkPolicy)
 	}
 
-	if ep.HasSidecarProxy() { // Use sidecar proxy.
-		// If there are no L7 rules, we expect Envoy to NOT be configured with
-		// an L7 filter, in which case we'd never receive an ACK for the policy,
-		// and we'd wait forever.
-		// TODO: Remove this when we implement and inject an Envoy network filter
-		// into every Envoy listener to filter at L3/L4.
-		var hasL7Rules bool
-	Policies:
-		for _, p := range policies {
-			for _, pnp := range p.IngressPerPortPolicies {
-				for _, r := range pnp.Rules {
-					if r.L7 != nil {
-						hasL7Rules = true
-						break Policies
-					}
-				}
-			}
-			for _, pnp := range p.EgressPerPortPolicies {
-				for _, r := range pnp.Rules {
-					if r.L7 != nil {
-						hasL7Rules = true
-						break Policies
-					}
-				}
-			}
-		}
-		if !hasL7Rules {
-			wg = nil
-		}
-	} else { // Use node proxy.
-		// If there are no listeners configured, the local node's Envoy proxy won't
-		// query for network policies and therefore will never ACK them, and we'd
-		// wait forever.
+	nodeIDs := getNodeIDs(ep, policy)
+
+	// If there are no listeners configured, the local node's Envoy proxy won't
+	// query for network policies and therefore will never ACK them, and we'd
+	// wait forever.
+	if !ep.HasSidecarProxy() {
 		if len(s.listeners) == 0 {
 			wg = nil
 		}
@@ -824,20 +1372,7 @@ func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *polic
 				}
 			}
 		}
-		var c *completion.Completion
-		if wg != nil {
-			c = wg.AddCompletionWithCallback(callback)
-		}
-		nodeIDs := make([]string, 0, 1)
-		if ep.HasSidecarProxy() {
-			if ep.GetIPv4Address() == "" {
-				log.Fatal("Envoy: Sidecar proxy has no IPv4 address")
-			}
-			nodeIDs = append(nodeIDs, ep.GetIPv4Address())
-		} else {
-			nodeIDs = append(nodeIDs, "127.0.0.1")
-		}
-		revertFuncs = append(revertFuncs, s.NetworkPolicyMutator.Upsert(NetworkPolicyTypeURL, p.Name, p, nodeIDs, c))
+		revertFuncs = append(revertFuncs, s.NetworkPolicyMutator.Upsert(NetworkPolicyTypeURL, p.Name, p, nodeIDs, wg, callback))
 		revertUpdatedNetworkPolicyEndpoints[p.Name] = s.networkPolicyEndpoints[p.Name]
 		s.networkPolicyEndpoints[p.Name] = ep
 	}
@@ -868,6 +1403,23 @@ func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *polic
 	}
 }
 
+// UseCurrentNetworkPolicy inserts a Completion to the WaitGroup if the current network policy has not yet been acked.
+// 'wg' may not be nil.
+func (s *XDSServer) UseCurrentNetworkPolicy(ep logger.EndpointUpdater, policy *policy.L4Policy, wg *completion.WaitGroup) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// If there are no listeners configured, the local node's Envoy proxy won't
+	// query for network policies and therefore will never ACK them, and we'd
+	// wait forever.
+	if !ep.HasSidecarProxy() && len(s.listeners) == 0 {
+		return
+	}
+
+	nodeIDs := getNodeIDs(ep, policy)
+	s.NetworkPolicyMutator.UseCurrent(NetworkPolicyTypeURL, nodeIDs, wg)
+}
+
 // RemoveNetworkPolicy removes network policies relevant to the specified
 // endpoint from the set published to L7 proxies, and stops listening for
 // acks for policies on this endpoint.
@@ -875,29 +1427,31 @@ func (s *XDSServer) RemoveNetworkPolicy(ep logger.EndpointInfoSource) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if ep.GetIPv6Address() != "" {
-		name := ep.GetIPv6Address()
-		s.networkPolicyCache.Delete(NetworkPolicyTypeURL, name, false)
+	name := ep.GetIPv6Address()
+	if name != "" {
+		s.networkPolicyCache.Delete(NetworkPolicyTypeURL, name)
 		delete(s.networkPolicyEndpoints, name)
 	}
-	if ep.GetIPv4Address() != "" {
-		name := ep.GetIPv4Address()
-		s.networkPolicyCache.Delete(NetworkPolicyTypeURL, name, false)
+	name = ep.GetIPv4Address()
+	if name != "" {
+		s.networkPolicyCache.Delete(NetworkPolicyTypeURL, name)
 		delete(s.networkPolicyEndpoints, name)
+		// Delete node resources held in the cache for the endpoint (e.g., sidecar)
+		s.NetworkPolicyMutator.DeleteNode(name)
 	}
 }
 
 // RemoveAllNetworkPolicies removes all network policies from the set published
 // to L7 proxies.
 func (s *XDSServer) RemoveAllNetworkPolicies() {
-	s.networkPolicyCache.Clear(NetworkPolicyTypeURL, false)
+	s.networkPolicyCache.Clear(NetworkPolicyTypeURL)
 }
 
 // GetNetworkPolicies returns the current version of the network policies with
 // the given names.
 // If resourceNames is empty, all resources are returned.
 func (s *XDSServer) GetNetworkPolicies(resourceNames []string) (map[string]*cilium.NetworkPolicy, error) {
-	resources, err := s.networkPolicyCache.GetResources(context.Background(), NetworkPolicyTypeURL, 0, nil, resourceNames)
+	resources, err := s.networkPolicyCache.GetResources(context.Background(), NetworkPolicyTypeURL, 0, "", resourceNames)
 	if err != nil {
 		return nil, err
 	}

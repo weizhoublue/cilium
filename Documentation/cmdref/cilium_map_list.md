@@ -4,10 +4,6 @@
 
 List all open BPF maps
 
-### Synopsis
-
-List all open BPF maps
-
 ```
 cilium map list [flags]
 ```
@@ -36,5 +32,5 @@ cilium map list
 
 ### SEE ALSO
 
-* [cilium map](../cilium_map)	 - Access BPF maps
+* [cilium map](../cilium_map)	 - Access userspace cached content of BPF maps
 

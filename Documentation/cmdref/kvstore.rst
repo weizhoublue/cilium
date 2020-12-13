@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _install_kvstore:
 
@@ -55,6 +55,10 @@ etcd endpoints:
 +---------------------+---------+---------------------------------------------------+
 | etcd.address        | Address | Address of etcd endpoint                          |
 +---------------------+---------+---------------------------------------------------+
+|                     |         | When set to true, Cilium will resolve the domain  |
+| etcd.operator       | Boolean | name of the etcd server from the associated k8s   |
+|                     |         | service deployed.                                 |
++---------------------+---------+---------------------------------------------------+
 | etcd.config         | Path    | Path to an etcd configuration file.               |
 +---------------------+---------+---------------------------------------------------+
 
@@ -66,7 +70,7 @@ Example of the etcd configuration file:
     endpoints:
     - https://192.168.0.1:2379
     - https://192.168.0.2:2379
-    ca-file: '/var/lib/cilium/etcd-ca.pem'
+    trusted-ca-file: '/var/lib/cilium/etcd-ca.pem'
     # In case you want client to server authentication
     key-file: '/var/lib/cilium/etcd-client.key'
     cert-file: '/var/lib/cilium/etcd-client.crt'

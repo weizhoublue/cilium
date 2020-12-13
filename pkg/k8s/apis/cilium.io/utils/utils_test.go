@@ -1,4 +1,4 @@
-// Copyright 2018-2019 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,11 +22,11 @@ import (
 
 	"github.com/cilium/cilium/pkg/checker"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/api"
 
 	. "gopkg.in/check.v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -66,7 +66,7 @@ func Test_ParseToCiliumRule(t *testing.T) {
 			// added.
 			name: "parse-in-namespace",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -115,7 +115,7 @@ func Test_ParseToCiliumRule(t *testing.T) {
 			// by the namespace where the rule was inserted.
 			name: "parse-in-namespace-with-ns-selector",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -165,7 +165,7 @@ func Test_ParseToCiliumRule(t *testing.T) {
 			// is for init policies.
 			name: "parse-init-policy",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -215,7 +215,7 @@ func Test_ParseToCiliumRule(t *testing.T) {
 		{
 			name: "set-any-source-for-namespace",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -226,11 +226,13 @@ func Test_ParseToCiliumRule(t *testing.T) {
 					),
 					Ingress: []api.IngressRule{
 						{
-							FromEndpoints: []api.EndpointSelector{
-								{
-									LabelSelector: &metav1.LabelSelector{
-										MatchLabels: map[string]string{
-											podAnyPrefixLbl: "ns-2",
+							IngressCommonRule: api.IngressCommonRule{
+								FromEndpoints: []api.EndpointSelector{
+									{
+										LabelSelector: &slim_metav1.LabelSelector{
+											MatchLabels: map[string]string{
+												podAnyPrefixLbl: "ns-2",
+											},
 										},
 									},
 								},
@@ -250,14 +252,16 @@ func Test_ParseToCiliumRule(t *testing.T) {
 			).WithIngressRules(
 				[]api.IngressRule{
 					{
-						FromEndpoints: []api.EndpointSelector{
-							api.NewESFromK8sLabelSelector(
-								labels.LabelSourceAnyKeyPrefix,
-								&metav1.LabelSelector{
-									MatchLabels: map[string]string{
-										k8sConst.PodNamespaceLabel: "ns-2",
-									},
-								}),
+						IngressCommonRule: api.IngressCommonRule{
+							FromEndpoints: []api.EndpointSelector{
+								api.NewESFromK8sLabelSelector(
+									labels.LabelSourceAnyKeyPrefix,
+									&slim_metav1.LabelSelector{
+										MatchLabels: map[string]string{
+											k8sConst.PodNamespaceLabel: "ns-2",
+										},
+									}),
+							},
 						},
 					},
 				},
@@ -286,12 +290,88 @@ func Test_ParseToCiliumRule(t *testing.T) {
 				},
 			),
 		},
+		{
+			// For a clusterwide policy the namespace is empty but when a to/fromEndpoint
+			// rule is added that represents a wildcard we add a match expression
+			// to account only for endpoints managed by cilium.
+			name: "wildcard-to-from-endpoints-with-ccnp",
+			args: args{
+				// Empty namespace for Clusterwide policy
+				namespace: "",
+				uid:       uuid,
+				rule: &api.Rule{
+					EndpointSelector: api.NewESFromMatchRequirements(
+						map[string]string{
+							role: "backend",
+						},
+						nil,
+					),
+					Ingress: []api.IngressRule{
+						{
+							IngressCommonRule: api.IngressCommonRule{
+								FromEndpoints: []api.EndpointSelector{
+									{
+										LabelSelector: &slim_metav1.LabelSelector{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: api.NewRule().WithEndpointSelector(
+				api.NewESFromMatchRequirements(
+					map[string]string{
+						role: "backend",
+					},
+					nil,
+				),
+			).WithIngressRules(
+				[]api.IngressRule{
+					{
+						IngressCommonRule: api.IngressCommonRule{
+							FromEndpoints: []api.EndpointSelector{
+								api.NewESFromK8sLabelSelector(
+									labels.LabelSourceK8sKeyPrefix,
+									&slim_metav1.LabelSelector{
+										MatchExpressions: []slim_metav1.LabelSelectorRequirement{
+											{
+												Key:      k8sConst.PodNamespaceLabel,
+												Operator: slim_metav1.LabelSelectorOpExists,
+												Values:   []string{},
+											},
+										},
+									}),
+							},
+						},
+					},
+				},
+			).WithLabels(
+				labels.LabelArray{
+					{
+						Key:    "io.cilium.k8s.policy.derived-from",
+						Value:  "CiliumClusterwideNetworkPolicy",
+						Source: labels.LabelSourceK8s,
+					},
+					{
+						Key:    "io.cilium.k8s.policy.name",
+						Value:  "wildcard-to-from-endpoints-with-ccnp",
+						Source: labels.LabelSourceK8s,
+					},
+					{
+						Key:    "io.cilium.k8s.policy.uid",
+						Value:  string(uuid),
+						Source: labels.LabelSourceK8s,
+					},
+				},
+			),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ParseToCiliumRule(tt.args.namespace, tt.name, tt.args.uid, tt.args.rule)
 
-			// Sanitize to set aggregatedSelectors field.
+			// Sanitize to set AggregatedSelectors field.
 			tt.want.Sanitize()
 			args := []interface{}{got, tt.want}
 			names := []string{"obtained", "expected"}

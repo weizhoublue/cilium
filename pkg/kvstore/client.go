@@ -15,7 +15,11 @@
 package kvstore
 
 import (
+	"context"
 	"fmt"
+	"time"
+
+	"github.com/cilium/cilium/pkg/option"
 )
 
 var (
@@ -26,11 +30,12 @@ var (
 	defaultClientSet = make(chan struct{})
 )
 
-func initClient(module backendModule, opts *ExtraOptions) error {
-	c, errChan := module.newClient(opts)
+func initClient(ctx context.Context, module backendModule, opts *ExtraOptions) error {
+	scopedLog := log.WithField(fieldKVStoreModule, module.getName())
+	c, errChan := module.newClient(ctx, opts)
 	if c == nil {
 		err := <-errChan
-		log.WithError(err).Fatalf("Unable to create etcd client")
+		scopedLog.WithError(err).Fatal("Unable to create kvstore client")
 	}
 
 	defaultClient = c
@@ -43,10 +48,12 @@ func initClient(module backendModule, opts *ExtraOptions) error {
 
 	go func() {
 		err, isErr := <-errChan
-		if isErr {
-			log.WithError(err).Fatalf("Unable to connect to kvstore")
+		if isErr && err != nil {
+			scopedLog.WithError(err).Fatal("Unable to connect to kvstore")
 		}
-		deleteLegacyPrefixes()
+		if !option.Config.JoinCluster {
+			deleteLegacyPrefixes(ctx)
+		}
 	}()
 
 	return nil
@@ -59,7 +66,7 @@ func Client() BackendOperations {
 }
 
 // NewClient returns a new kvstore client based on the configuration
-func NewClient(selectedBackend string, opts map[string]string, options *ExtraOptions) (BackendOperations, chan error) {
+func NewClient(ctx context.Context, selectedBackend string, opts map[string]string, options *ExtraOptions) (BackendOperations, chan error) {
 	// Channel used to report immediate errors, module.newClient will
 	// create and return a different channel, caller doesn't need to know
 	errChan := make(chan error, 1)
@@ -81,5 +88,28 @@ func NewClient(selectedBackend string, opts map[string]string, options *ExtraOpt
 		return nil, errChan
 	}
 
-	return module.newClient(options)
+	return module.newClient(ctx, options)
+}
+
+// Connected returns a channel which is closed when the following conditions
+// are being met at the same time:
+// * The kvstore client is configured
+// * Connectivity to the kvstore has been established
+// * The kvstore has quorum
+//
+// The channel will *not* be closed if the kvstore client is closed before
+// connectivity or quorum has been achieved. It will wait until a new kvstore
+// client is configured to again wait for connectivity and quorum.
+func Connected() <-chan struct{} {
+	c := make(chan struct{})
+	go func(c chan struct{}) {
+		for {
+			if err := <-Client().Connected(context.Background()); err == nil {
+				close(c)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}(c)
+	return c
 }

@@ -37,9 +37,10 @@ type ELFTestSuite struct{}
 var (
 	_ = Suite(&ELFTestSuite{})
 
-	elfObjCopy  = "elf-demo-copy.o"
 	baseObjPath = filepath.Join(testutils.CiliumRootDir, "test", "bpf", "elf-demo.o")
 )
+
+const elfObjCopy = "elf-demo-copy.o"
 
 func Test(t *testing.T) {
 	TestingT(t)
@@ -60,7 +61,7 @@ func hash(path string) ([]byte, error) {
 	return hash.Sum(nil), nil
 }
 
-var errDifferentFiles = fmt.Errorf("File hashes differ")
+var errDifferentFiles = fmt.Errorf("file hashes differ")
 
 func compareFiles(path1, path2 string) error {
 	h1, err := hash(path1)

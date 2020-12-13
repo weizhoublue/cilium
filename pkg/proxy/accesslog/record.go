@@ -219,6 +219,12 @@ type LogRecordHTTP struct {
 
 	// Headers are all HTTP headers present in the request
 	Headers http.Header
+
+	// MissingHeaders are HTTP request headers that were deemed missing from the request
+	MissingHeaders http.Header
+
+	// RejectedHeaders are HTTP request headers that were rejected from the request
+	RejectedHeaders http.Header
 }
 
 // KafkaTopic contains the topic for requests
@@ -251,10 +257,6 @@ type LogRecordKafka struct {
 type DNSDataSource string
 
 const (
-	// DNSSourceAgentPoller indicates that the DNS record was created by a poll
-	// from cilium-agent.
-	DNSSourceAgentPoller DNSDataSource = "agent-poller"
-
 	// DNSSourceProxy indicates that the DNS record was created by a proxy
 	// intercepting a DNS request/response.
 	DNSSourceProxy DNSDataSource = "proxy"

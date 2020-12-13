@@ -1,20 +1,6 @@
-/*
- *  Copyright (C) 2016-2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 #ifndef __LIB_L3_H_
 #define __LIB_L3_H_
 
@@ -29,125 +15,134 @@
 #include "csum.h"
 
 #ifdef ENABLE_IPV6
-static inline int __inline__ ipv6_l3(struct __sk_buff *skb, int l3_off,
-				     __u8 *smac, __u8 *dmac, __u8 direction)
+static __always_inline int ipv6_l3(struct __ctx_buff *ctx, int l3_off,
+				   const __u8 *smac, const __u8 *dmac,
+				   __u8 direction)
 {
 	int ret;
 
-	ret = ipv6_dec_hoplimit(skb, l3_off);
+	ret = ipv6_dec_hoplimit(ctx, l3_off);
 	if (IS_ERR(ret))
 		return ret;
-
 	if (ret > 0) {
 		/* Hoplimit was reached */
-		return icmp6_send_time_exceeded(skb, l3_off, direction);
+		return icmp6_send_time_exceeded(ctx, l3_off, direction);
 	}
 
-	if (smac && eth_store_saddr(skb, smac, 0) < 0)
+	if (smac && eth_store_saddr(ctx, smac, 0) < 0)
+		return DROP_WRITE_ERROR;
+	if (dmac && eth_store_daddr(ctx, dmac, 0) < 0)
 		return DROP_WRITE_ERROR;
 
-	if (eth_store_daddr(skb, dmac, 0) < 0)
-		return DROP_WRITE_ERROR;
-
-	return TC_ACT_OK;
+	return CTX_ACT_OK;
 }
 #endif /* ENABLE_IPV6 */
 
-static inline int __inline__ ipv4_l3(struct __sk_buff *skb, int l3_off,
-				     __u8 *smac, __u8 *dmac, struct iphdr *ip4)
+static __always_inline int ipv4_l3(struct __ctx_buff *ctx, int l3_off,
+				   const __u8 *smac, const __u8 *dmac,
+				   struct iphdr *ip4)
 {
-	if (ipv4_dec_ttl(skb, l3_off, ip4)) {
+	if (ipv4_dec_ttl(ctx, l3_off, ip4)) {
 		/* FIXME: Send ICMP TTL */
 		return DROP_INVALID;
 	}
 
-	if (smac && eth_store_saddr(skb, smac, 0) < 0)
+	if (smac && eth_store_saddr(ctx, smac, 0) < 0)
+		return DROP_WRITE_ERROR;
+	if (dmac && eth_store_daddr(ctx, dmac, 0) < 0)
 		return DROP_WRITE_ERROR;
 
-	if (eth_store_daddr(skb, dmac, 0) < 0)
-		return DROP_WRITE_ERROR;
-
-	return TC_ACT_OK;
+	return CTX_ACT_OK;
 }
 
+#ifndef SKIP_POLICY_MAP
 #ifdef ENABLE_IPV6
-static inline int ipv6_local_delivery(struct __sk_buff *skb, int l3_off, int l4_off,
-				      __u32 seclabel, struct ipv6hdr *ip6, __u8 nexthdr,
-				      struct endpoint_info *ep, __u8 direction)
+static __always_inline int ipv6_local_delivery(struct __ctx_buff *ctx, int l3_off,
+					       __u32 seclabel,
+					       const struct endpoint_info *ep,
+					       __u8 direction,
+					       bool from_host __maybe_unused)
 {
+	mac_t router_mac = ep->node_mac;
+	mac_t lxc_mac = ep->mac;
 	int ret;
 
-	cilium_dbg(skb, DBG_LOCAL_DELIVERY, ep->lxc_id, seclabel);
-
-	mac_t lxc_mac = ep->mac;
-	mac_t router_mac = ep->node_mac;
+	cilium_dbg(ctx, DBG_LOCAL_DELIVERY, ep->lxc_id, seclabel);
 
 	/* This will invalidate the size check */
-	ret = ipv6_l3(skb, l3_off, (__u8 *) &router_mac, (__u8 *) &lxc_mac, direction);
-	if (ret != TC_ACT_OK)
+	ret = ipv6_l3(ctx, l3_off, (__u8 *) &router_mac, (__u8 *) &lxc_mac, direction);
+	if (ret != CTX_ACT_OK)
 		return ret;
 
-	cilium_dbg(skb, DBG_LXC_FOUND, ep->ifindex, 0);
-
-#if defined LOCAL_DELIVERY_METRICS
+#ifdef LOCAL_DELIVERY_METRICS
 	/*
 	 * Special LXC case for updating egress forwarding metrics.
 	 * Note that the packet could still be dropped but it would show up
 	 * as an ingress drop counter in metrics.
 	 */
-	update_metrics(skb->len, direction, REASON_FORWARDED);
+	update_metrics(ctx_full_len(ctx), direction, REASON_FORWARDED);
 #endif
 
-#ifdef USE_BPF_PROG_FOR_INGRESS_POLICY
-	skb->mark = (seclabel << 16) | MARK_MAGIC_IDENTITY;
-	return redirect_peer(ep->ifindex, 0);
+#if defined(USE_BPF_PROG_FOR_INGRESS_POLICY) && \
+	!defined(FORCE_LOCAL_POLICY_EVAL_AT_SOURCE)
+	ctx->mark |= MARK_MAGIC_IDENTITY;
+	set_identity_mark(ctx, seclabel);
+
+	return redirect_ep(ep->ifindex, from_host);
 #else
-	skb->cb[CB_SRC_LABEL] = seclabel;
-	skb->cb[CB_IFINDEX] = ep->ifindex;
-	tail_call(skb, &POLICY_CALL_MAP, ep->lxc_id);
+	ctx_store_meta(ctx, CB_SRC_LABEL, seclabel);
+	ctx_store_meta(ctx, CB_IFINDEX, ep->ifindex);
+	ctx_store_meta(ctx, CB_FROM_HOST, from_host ? 1 : 0);
+
+	tail_call_dynamic(ctx, &POLICY_CALL_MAP, ep->lxc_id);
 	return DROP_MISSED_TAIL_CALL;
 #endif
 }
 #endif /* ENABLE_IPV6 */
 
-static inline int __inline__ ipv4_local_delivery(struct __sk_buff *skb, int l3_off, int l4_off,
-						 __u32 seclabel, struct iphdr *ip4,
-						 struct endpoint_info *ep, __u8 direction)
+static __always_inline int ipv4_local_delivery(struct __ctx_buff *ctx, int l3_off,
+					       __u32 seclabel, struct iphdr *ip4,
+					       const struct endpoint_info *ep,
+					       __u8 direction __maybe_unused,
+					       bool from_host __maybe_unused)
 {
+	mac_t router_mac = ep->node_mac;
+	mac_t lxc_mac = ep->mac;
 	int ret;
 
-	cilium_dbg(skb, DBG_LOCAL_DELIVERY, ep->lxc_id, seclabel);
+	cilium_dbg(ctx, DBG_LOCAL_DELIVERY, ep->lxc_id, seclabel);
 
-	mac_t lxc_mac = ep->mac;
-	mac_t router_mac = ep->node_mac;
-
-	ret = ipv4_l3(skb, l3_off, (__u8 *) &router_mac, (__u8 *) &lxc_mac, ip4);
-	if (ret != TC_ACT_OK)
+	ret = ipv4_l3(ctx, l3_off, (__u8 *) &router_mac, (__u8 *) &lxc_mac, ip4);
+	if (ret != CTX_ACT_OK)
 		return ret;
 
-	cilium_dbg(skb, DBG_LXC_FOUND, ep->ifindex, 0);
-
-#if defined LOCAL_DELIVERY_METRICS
+#ifdef LOCAL_DELIVERY_METRICS
 	/*
 	 * Special LXC case for updating egress forwarding metrics.
 	 * Note that the packet could still be dropped but it would show up
 	 * as an ingress drop counter in metrics.
 	 */
-	update_metrics(skb->len, direction, REASON_FORWARDED);
+	update_metrics(ctx_full_len(ctx), direction, REASON_FORWARDED);
 #endif
 
-#ifdef USE_BPF_PROG_FOR_INGRESS_POLICY
-	skb->mark = (seclabel << 16) | MARK_MAGIC_IDENTITY;
-	return redirect_peer(ep->ifindex, 0);
+#if defined(USE_BPF_PROG_FOR_INGRESS_POLICY) && \
+	!defined(FORCE_LOCAL_POLICY_EVAL_AT_SOURCE)
+	ctx->mark |= MARK_MAGIC_IDENTITY;
+	set_identity_mark(ctx, seclabel);
+
+	return redirect_ep(ep->ifindex, from_host);
 #else
-	skb->cb[CB_SRC_LABEL] = seclabel;
-	skb->cb[CB_IFINDEX] = ep->ifindex;
-	tail_call(skb, &POLICY_CALL_MAP, ep->lxc_id);
+	ctx_store_meta(ctx, CB_SRC_LABEL, seclabel);
+	ctx_store_meta(ctx, CB_IFINDEX, ep->ifindex);
+	ctx_store_meta(ctx, CB_FROM_HOST, from_host ? 1 : 0);
+
+	tail_call_dynamic(ctx, &POLICY_CALL_MAP, ep->lxc_id);
 	return DROP_MISSED_TAIL_CALL;
 #endif
 }
+#endif /* SKIP_POLICY_MAP */
 
-static inline __u8 __inline__ get_encrypt_key(__u32 ctx)
+static __always_inline __u8 get_encrypt_key(__u32 ctx)
 {
 	struct encrypt_key key = {.ctx = ctx};
 	struct encrypt_config *cfg;
@@ -159,7 +154,7 @@ static inline __u8 __inline__ get_encrypt_key(__u32 ctx)
 	return cfg->encrypt_key;
 }
 
-static inline __u8 __inline__ get_min_encrypt_key(__u8 peer_key)
+static __always_inline __u8 get_min_encrypt_key(__u8 peer_key)
 {
 	__u8 local_key = get_encrypt_key(0);
 

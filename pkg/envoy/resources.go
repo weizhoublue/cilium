@@ -17,6 +17,7 @@ package envoy
 import (
 	"net"
 	"sort"
+	"sync"
 
 	"github.com/cilium/cilium/pkg/envoy/xds"
 	"github.com/cilium/cilium/pkg/identity"
@@ -29,7 +30,7 @@ import (
 
 const (
 	// ListenerTypeURL is the type URL of Listener resources.
-	ListenerTypeURL = "type.googleapis.com/envoy.api.v2.Listener"
+	ListenerTypeURL = "type.googleapis.com/envoy.config.listener.v3.Listener"
 
 	// NetworkPolicyTypeURL is the type URL of NetworkPolicy resources.
 	NetworkPolicyTypeURL = "type.googleapis.com/cilium.NetworkPolicy"
@@ -53,7 +54,20 @@ var (
 	// NetworkPolicyHosts. Resources in this cache must have the
 	// NetworkPolicyHostsTypeURL type URL.
 	NetworkPolicyHostsCache = newNPHDSCache()
+
+	observerOnce = sync.Once{}
 )
+
+// HandleResourceVersionAck is required to implement ResourceVersionAckObserver.
+// We use this to start the IP Cache listener on the first ACK so that we only
+// start the IP Cache listener if there is an Envoy node that uses NPHDS (e.g.,
+// Istio node, or host proxy running on kernel w/o LPM bpf map support).
+func (cache *NPHDSCache) HandleResourceVersionAck(ackVersion uint64, nackVersion uint64, nodeIP string, resourceNames []string, typeURL string, detail string) {
+	// Start caching for IP/ID mappings on the first indication someone wants them
+	observerOnce.Do(func() {
+		ipcache.IPIdentityCache.AddListener(cache)
+	})
+}
 
 // OnIPIdentityCacheGC is required to implement IPIdentityMappingListener.
 func (cache *NPHDSCache) OnIPIdentityCacheGC() {
@@ -63,7 +77,8 @@ func (cache *NPHDSCache) OnIPIdentityCacheGC() {
 // OnIPIdentityCacheChange pushes modifications to the IP<->Identity mapping
 // into the Network Policy Host Discovery Service (NPHDS).
 func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModification, cidr net.IPNet,
-	oldHostIP, newHostIP net.IP, oldID *identity.NumericIdentity, newID identity.NumericIdentity, encryptKey uint8) {
+	oldHostIP, newHostIP net.IP, oldID *identity.NumericIdentity, newID identity.NumericIdentity,
+	encryptKey uint8, k8sMeta *ipcache.K8sMetadata) {
 	// An upsert where an existing pair exists should translate into a
 	// delete (for the old Identity) followed by an upsert (for the new).
 	if oldID != nil && modType == ipcache.Upsert {
@@ -72,7 +87,7 @@ func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModificati
 			return
 		}
 
-		cache.OnIPIdentityCacheChange(ipcache.Delete, cidr, nil, nil, nil, *oldID, encryptKey)
+		cache.OnIPIdentityCacheChange(ipcache.Delete, cidr, nil, nil, nil, *oldID, encryptKey, k8sMeta)
 	}
 
 	cidrStr := cidr.String()
@@ -116,7 +131,7 @@ func (cache *NPHDSCache) OnIPIdentityCacheChange(modType ipcache.CacheModificati
 			}).Warning("Could not validate NPHDS resource update on upsert")
 			return
 		}
-		cache.Upsert(NetworkPolicyHostsTypeURL, resourceName, &newNpHost, false)
+		cache.Upsert(NetworkPolicyHostsTypeURL, resourceName, &newNpHost)
 	case ipcache.Delete:
 		if msg == nil {
 			// Doesn't exist; already deleted.
@@ -149,7 +164,7 @@ func (cache *NPHDSCache) handleIPDelete(npHost *envoyAPI.NetworkPolicyHosts, pee
 	// If removing this host would result in empty list, delete it.
 	// Otherwise, update to a list that doesn't contain the target IP
 	if len(npHost.HostAddresses) <= 1 {
-		cache.Delete(NetworkPolicyHostsTypeURL, peerIdentity, false)
+		cache.Delete(NetworkPolicyHostsTypeURL, peerIdentity)
 	} else {
 		// If the resource is to be updated, create a copy of it before
 		// removing the IP address from its HostAddresses list.
@@ -169,6 +184,6 @@ func (cache *NPHDSCache) handleIPDelete(npHost *envoyAPI.NetworkPolicyHosts, pee
 			scopedLog.WithError(err).Warning("Could not validate NPHDS resource update on delete")
 			return
 		}
-		cache.Upsert(NetworkPolicyHostsTypeURL, peerIdentity, &newNpHost, false)
+		cache.Upsert(NetworkPolicyHostsTypeURL, peerIdentity, &newNpHost)
 	}
 }

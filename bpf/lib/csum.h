@@ -1,20 +1,5 @@
-/*
- *  Copyright (C) 2016-2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
 
 #ifndef __LIB_CSUM_H_
 #define __LIB_CSUM_H_
@@ -26,8 +11,7 @@
 #define TCP_CSUM_OFF (offsetof(struct tcphdr, check))
 #define UDP_CSUM_OFF (offsetof(struct udphdr, check))
 
-struct csum_offset
-{
+struct csum_offset {
 	__u16 offset;
 	__u16 flags;
 };
@@ -42,7 +26,8 @@ struct csum_offset
  * For unknown L4 protocols or L4 protocols which do not have a checksum
  * field, off is initialied to 0.
  */
-static inline void csum_l4_offset_and_flags(__u8 nexthdr, struct csum_offset *off)
+static __always_inline void csum_l4_offset_and_flags(__u8 nexthdr,
+						     struct csum_offset *off)
 {
 	switch (nexthdr) {
 	case IPPROTO_TCP:
@@ -65,17 +50,18 @@ static inline void csum_l4_offset_and_flags(__u8 nexthdr, struct csum_offset *of
 
 /**
  * Helper to change L4 checksum
- * @arg skb	Packet
+ * @arg ctx	Packet
  * @arg l4_off	Offset to L4 header
  * @arg csum	Pointer to csum_offset as extracted by csum_l4_offset_and_flags()
  * @arg from	From value or 0 if to contains csum diff
  * @arg to	To value or a csum diff
  * @arg flags	Additional flags to be passed to l4_csum_replace()
  */
-static inline int csum_l4_replace(struct __sk_buff *skb, int l4_off, struct csum_offset *csum,
-				  __be32 from, __be32 to, int flags)
+static __always_inline int csum_l4_replace(struct __ctx_buff *ctx, int l4_off,
+					   const struct csum_offset *csum,
+					   __be32 from, __be32 to, int flags)
 {
-	return l4_csum_replace(skb, l4_off + csum->offset, from, to, flags | csum->flags);
+	return l4_csum_replace(ctx, l4_off + csum->offset, from, to, flags | csum->flags);
 }
 
 #endif /* __LB_H_ */

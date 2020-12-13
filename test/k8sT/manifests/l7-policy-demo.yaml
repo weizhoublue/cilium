@@ -1,9 +1,9 @@
 apiVersion: "cilium.io/v2"
 kind: CiliumNetworkPolicy
-description: "L7 policy for allowing all traffic via proxy in demo DS"
 metadata:
   name: "l7-policy-demo"
 spec:
+  description: "L7 policy for allowing all traffic via proxy in demo DS"
   endpointSelector:
     matchLabels:
       zgroup: testDS
@@ -15,3 +15,7 @@ spec:
       rules:
         http:
         - {}
+    - ports:
+      # we allow tftp traffic to bypass the proxy
+      - port: "69"
+        protocol: UDP

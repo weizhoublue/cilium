@@ -2,11 +2,11 @@
 
 ## cilium-health
 
-Cilium Health Agent
+Cilium Health Client
 
 ### Synopsis
 
-Agent for hosting and querying the Cilium health status API
+Client for querying the Cilium health status API
 
 ```
 cilium-health [flags]
@@ -15,17 +15,11 @@ cilium-health [flags]
 ### Options
 
 ```
-      --admin string         Expose resources over 'unix' socket, 'any' socket (default "unix")
-  -c, --cilium string        URI to Cilium server API
-  -d, --daemon               Run as a daemon
   -D, --debug                Enable debug messages
   -h, --help                 help for cilium-health
   -H, --host string          URI to cilium-health server API
-  -i, --interval uint        Interval (in seconds) for periodic connectivity probes (default 60)
       --log-driver strings   Logging endpoints to use for example syslog
       --log-opt map          Log driver options for cilium-health (default map[])
-  -p, --passive              Only respond to HTTP health checks
-      --pidfile string       Write the PID to the specified file
 ```
 
 ### SEE ALSO

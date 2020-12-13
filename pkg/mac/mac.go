@@ -16,6 +16,7 @@ package mac
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -33,10 +34,10 @@ func (m MAC) String() string {
 func ParseMAC(s string) (MAC, error) {
 	ha, err := net.ParseMAC(s)
 	if err != nil {
-		return MAC{}, err
+		return nil, err
 	}
 	if len(ha) != 6 {
-		return MAC{}, fmt.Errorf("invalid MAC address %s", s)
+		return nil, fmt.Errorf("invalid MAC address %s", s)
 	}
 
 	return MAC(ha), nil
@@ -50,7 +51,7 @@ func ParseMAC(s string) (MAC, error) {
 //  fmt.Printf("0x%X", v) // 0x564534231211
 func (m MAC) Uint64() (uint64, error) {
 	if len(m) != 6 {
-		return 0, fmt.Errorf("Invalid MAC address %s", m.String())
+		return 0, fmt.Errorf("invalid MAC address %s", m.String())
 	}
 
 	return uint64(m[5])<<40 | uint64(m[4])<<32 | uint64(m[3])<<24 |
@@ -91,4 +92,17 @@ func (m *MAC) UnmarshalJSON(data []byte) error {
 	hex.Decode(macByte, macStr)
 	*m = MAC{macByte[0], macByte[1], macByte[2], macByte[3], macByte[4], macByte[5]}
 	return nil
+}
+
+// GenerateRandMAC generates a random unicast and locally administered MAC address.
+func GenerateRandMAC() (MAC, error) {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, fmt.Errorf("Unable to retrieve 6 rnd bytes: %s", err)
+	}
+
+	// Set locally administered addresses bit and reset multicast bit
+	buf[0] = (buf[0] | 0x02) & 0xfe
+
+	return MAC(buf), nil
 }

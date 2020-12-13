@@ -2,18 +2,28 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
+
+
+.. _k8s_install_portmap:
 
 ******************
 Portmap (HostPort)
 ******************
 
-If you want to use the Kubernetes HostPort feature, you must enable CNI
-chaining with the portmap plugin which implements HostPort. This guide
-documents how to do so.  For more information about HostPort, check the
+Starting from Cilium 1.8, the Kubernetes HostPort feature is supported natively
+through Cilium's eBPF-based kube-proxy replacement. CNI chaining is therefore
+not needed anymore. For more information, see section :ref:`kubeproxyfree_hostport`.
+
+However, for the case where Cilium is deployed as ``kubeProxyReplacement=disabled``,
+the HostPort feature can then be enabled via CNI chaining with the portmap plugin which
+implements HostPort. This guide documents how to enable the latter for the chaining
+case.
+
+For more general information about the Kubernetes HostPort feature, check out the
+upstream documentation:
 `Kubernetes hostPort-CNI plugin documentation
 <https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/#support-hostport>`_.
-
 
 .. note::
 
@@ -21,64 +31,28 @@ documents how to do so.  For more information about HostPort, check the
    <https://kubernetes.io/docs/concepts/configuration/overview/>`_ to
    understand the implications of this feature.
 
-Enable Portmap Chaining in the ConfigMap
-======================================
+Deploy Cilium with the portmap plugin enabled
+=============================================
 
-1. If you have not deployed Cilium yet, download the Cilium deployment yaml:
+.. include:: k8s-install-download-release.rst
 
-.. tabs::
-  .. group-tab:: K8s 1.14
+Deploy Cilium release via Helm:
 
-    .. parsed-literal::
+.. parsed-literal::
 
-      curl -sLO \ |SCM_WEB|\/examples/kubernetes/1.14/cilium.yaml
+    helm install cilium |CHART_RELEASE| \\
+      --namespace=kube-system \\
+      --set cni.chainingMode=portmap
 
-  .. group-tab:: K8s 1.13
+.. note::
 
-    .. parsed-literal::
+   You can combine the ``cni.chainingMode=portmap`` option with any of
+   the other installation guides.
 
-      curl -sLO \ |SCM_WEB|\/examples/kubernetes/1.13/cilium.yaml
-
-  .. group-tab:: K8s 1.12
-
-    .. parsed-literal::
-
-      curl -sLO \ |SCM_WEB|\/examples/kubernetes/1.12/cilium.yaml
-
-  .. group-tab:: K8s 1.11
-
-    .. parsed-literal::
-
-      curl -sLO \ |SCM_WEB|\/examples/kubernetes/1.11/cilium.yaml
-
-  .. group-tab:: K8s 1.10
-
-    .. parsed-literal::
-
-      curl -sLO \ |SCM_WEB|\/examples/kubernetes/1.10/cilium.yaml
-
-2. If you are already running Cilium, extract the ConfigMap of Cilium:
-
-   .. code:: bash
-
-       kubectl -n kube-system get cm cilium-config -o yaml > cilium.yaml
-
-3. Edit ``cilium.yaml`` and add the following configuration to the ConfigMap:
-
-   .. code:: bash
-
-          cni-chaining-mode: portmap
-
-4. Deploy or update Cilium:
-
-   .. code:: bash
-
-          kubectl apply -f cilium.yaml
-
-   As Cilium is deployed as a DaemonSet, it will write a new CNI configuration
-   ``05-cilium.conflist`` and remove the standard ``05-cilium.conf``. The new
-   configuration now enables HostPort. Any new pod scheduled is now able to
-   make use of the HostPort functionality.
+As Cilium is deployed as a DaemonSet, it will write a new CNI configuration
+``05-cilium.conflist`` and remove the standard ``05-cilium.conf``. The new
+configuration now enables HostPort. Any new pod scheduled is now able to make
+use of the HostPort functionality.
 
 Restart existing pods
 =====================
@@ -87,5 +61,5 @@ The new CNI chaining configuration will *not* apply to any pod that is already
 running the cluster. Existing pods will be reachable and Cilium will
 load-balance to them but policy enforcement will not apply to them and
 load-balancing is not performed for traffic originating from existing pods.
-You must restart these pods in order to invoke the
-chaining configuration on them.
+You must restart these pods in order to invoke the chaining configuration on
+them.

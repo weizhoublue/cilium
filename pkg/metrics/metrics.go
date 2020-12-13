@@ -23,13 +23,14 @@ package metrics
 
 import (
 	"net/http"
-	"syscall"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/version"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -67,9 +68,15 @@ const (
 	// SubsystemTriggers is the subsystem to scope metrics related to the trigger package.
 	SubsystemTriggers = "triggers"
 
+	// SubsystemAPILimiter is the subsystem to scope metrics related to the API limiter package.
+	SubsystemAPILimiter = "api_limiter"
+
 	// Namespace is used to scope metrics from cilium. It is prepended to metric
 	// names and separated with a '_'
 	Namespace = "cilium"
+
+	// LabelError indicates the type of error (string)
+	LabelError = "error"
 
 	// LabelOutcome indicates whether the outcome of the operation was successful or not
 	LabelOutcome = "outcome"
@@ -109,6 +116,12 @@ const (
 
 	// LabelProtocol marks the L4 protocol (TCP, ANY) for the metric.
 	LabelProtocol = "protocol"
+
+	// LabelSignalType marks the signal name
+	LabelSignalType = "signal"
+
+	// LabelSignalData marks the signal data
+	LabelSignalData = "data"
 
 	// LabelStatus the label from completed task
 	LabelStatus = "status"
@@ -156,7 +169,13 @@ const (
 	LabelOperation = "operation"
 
 	// LabelMapName is the label for the BPF map name
-	LabelMapName = "mapName"
+	LabelMapName = "map_name"
+
+	// LabelVersion is the label for the version number
+	LabelVersion = "version"
+
+	// LabelDirection is the label for traffic direction
+	LabelDirection = "direction"
 )
 
 var (
@@ -168,16 +187,13 @@ var (
 
 	// Endpoint
 
-	// EndpointCount is a function used to collect this metric.
+	// Endpoint is a function used to collect this metric.
 	// It must be thread-safe.
-	EndpointCount prometheus.GaugeFunc
+	Endpoint prometheus.GaugeFunc
 
-	// EndpointCountRegenerating is the number of endpoints currently regenerating
-	EndpointCountRegenerating = NoOpGauge
-
-	// EndpointRegenerationCount is a count of the number of times any endpoint
+	// EndpointRegenerationTotal is a count of the number of times any endpoint
 	// has been regenerated and success/fail outcome
-	EndpointRegenerationCount = NoOpCounterVec
+	EndpointRegenerationTotal = NoOpCounterVec
 
 	// EndpointStateCount is the total count of the endpoints in various states.
 	EndpointStateCount = NoOpGaugeVec
@@ -187,9 +203,8 @@ var (
 	EndpointRegenerationTimeStats = NoOpObserverVec
 
 	// Policy
-
-	// PolicyCount is the number of policies loaded into the agent
-	PolicyCount = NoOpGauge
+	// Policy is the number of policies loaded into the agent
+	Policy = NoOpGauge
 
 	// PolicyRegenerationCount is the total number of successful policy
 	// regenerations.
@@ -201,18 +216,23 @@ var (
 	// PolicyRevision is the current policy revision number for this agent
 	PolicyRevision = NoOpGauge
 
-	// PolicyImportErrors is a count of failed policy imports
-	PolicyImportErrors = NoOpCounter
+	// PolicyImportErrorsTotal is a count of failed policy imports
+	PolicyImportErrorsTotal = NoOpCounter
 
 	// PolicyEndpointStatus is the number of endpoints with policy labeled by enforcement type
 	PolicyEndpointStatus = NoOpGaugeVec
 
 	// PolicyImplementationDelay is a distribution of times taken from adding a
 	// policy (and incrementing the policy revision) to seeing it in the datapath
-	// per Endpoint. This reflects the actual delay percieved by traffic flowing
+	// per Endpoint. This reflects the actual delay perceived by traffic flowing
 	// through the datapath. The longest times will roughly correlate with the
 	// time taken to fully deploy an endpoint.
 	PolicyImplementationDelay = NoOpObserverVec
+
+	// Identity
+
+	// Identity is the number of identities currently in use on the node
+	Identity = NoOpGauge
 
 	// Events
 
@@ -223,6 +243,9 @@ var (
 	// EventTSK8s is the timestamp of k8s events
 	EventTSK8s = NoOpGauge
 
+	// EventLagK8s is the lag calculation for k8s Pod events.
+	EventLagK8s = NoOpGauge
+
 	// EventTSContainerd is the timestamp of docker events
 	EventTSContainerd = NoOpGauge
 
@@ -231,19 +254,26 @@ var (
 
 	// L7 statistics
 
-	// ProxyRedirects is the number of redirects labelled by protocol
+	// ProxyRedirects is the number of redirects labeled by protocol
 	ProxyRedirects = NoOpGaugeVec
 
+	// ProxyPolicyL7Total is a count of all l7 requests handled by proxy
+	ProxyPolicyL7Total = NoOpCounterVec
+
 	// ProxyParseErrors is a count of failed parse errors on proxy
+	// Deprecated: in favor of ProxyPolicyL7Total
 	ProxyParseErrors = NoOpCounter
 
 	// ProxyForwarded is a count of all forwarded requests by proxy
+	// Deprecated: in favor of ProxyPolicyL7Total
 	ProxyForwarded = NoOpCounter
 
 	// ProxyDenied is a count of all denied requests by policy by the proxy
+	// Deprecated: in favor of ProxyPolicyL7Total
 	ProxyDenied = NoOpCounter
 
 	// ProxyReceived is a count of all received requests by the proxy
+	// Deprecated: in favor of ProxyPolicyL7Total
 	ProxyReceived = NoOpCounter
 
 	// ProxyUpstreamTime is how long the upstream server took to reply labeled
@@ -284,8 +314,16 @@ var (
 	// ConntrackGCSize the number of entries in the conntrack table
 	ConntrackGCSize = NoOpGaugeVec
 
+	// NatGCSize the number of entries in the nat table
+	NatGCSize = NoOpGaugeVec
+
 	// ConntrackGCDuration the duration of the conntrack GC process in milliseconds.
 	ConntrackGCDuration = NoOpObserverVec
+
+	// Signals
+
+	// SignalsHandled is the number of signals received.
+	SignalsHandled = NoOpCounterVec
 
 	// Services
 
@@ -322,9 +360,9 @@ var (
 	// to the kube-apiserver
 	KubernetesAPIInteractions = NoOpObserverVec
 
-	// KubernetesAPICalls is the counter for all API calls made to
+	// KubernetesAPICallsTotal is the counter for all API calls made to
 	// kube-apiserver.
-	KubernetesAPICalls = NoOpCounterVec
+	KubernetesAPICallsTotal = NoOpCounterVec
 
 	// KubernetesCNPStatusCompletion is the number of seconds it takes to
 	// complete a CNP status update
@@ -345,6 +383,9 @@ var (
 	// received event was blocked before it could be queued
 	KVStoreEventsQueueDuration = NoOpObserverVec
 
+	// KVStoreQuorumErrors records the number of kvstore quorum errors
+	KVStoreQuorumErrors = NoOpCounterVec
+
 	// FQDNGarbageCollectorCleanedTotal is the number of domains cleaned by the
 	// GC job.
 	FQDNGarbageCollectorCleanedTotal = NoOpCounter
@@ -355,11 +396,53 @@ var (
 	// BPFMapOps is the metric to measure the number of operations done to a
 	// bpf map.
 	BPFMapOps = NoOpCounterVec
+
+	// TriggerPolicyUpdateTotal is the metric to count total number of
+	// policy update triggers
+	TriggerPolicyUpdateTotal = NoOpCounterVec
+
+	// TriggerPolicyUpdateFolds is the current level folding that is
+	// happening when running policy update triggers
+	TriggerPolicyUpdateFolds = NoOpGauge
+
+	// TriggerPolicyUpdateCallDuration measures the latency and call
+	// duration of policy update triggers
+	TriggerPolicyUpdateCallDuration = NoOpObserverVec
+
+	// VersionMetric labelled by Cilium version
+	VersionMetric = NoOpGaugeVec
+
+	// APILimiterWaitHistoryDuration is a histogram that measures the
+	// individual wait durations of API limiters
+	APILimiterWaitHistoryDuration = NoOpObserverVec
+
+	// APILimiterWaitDuration is the gauge of the current mean, min, and
+	// max wait duration
+	APILimiterWaitDuration = NoOpGaugeVec
+
+	// APILimiterProcessingDuration is the gauge of the mean and estimated
+	// processing duration
+	APILimiterProcessingDuration = NoOpGaugeVec
+
+	// APILimiterRequestsInFlight is the gauge of the current and max
+	// requests in flight
+	APILimiterRequestsInFlight = NoOpGaugeVec
+
+	// APILimiterRateLimit is the gauge of the current rate limiting
+	// configuration including limit and burst
+	APILimiterRateLimit = NoOpGaugeVec
+
+	// APILimiterAdjustmentFactor is the gauge representing the latest
+	// adjustment factor that was applied
+	APILimiterAdjustmentFactor = NoOpGaugeVec
+
+	// APILimiterProcessedRequests is the counter of the number of
+	// processed (successful and failed) requests
+	APILimiterProcessedRequests = NoOpCounterVec
 )
 
 type Configuration struct {
 	APIInteractionsEnabled                  bool
-	EndpointCountRegeneratingEnabled        bool
 	EndpointRegenerationCountEnabled        bool
 	EndpointStateCountEnabled               bool
 	EndpointRegenerationTimeStatsEnabled    bool
@@ -370,10 +453,13 @@ type Configuration struct {
 	PolicyImportErrorsEnabled               bool
 	PolicyEndpointStatusEnabled             bool
 	PolicyImplementationDelayEnabled        bool
+	IdentityCountEnabled                    bool
 	EventTSK8sEnabled                       bool
+	EventLagK8sEnabled                      bool
 	EventTSContainerdEnabled                bool
 	EventTSAPIEnabled                       bool
 	ProxyRedirectsEnabled                   bool
+	ProxyPolicyL7Enabled                    bool
 	ProxyParseErrorsEnabled                 bool
 	ProxyForwardedEnabled                   bool
 	ProxyDeniedEnabled                      bool
@@ -388,6 +474,7 @@ type Configuration struct {
 	ConntrackGCKeyFallbacksEnabled          bool
 	ConntrackGCSizeEnabled                  bool
 	ConntrackGCDurationEnabled              bool
+	SignalsHandledEnabled                   bool
 	ServicesCountEnabled                    bool
 	ErrorsWarningsEnabled                   bool
 	ControllerRunsEnabled                   bool
@@ -401,56 +488,81 @@ type Configuration struct {
 	IpamEventEnabled                        bool
 	KVStoreOperationsDurationEnabled        bool
 	KVStoreEventsQueueDurationEnabled       bool
+	KVStoreQuorumErrorsEnabled              bool
 	FQDNGarbageCollectorCleanedTotalEnabled bool
 	BPFSyscallDurationEnabled               bool
 	BPFMapOps                               bool
+	TriggerPolicyUpdateTotal                bool
+	TriggerPolicyUpdateFolds                bool
+	TriggerPolicyUpdateCallDuration         bool
+	VersionMetric                           bool
+	APILimiterWaitHistoryDuration           bool
+	APILimiterWaitDuration                  bool
+	APILimiterProcessingDuration            bool
+	APILimiterRequestsInFlight              bool
+	APILimiterRateLimit                     bool
+	APILimiterAdjustmentFactor              bool
+	APILimiterProcessedRequests             bool
 }
 
 func DefaultMetrics() map[string]struct{} {
 	return map[string]struct{}{
-		Namespace + "_" + SubsystemAgent + "_api_process_time_seconds":            {},
-		Namespace + "_endpoint_regenerating":                                      {},
-		Namespace + "_endpoint_regenerations":                                     {},
-		Namespace + "_endpoint_state":                                             {},
-		Namespace + "_endpoint_regeneration_time_stats_seconds":                   {},
-		Namespace + "_policy_count":                                               {},
-		Namespace + "_policy_regeneration_total":                                  {},
-		Namespace + "_policy_regeneration_time_stats_seconds":                     {},
-		Namespace + "_policy_max_revision":                                        {},
-		Namespace + "_policy_import_errors":                                       {},
-		Namespace + "_policy_endpoint_enforcement_status":                         {},
-		Namespace + "_policy_implementation_delay":                                {},
-		Namespace + "_event_ts":                                                   {},
-		Namespace + "_proxy_redirects":                                            {},
-		Namespace + "_policy_l7_parse_errors_total":                               {},
-		Namespace + "_policy_l7_forwarded_total":                                  {},
-		Namespace + "_policy_l7_denied_total":                                     {},
-		Namespace + "_policy_l7_received_total":                                   {},
-		Namespace + "_proxy_upstream_reply_seconds":                               {},
-		Namespace + "_drop_count_total":                                           {},
-		Namespace + "_drop_bytes_total":                                           {},
-		Namespace + "_forward_count_total":                                        {},
-		Namespace + "_forward_bytes_total":                                        {},
-		Namespace + "_" + SubsystemDatapath + "_errors_total":                     {},
-		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_runs_total":          {},
-		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_key_fallbacks_total": {},
-		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_entries":             {},
-		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_duration_seconds":    {},
-		Namespace + "_services_events_total":                                      {},
-		Namespace + "_errors_warnings_total":                                      {},
-		Namespace + "_controllers_runs_total":                                     {},
-		Namespace + "_controllers_runs_duration_seconds":                          {},
-		Namespace + "_subprocess_start_total":                                     {},
-		Namespace + "_kubernetes_events_total":                                    {},
-		Namespace + "_kubernetes_events_received_total":                           {},
-		Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":        {},
-		Namespace + "_" + SubsystemK8sClient + "_api_calls_counter":               {},
-		Namespace + "_" + SubsystemK8s + "_cnp_status_completion_seconds":         {},
-		Namespace + "_ipam_events_total":                                          {},
-		Namespace + "_" + SubsystemKVStore + "_operations_duration_seconds":       {},
-		Namespace + "_" + SubsystemKVStore + "_events_queue_seconds":              {},
-		Namespace + "_fqdn_gc_deletions_total":                                    {},
-		Namespace + "_" + SubsystemBPF + "_map_ops_total":                         {},
+		Namespace + "_" + SubsystemAgent + "_api_process_time_seconds":               {},
+		Namespace + "_endpoint_regenerations_total":                                  {},
+		Namespace + "_endpoint_state":                                                {},
+		Namespace + "_endpoint_regeneration_time_stats_seconds":                      {},
+		Namespace + "_policy":                                                        {},
+		Namespace + "_policy_regeneration_total":                                     {},
+		Namespace + "_policy_regeneration_time_stats_seconds":                        {},
+		Namespace + "_policy_max_revision":                                           {},
+		Namespace + "_policy_import_errors_total":                                    {},
+		Namespace + "_policy_endpoint_enforcement_status":                            {},
+		Namespace + "_policy_implementation_delay":                                   {},
+		Namespace + "_identity":                                                      {},
+		Namespace + "_event_ts":                                                      {},
+		Namespace + "_proxy_redirects":                                               {},
+		Namespace + "_policy_l7_total":                                               {},
+		Namespace + "_policy_l7_parse_errors_total":                                  {},
+		Namespace + "_policy_l7_forwarded_total":                                     {},
+		Namespace + "_policy_l7_denied_total":                                        {},
+		Namespace + "_policy_l7_received_total":                                      {},
+		Namespace + "_proxy_upstream_reply_seconds":                                  {},
+		Namespace + "_drop_count_total":                                              {},
+		Namespace + "_drop_bytes_total":                                              {},
+		Namespace + "_forward_count_total":                                           {},
+		Namespace + "_forward_bytes_total":                                           {},
+		Namespace + "_" + SubsystemDatapath + "_errors_total":                        {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_runs_total":             {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_key_fallbacks_total":    {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_entries":                {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_duration_seconds":       {},
+		Namespace + "_" + SubsystemDatapath + "_signals_handled_total":               {},
+		Namespace + "_services_events_total":                                         {},
+		Namespace + "_errors_warnings_total":                                         {},
+		Namespace + "_controllers_runs_total":                                        {},
+		Namespace + "_controllers_runs_duration_seconds":                             {},
+		Namespace + "_subprocess_start_total":                                        {},
+		Namespace + "_kubernetes_events_total":                                       {},
+		Namespace + "_kubernetes_events_received_total":                              {},
+		Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":           {},
+		Namespace + "_" + SubsystemK8sClient + "_api_calls_total":                    {},
+		Namespace + "_" + SubsystemK8s + "_cnp_status_completion_seconds":            {},
+		Namespace + "_ipam_events_total":                                             {},
+		Namespace + "_" + SubsystemKVStore + "_operations_duration_seconds":          {},
+		Namespace + "_" + SubsystemKVStore + "_events_queue_seconds":                 {},
+		Namespace + "_" + SubsystemKVStore + "_quorum_errors_total":                  {},
+		Namespace + "_fqdn_gc_deletions_total":                                       {},
+		Namespace + "_" + SubsystemBPF + "_map_ops_total":                            {},
+		Namespace + "_" + SubsystemTriggers + "_policy_update_total":                 {},
+		Namespace + "_" + SubsystemTriggers + "_policy_update_folds":                 {},
+		Namespace + "_" + SubsystemTriggers + "_policy_update_call_duration_seconds": {},
+		Namespace + "_version":                                                       {},
+		Namespace + "_" + SubsystemAPILimiter + "_wait_duration_seconds":             {},
+		Namespace + "_" + SubsystemAPILimiter + "_processing_duration_seconds":       {},
+		Namespace + "_" + SubsystemAPILimiter + "_requests_in_flight":                {},
+		Namespace + "_" + SubsystemAPILimiter + "_rate_limit":                        {},
+		Namespace + "_" + SubsystemAPILimiter + "_adjustment_factor":                 {},
+		Namespace + "_" + SubsystemAPILimiter + "_processed_requests_total":          {},
 	}
 }
 
@@ -475,24 +587,14 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			collectors = append(collectors, APIInteractions)
 			c.APIInteractionsEnabled = true
 
-		case Namespace + "_endpoint_regenerating":
-			EndpointCountRegenerating = prometheus.NewGauge(prometheus.GaugeOpts{
+		case Namespace + "_endpoint_regenerations_total":
+			EndpointRegenerationTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 				Namespace: Namespace,
-				Name:      "endpoint_regenerating",
-				Help:      "Number of endpoints currently regenerating. Deprecated. Use endpoint_state with proper labels instead",
-			})
-
-			collectors = append(collectors, EndpointCountRegenerating)
-			c.EndpointCountRegeneratingEnabled = true
-
-		case Namespace + "_endpoint_regenerations":
-			EndpointRegenerationCount = prometheus.NewCounterVec(prometheus.CounterOpts{
-				Namespace: Namespace,
-				Name:      "endpoint_regenerations",
+				Name:      "endpoint_regenerations_total",
 				Help:      "Count of all endpoint regenerations that have completed, tagged by outcome",
 			}, []string{"outcome"})
 
-			collectors = append(collectors, EndpointRegenerationCount)
+			collectors = append(collectors, EndpointRegenerationTotal)
 			c.EndpointRegenerationCountEnabled = true
 
 		case Namespace + "_endpoint_state":
@@ -518,14 +620,14 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			collectors = append(collectors, EndpointRegenerationTimeStats)
 			c.EndpointRegenerationTimeStatsEnabled = true
 
-		case Namespace + "_policy_count":
-			PolicyCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		case Namespace + "_policy":
+			Policy = prometheus.NewGauge(prometheus.GaugeOpts{
 				Namespace: Namespace,
-				Name:      "policy_count",
+				Name:      "policy",
 				Help:      "Number of policies currently loaded",
 			})
 
-			collectors = append(collectors, PolicyCount)
+			collectors = append(collectors, Policy)
 			c.PolicyCountEnabled = true
 
 		case Namespace + "_policy_regeneration_total":
@@ -558,14 +660,14 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			collectors = append(collectors, PolicyRevision)
 			c.PolicyRegenerationTimeStatsEnabled = true
 
-		case Namespace + "_policy_import_errors":
-			PolicyImportErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		case Namespace + "_policy_import_errors_total":
+			PolicyImportErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 				Namespace: Namespace,
-				Name:      "policy_import_errors",
+				Name:      "policy_import_errors_total",
 				Help:      "Number of times a policy import has failed",
 			})
 
-			collectors = append(collectors, PolicyImportErrors)
+			collectors = append(collectors, PolicyImportErrorsTotal)
 			c.PolicyImportErrorsEnabled = true
 
 		case Namespace + "_policy_endpoint_enforcement_status":
@@ -588,6 +690,16 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			collectors = append(collectors, PolicyImplementationDelay)
 			c.PolicyImplementationDelayEnabled = true
 
+		case Namespace + "_identity":
+			Identity = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "identity",
+				Help:      "Number of identities currently allocated",
+			})
+
+			collectors = append(collectors, Identity)
+			c.IdentityCountEnabled = true
+
 		case Namespace + "_event_ts":
 			EventTSK8s = prometheus.NewGauge(prometheus.GaugeOpts{
 				Namespace:   Namespace,
@@ -598,6 +710,16 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, EventTSK8s)
 			c.EventTSK8sEnabled = true
+
+			EventLagK8s = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace:   Namespace,
+				Name:        "k8s_event_lag_seconds",
+				Help:        "Lag for Kubernetes events - computed value between receiving a CNI ADD event from kubelet and a Pod event received from kube-api-server",
+				ConstLabels: prometheus.Labels{"source": LabelEventSourceK8s},
+			})
+
+			collectors = append(collectors, EventLagK8s)
+			c.EventLagK8sEnabled = true
 
 			EventTSContainerd = prometheus.NewGauge(prometheus.GaugeOpts{
 				Namespace:   Namespace,
@@ -628,6 +750,16 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, ProxyRedirects)
 			c.ProxyRedirectsEnabled = true
+
+		case Namespace + "_policy_l7_total":
+			ProxyPolicyL7Total = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_l7_total",
+				Help:      "Number of total proxy requests handled",
+			}, []string{"rule"})
+
+			collectors = append(collectors, ProxyPolicyL7Total)
+			c.ProxyPolicyL7Enabled = true
 
 		case Namespace + "_policy_l7_parse_errors_total":
 			ProxyParseErrors = prometheus.NewCounter(prometheus.CounterOpts{
@@ -685,7 +817,7 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 				Name:      "drop_count_total",
 				Help:      "Total dropped packets, tagged by drop reason and ingress/egress direction",
 			},
-				[]string{"reason", "direction"})
+				[]string{"reason", LabelDirection})
 
 			collectors = append(collectors, DropCount)
 			c.DropCountEnabled = true
@@ -696,7 +828,7 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 				Name:      "drop_bytes_total",
 				Help:      "Total dropped bytes, tagged by drop reason and ingress/egress direction",
 			},
-				[]string{"reason", "direction"})
+				[]string{"reason", LabelDirection})
 
 			collectors = append(collectors, DropBytes)
 			c.DropBytesEnabled = true
@@ -707,7 +839,7 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 				Name:      "forward_count_total",
 				Help:      "Total forwarded packets, tagged by ingress/egress direction",
 			},
-				[]string{"direction"})
+				[]string{LabelDirection})
 
 			collectors = append(collectors, ForwardCount)
 			c.NoOpCounterVecEnabled = true
@@ -718,7 +850,7 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 				Name:      "forward_bytes_total",
 				Help:      "Total forwarded bytes, tagged by ingress/egress direction",
 			},
-				[]string{"direction"})
+				[]string{LabelDirection})
 
 			collectors = append(collectors, ForwardBytes)
 			c.ForwardBytesEnabled = true
@@ -769,6 +901,16 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			collectors = append(collectors, ConntrackGCSize)
 			c.ConntrackGCSizeEnabled = true
 
+			NatGCSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "nat_gc_entries",
+				Help: "The number of alive and deleted nat entries at the end " +
+					"of a garbage collector run labeled by datapath family.",
+			}, []string{LabelDatapathFamily, LabelDirection, LabelStatus})
+
+			collectors = append(collectors, NatGCSize)
+
 		case Namespace + "_" + SubsystemDatapath + "_conntrack_gc_duration_seconds":
 			ConntrackGCDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 				Namespace: Namespace,
@@ -780,6 +922,18 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, ConntrackGCDuration)
 			c.ConntrackGCDurationEnabled = true
+
+		case Namespace + "_" + SubsystemDatapath + "_signals_handled_total":
+			SignalsHandled = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "signals_handled_total",
+				Help: "Number of times that the datapath signal handler process was run " +
+					"labeled by signal type, data and completion status",
+			}, []string{LabelSignalType, LabelSignalData, LabelStatus})
+
+			collectors = append(collectors, SignalsHandled)
+			c.SignalsHandledEnabled = true
 
 		case Namespace + "_services_events_total":
 			ServicesCount = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -845,7 +999,7 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			KubernetesEventReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
 				Namespace: Namespace,
 				Name:      "kubernetes_events_received_total",
-				Help:      "Number of Kubernetes events processed labeled by scope, action and execution result",
+				Help:      "Number of Kubernetes events received labeled by scope, action, valid data and equalness",
 			}, []string{LabelScope, LabelAction, "valid", "equal"})
 
 			collectors = append(collectors, KubernetesEventReceived)
@@ -862,15 +1016,15 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			collectors = append(collectors, KubernetesAPIInteractions)
 			c.KubernetesAPIInteractionsEnabled = true
 
-		case Namespace + "_" + SubsystemK8sClient + "_api_calls_counter":
-			KubernetesAPICalls = prometheus.NewCounterVec(prometheus.CounterOpts{
+		case Namespace + "_" + SubsystemK8sClient + "_api_calls_total":
+			KubernetesAPICallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 				Namespace: Namespace,
 				Subsystem: SubsystemK8sClient,
-				Name:      "api_calls_counter",
+				Name:      "api_calls_total",
 				Help:      "Number of API calls made to kube-apiserver labeled by host, method and return code.",
 			}, []string{"host", LabelMethod, LabelAPIReturnCode})
 
-			collectors = append(collectors, KubernetesAPICalls)
+			collectors = append(collectors, KubernetesAPICallsTotal)
 			c.KubernetesAPICallsEnabled = true
 
 		case Namespace + "_" + SubsystemK8s + "_cnp_status_completion_seconds":
@@ -917,6 +1071,17 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			collectors = append(collectors, KVStoreEventsQueueDuration)
 			c.KVStoreEventsQueueDurationEnabled = true
 
+		case Namespace + "_" + SubsystemKVStore + "_quorum_errors_total":
+			KVStoreQuorumErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemKVStore,
+				Name:      "quorum_errors_total",
+				Help:      "Number of quorum errors",
+			}, []string{LabelError})
+
+			collectors = append(collectors, KVStoreQuorumErrors)
+			c.KVStoreQuorumErrorsEnabled = true
+
 		case Namespace + "_fqdn_gc_deletions_total":
 			FQDNGarbageCollectorCleanedTotal = prometheus.NewCounter(prometheus.CounterOpts{
 				Namespace: Namespace,
@@ -948,6 +1113,128 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 
 			collectors = append(collectors, BPFMapOps)
 			c.BPFMapOps = true
+
+		case Namespace + "_" + SubsystemTriggers + "_policy_update_total":
+			TriggerPolicyUpdateTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemTriggers,
+				Name:      "policy_update_total",
+				Help:      "Total number of policy update trigger invocations labeled by reason",
+			}, []string{"reason"})
+
+			collectors = append(collectors, TriggerPolicyUpdateTotal)
+			c.TriggerPolicyUpdateTotal = true
+
+		case Namespace + "_" + SubsystemTriggers + "_policy_update_folds":
+			TriggerPolicyUpdateFolds = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemTriggers,
+				Name:      "policy_update_folds",
+				Help:      "Current number of folds",
+			})
+
+			collectors = append(collectors, TriggerPolicyUpdateFolds)
+			c.TriggerPolicyUpdateFolds = true
+
+		case Namespace + "_" + SubsystemTriggers + "_policy_update_call_duration_seconds":
+			TriggerPolicyUpdateCallDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemTriggers,
+				Name:      "policy_update_call_duration_seconds",
+				Help:      "Duration of policy update trigger",
+			}, []string{"type"})
+
+			collectors = append(collectors, TriggerPolicyUpdateCallDuration)
+			c.TriggerPolicyUpdateCallDuration = true
+
+		case Namespace + "_version":
+			VersionMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "version",
+				Help:      "Cilium version",
+			}, []string{LabelVersion})
+
+			VersionMetric.WithLabelValues(version.GetCiliumVersion().Version)
+
+			collectors = append(collectors, VersionMetric)
+			c.VersionMetric = true
+
+		case Namespace + "_" + SubsystemAPILimiter + "_wait_history_duration_seconds":
+			APILimiterWaitHistoryDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAPILimiter,
+				Name:      "wait_history_duration_seconds",
+				Help:      "Histogram over duration of waiting period for API calls subjects to rate limiting",
+			}, []string{"api_call"})
+
+			collectors = append(collectors, APILimiterWaitHistoryDuration)
+			c.APILimiterWaitHistoryDuration = true
+
+		case Namespace + "_" + SubsystemAPILimiter + "_wait_duration_seconds":
+			APILimiterWaitDuration = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAPILimiter,
+				Name:      "wait_duration_seconds",
+				Help:      "Current wait time for api calls",
+			}, []string{"api_call", "value"})
+
+			collectors = append(collectors, APILimiterWaitDuration)
+			c.APILimiterWaitDuration = true
+
+		case Namespace + "_" + SubsystemAPILimiter + "_processing_duration_seconds":
+			APILimiterProcessingDuration = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAPILimiter,
+				Name:      "processing_duration_seconds",
+				Help:      "Current processing time of api call",
+			}, []string{"api_call", "value"})
+
+			collectors = append(collectors, APILimiterProcessingDuration)
+			c.APILimiterProcessingDuration = true
+
+		case Namespace + "_" + SubsystemAPILimiter + "_requests_in_flight":
+			APILimiterRequestsInFlight = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAPILimiter,
+				Name:      "requests_in_flight",
+				Help:      "Current requests in flight",
+			}, []string{"api_call", "value"})
+
+			collectors = append(collectors, APILimiterRequestsInFlight)
+			c.APILimiterRequestsInFlight = true
+
+		case Namespace + "_" + SubsystemAPILimiter + "_rate_limit":
+			APILimiterRateLimit = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAPILimiter,
+				Name:      "rate_limit",
+				Help:      "Current rate limiting configuration",
+			}, []string{"api_call", "value"})
+
+			collectors = append(collectors, APILimiterRateLimit)
+			c.APILimiterRateLimit = true
+
+		case Namespace + "_" + SubsystemAPILimiter + "_adjustment_factor":
+			APILimiterAdjustmentFactor = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAPILimiter,
+				Name:      "adjustment_factor",
+				Help:      "Current adjustment factor while auto adjusting",
+			}, []string{"api_call"})
+
+			collectors = append(collectors, APILimiterAdjustmentFactor)
+			c.APILimiterAdjustmentFactor = true
+
+		case Namespace + "_" + SubsystemAPILimiter + "_processed_requests_total":
+			APILimiterProcessedRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAPILimiter,
+				Name:      "processed_requests_total",
+				Help:      "Total number of API requests processed",
+			}, []string{"api_call", LabelOutcome})
+
+			collectors = append(collectors, APILimiterProcessedRequests)
+			c.APILimiterProcessedRequests = true
 		}
 	}
 
@@ -958,6 +1245,8 @@ func init() {
 	MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{Namespace: Namespace}))
 	// TODO: Figure out how to put this into a Namespace
 	// MustRegister(prometheus.NewGoCollector())
+	MustRegister(newStatusCollector())
+	MustRegister(newbpfCollector())
 }
 
 // MustRegister adds the collector to the registry, exposing this metric to
@@ -1004,8 +1293,13 @@ func Enable(addr string) <-chan error {
 	go func() {
 		// The Handler function provides a default handler to expose metrics
 		// via an HTTP server. "/metrics" is the usual endpoint for that.
-		http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-		errs <- http.ListenAndServe(addr, nil)
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+		srv := http.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+		errs <- srv.ListenAndServe()
 	}()
 
 	return errs
@@ -1018,6 +1312,17 @@ func GetCounterValue(m prometheus.Counter) float64 {
 	err := m.Write(&pm)
 	if err == nil {
 		return *pm.Counter.Value
+	}
+	return 0
+}
+
+// GetGaugeValue returns the current value stored for the gauge. This function
+// is useful in tests.
+func GetGaugeValue(m prometheus.Gauge) float64 {
+	var pm dto.Metric
+	err := m.Write(&pm)
+	if err == nil {
+		return *pm.Gauge.Value
 	}
 	return 0
 }
@@ -1078,8 +1383,8 @@ func Error2Outcome(err error) string {
 	return LabelValueOutcomeSuccess
 }
 
-// Errno2Outcome converts a syscall.Errno to LabelOutcome
-func Errno2Outcome(errno syscall.Errno) string {
+// Errno2Outcome converts a unix.Errno to LabelOutcome
+func Errno2Outcome(errno unix.Errno) string {
 	if errno != 0 {
 		return LabelValueOutcomeFail
 	}

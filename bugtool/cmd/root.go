@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/defaults"
 
 	"github.com/spf13/cobra"
@@ -43,7 +47,7 @@ var BugtoolRootCmd = &cobra.Command{
 	NAME                          READY     STATUS    RESTARTS   AGE
 	cilium-kg8lv                  1/1       Running   0          13m
 	[...]
-	$ kubectl -n kube-system exec cilium-kg8lv cilium-bugtool
+	$ kubectl -n kube-system exec cilium-kg8lv -- cilium-bugtool
 	$ kubectl cp kube-system/cilium-kg8lv:/tmp/cilium-bugtool-243785589.tar /tmp/cilium-bugtool-243785589.tar`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runTool()
@@ -57,6 +61,7 @@ If you are going to register a issue on GitHub, please
 only provide files from the archive you have reviewed
 for sensitive information.
 `
+	defaultDumpPath = "/tmp"
 )
 
 var (
@@ -72,14 +77,20 @@ var (
 	dryRunMode     bool
 	enableMarkdown bool
 	archivePrefix  string
+	getPProf       bool
+	pprofPort      int
+	traceSeconds   int
 )
 
 func init() {
 	BugtoolRootCmd.Flags().BoolVar(&archive, "archive", true, "Create archive when false skips deletion of the output directory")
+	BugtoolRootCmd.Flags().BoolVar(&getPProf, "get-pprof", false, "When set, only gets the pprof traces from the cilium-agent binary")
+	BugtoolRootCmd.Flags().IntVar(&pprofPort, "pprof-port", 6060, "Port on which pprof server is exposed")
+	BugtoolRootCmd.Flags().IntVar(&traceSeconds, "pprof-trace-seconds", 180, "Amount of seconds used for pprof CPU traces")
 	BugtoolRootCmd.Flags().StringVarP(&archiveType, "archiveType", "o", "tar", "Archive type: tar | gz")
 	BugtoolRootCmd.Flags().BoolVar(&k8s, "k8s-mode", false, "Require Kubernetes pods to be found or fail")
 	BugtoolRootCmd.Flags().BoolVar(&dryRunMode, "dry-run", false, "Create configuration file of all commands that would have been executed")
-	BugtoolRootCmd.Flags().StringVarP(&dumpPath, "tmp", "t", "/tmp", "Path to store extracted files")
+	BugtoolRootCmd.Flags().StringVarP(&dumpPath, "tmp", "t", defaultDumpPath, "Path to store extracted files. Use '-' to send to stdout.")
 	BugtoolRootCmd.Flags().StringVarP(&host, "host", "H", "", "URI to server-side API")
 	BugtoolRootCmd.Flags().StringVarP(&k8sNamespace, "k8s-namespace", "", "kube-system", "Kubernetes namespace for Cilium pod")
 	BugtoolRootCmd.Flags().StringVarP(&k8sLabel, "k8s-label", "", "k8s-app=cilium", "Kubernetes label for Cilium pod")
@@ -89,13 +100,13 @@ func init() {
 	BugtoolRootCmd.Flags().StringVarP(&archivePrefix, "archive-prefix", "", "", "String to prefix to name of archive if created (e.g., with cilium pod-name)")
 }
 
-func getVerifyCiliumPods() []string {
-	// By default try to pick either Kubernetes or non-k8s (host mode). If
-	// we find Cilium pod(s) then it's k8s-mode otherwise host mode.
-	// Passing extra flags can override the default.
-	k8sPods, err := getCiliumPods(k8sNamespace, k8sLabel)
-	switch {
-	case k8s:
+func getVerifyCiliumPods() (k8sPods []string) {
+	if k8s {
+		var err error
+		// By default try to pick either Kubernetes or non-k8s (host mode). If
+		// we find Cilium pod(s) then it's k8s-mode otherwise host mode.
+		// Passing extra flags can override the default.
+		k8sPods, err = getCiliumPods(k8sNamespace, k8sLabel)
 		// When the k8s flag is set, perform extra checks that we actually do have pods or fail.
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\nFailed to find pods, is kube-apiserver running?\n", err)
@@ -105,10 +116,11 @@ func getVerifyCiliumPods() []string {
 			fmt.Fprint(os.Stderr, "Found no pods, is kube-apiserver running?\n")
 			os.Exit(1)
 		}
-	case os.Getuid() != 0 && len(k8sPods) == 0:
+	}
+	if os.Getuid() != 0 && !k8s && len(k8sPods) == 0 {
 		// When the k8s flag is not set and the user is not root,
 		// debuginfo and BPF related commands can fail.
-		fmt.Printf("Warning, some of the BPF commands might fail when run as not root\n")
+		fmt.Fprintf(os.Stderr, "Warning, some of the BPF commands might fail when run as not root\n")
 	}
 
 	return k8sPods
@@ -133,7 +145,7 @@ func removeIfEmpty(dir string) {
 		}
 	}
 
-	fmt.Printf("Deleted empty directory %s\n", dir)
+	fmt.Fprintf(os.Stderr, "Deleted empty directory %s\n", dir)
 }
 
 func isValidArchiveType(archiveType string) bool {
@@ -161,6 +173,11 @@ func runTool() {
 	} else {
 		prefix = fmt.Sprintf("cilium-bugtool-%s-", nowStr)
 	}
+	sendArchiveToStdout := false
+	if dumpPath == "-" {
+		sendArchiveToStdout = true
+		dumpPath = defaultDumpPath
+	}
 	dbgDir, err := ioutil.TempDir(dumpPath, prefix)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create debug directory %s\n", err)
@@ -175,22 +192,30 @@ func runTool() {
 	var commands []string
 	if dryRunMode {
 		dryRun(configPath, k8sPods, confDir, cmdDir)
-		fmt.Printf("Configuration file at %s\n", configPath)
+		fmt.Fprintf(os.Stderr, "Configuration file at %s\n", configPath)
 		return
 	}
 
-	// Check if there is a user supplied configuration
-	if config, _ := loadConfigFile(configPath); config != nil {
-		// All of of the commands run are from the configuration file
-		commands = config.Commands
-	}
-	if len(commands) == 0 {
-		// Found no configuration file or empty so fall back to default commands.
-		commands = defaultCommands(confDir, cmdDir, k8sPods)
-	}
-	defer printDisclaimer()
+	if getPProf {
+		err := pprofTraces(cmdDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create debug directory %s\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Check if there is a user supplied configuration
+		if config, _ := loadConfigFile(configPath); config != nil {
+			// All of of the commands run are from the configuration file
+			commands = config.Commands
+		}
+		if len(commands) == 0 {
+			// Found no configuration file or empty so fall back to default commands.
+			commands = defaultCommands(confDir, cmdDir, k8sPods)
+		}
+		defer printDisclaimer()
 
-	runAll(commands, cmdDir, k8sPods)
+		runAll(commands, cmdDir, k8sPods)
+	}
 
 	removeIfEmpty(cmdDir)
 	removeIfEmpty(confDir)
@@ -198,22 +223,22 @@ func runTool() {
 	if archive {
 		switch archiveType {
 		case "gz":
-			gzipPath, err := createGzip(dbgDir)
+			gzipPath, err := createGzip(dbgDir, sendArchiveToStdout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create gzip %s\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("\nGZIP at %s\n", gzipPath)
+			fmt.Fprintf(os.Stderr, "\nGZIP at %s\n", gzipPath)
 		case "tar":
-			archivePath, err := createArchive(dbgDir)
+			archivePath, err := createArchive(dbgDir, sendArchiveToStdout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create archive %s\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("\nARCHIVE at %s\n", archivePath)
+			fmt.Fprintf(os.Stderr, "\nARCHIVE at %s\n", archivePath)
 		}
 	} else {
-		fmt.Printf("\nDIRECTORY at %s\n", dbgDir)
+		fmt.Fprintf(os.Stderr, "\nDIRECTORY at %s\n", dbgDir)
 	}
 }
 
@@ -222,13 +247,13 @@ func runTool() {
 func dryRun(configPath string, k8sPods []string, confDir, cmdDir string) {
 	_, err := setupDefaultConfig(configPath, k8sPods, confDir, cmdDir)
 	if err != nil {
-		fmt.Printf("Error: %s", err)
+		fmt.Fprintf(os.Stderr, "Error: %s", err)
 		os.Exit(1)
 	}
 }
 
 func printDisclaimer() {
-	fmt.Print(disclaimer)
+	fmt.Fprint(os.Stderr, disclaimer)
 }
 
 func cleanup(dbgDir string) {
@@ -318,7 +343,7 @@ func execCommand(prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, "bash", "-c", prompt).CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", fmt.Errorf("exec timeout")
 	}
 	return string(output), err
@@ -351,7 +376,7 @@ func writeCmdToFile(cmdDir, prompt string, k8sPods []string, enableMarkdown bool
 		defer cancel()
 		if _, err := exec.CommandContext(ctx, "kubectl", "exec",
 			args[1], "-n", args[3], "--", "which",
-			args[5]).CombinedOutput(); err != nil || ctx.Err() == context.DeadlineExceeded {
+			args[5]).CombinedOutput(); err != nil || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			os.Remove(f.Name())
 			return
 		}
@@ -359,7 +384,7 @@ func writeCmdToFile(cmdDir, prompt string, k8sPods []string, enableMarkdown bool
 	// Write prompt as header and the output as body, and / or error but delete empty output.
 	output, err := execCommand(prompt)
 	if err != nil {
-		fmt.Fprintf(f, fmt.Sprintf("> Error while running '%s':  %s\n\n", prompt, err))
+		fmt.Fprintf(f, "> Error while running '%s':  %s\n\n", prompt, err)
 	}
 	// We deliberately continue in case there was a error but the output
 	// produced might have useful information
@@ -394,10 +419,9 @@ func getCiliumPods(namespace, label string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ciliumPods []string
 
 	lines := strings.Split(output, "\n")
-
+	ciliumPods := make([]string, 0, len(lines))
 	for _, l := range lines {
 		if !strings.HasPrefix(l, "cilium") {
 			continue
@@ -410,4 +434,65 @@ func getCiliumPods(namespace, label string) ([]string, error) {
 	}
 
 	return ciliumPods, nil
+}
+
+func pprofTraces(rootDir string) error {
+	var wg sync.WaitGroup
+	var profileErr error
+	pprofHost := fmt.Sprintf("localhost:%d", pprofPort)
+	wg.Add(1)
+	go func() {
+		url := fmt.Sprintf("http://%s/debug/pprof/profile?seconds=%d", pprofHost, traceSeconds)
+		dir := filepath.Join(rootDir, "pprof-cpu")
+		profileErr = downloadToFile(url, dir)
+		wg.Done()
+	}()
+
+	url := fmt.Sprintf("http://%s/debug/pprof/trace?seconds=%d", pprofHost, traceSeconds)
+	dir := filepath.Join(rootDir, "pprof-trace")
+	err := downloadToFile(url, dir)
+	if err != nil {
+		return err
+	}
+
+	url = fmt.Sprintf("http://%s/debug/pprof/heap?debug=1", pprofHost)
+	dir = filepath.Join(rootDir, "pprof-heap")
+	err = downloadToFile(url, dir)
+	if err != nil {
+		return err
+	}
+
+	cmd := fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName)
+	writeCmdToFile(rootDir, cmd, nil, enableMarkdown)
+
+	cmd = fmt.Sprintf("gops stats $(pidof %s)", components.CiliumAgentName)
+	writeCmdToFile(rootDir, cmd, nil, enableMarkdown)
+
+	cmd = fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName)
+	writeCmdToFile(rootDir, cmd, nil, enableMarkdown)
+
+	wg.Wait()
+	if profileErr != nil {
+		return profileErr
+	}
+	return nil
+}
+
+func downloadToFile(url, file string) error {
+	out, err := os.Create(file)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+	_, err = io.Copy(out, resp.Body)
+	return err
 }

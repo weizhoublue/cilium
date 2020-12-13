@@ -17,6 +17,7 @@
 package eppolicymap
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -42,6 +43,8 @@ var _ = Suite(&EPPolicyMapTestSuite{})
 func (e *EPPolicyMapTestSuite) SetUpTest(c *C) {
 	MapName = "unit_test_ep_to_policy"
 	innerMapName = "unit_test_ep_policy_inner_map"
+	err := bpf.ConfigureResourceLimits()
+	c.Assert(err, IsNil)
 }
 
 func (e *EPPolicyMapTestSuite) TearDownTest(c *C) {
@@ -50,16 +53,16 @@ func (e *EPPolicyMapTestSuite) TearDownTest(c *C) {
 }
 
 func (e *EPPolicyMapTestSuite) TestCreateEPPolicy(c *C) {
-	bpf.CheckOrMountFS("")
+	bpf.CheckOrMountFS("", false)
 	CreateEPPolicyMap()
 }
 
 func (e *EPPolicyMapTestSuite) TestWriteEndpoint(c *C) {
 	option.Config.SockopsEnable = true
-	bpf.CheckOrMountFS("")
+	bpf.CheckOrMountFS("", false)
 	keys := make([]*lxcmap.EndpointKey, 1)
 	many := make([]*lxcmap.EndpointKey, 256)
-	fd, err := bpf.CreateMap(bpf.BPF_MAP_TYPE_HASH,
+	fd, err := bpf.CreateMap(bpf.MapTypeHash,
 		uint32(unsafe.Sizeof(policymap.PolicyKey{})),
 		uint32(unsafe.Sizeof(policymap.PolicyEntry{})), 1024, 0, 0,
 		"ep-policy-inner-map")
@@ -67,7 +70,7 @@ func (e *EPPolicyMapTestSuite) TestWriteEndpoint(c *C) {
 
 	keys[0] = lxcmap.NewEndpointKey(net.ParseIP("1.2.3.4"))
 	for i := 0; i < 256; i++ {
-		ip := net.ParseIP("1.2.3." + string(i))
+		ip := net.ParseIP("1.2.3." + fmt.Sprint(i))
 		many[i] = lxcmap.NewEndpointKey(ip)
 	}
 
@@ -83,9 +86,9 @@ func (e *EPPolicyMapTestSuite) TestWriteEndpoint(c *C) {
 // in invalid fd in if its disabled.
 func (e *EPPolicyMapTestSuite) TestWriteEndpointFails(c *C) {
 	option.Config.SockopsEnable = true
-	bpf.CheckOrMountFS("")
+	bpf.CheckOrMountFS("", false)
 	keys := make([]*lxcmap.EndpointKey, 1)
-	_, err := bpf.CreateMap(bpf.BPF_MAP_TYPE_HASH,
+	_, err := bpf.CreateMap(bpf.MapTypeHash,
 		uint32(unsafe.Sizeof(policymap.PolicyKey{})),
 		uint32(unsafe.Sizeof(policymap.PolicyEntry{})), 1024, 0, 0,
 		"ep-policy-inner-map")
@@ -99,9 +102,9 @@ func (e *EPPolicyMapTestSuite) TestWriteEndpointFails(c *C) {
 
 func (e *EPPolicyMapTestSuite) TestWriteEndpointDisabled(c *C) {
 	option.Config.SockopsEnable = false
-	bpf.CheckOrMountFS("")
+	bpf.CheckOrMountFS("", false)
 	keys := make([]*lxcmap.EndpointKey, 1)
-	fd, err := bpf.CreateMap(bpf.BPF_MAP_TYPE_HASH,
+	fd, err := bpf.CreateMap(bpf.MapTypeHash,
 		uint32(unsafe.Sizeof(policymap.PolicyKey{})),
 		uint32(unsafe.Sizeof(policymap.PolicyEntry{})), 1024, 0, 0,
 		"ep-policy-inner-map")

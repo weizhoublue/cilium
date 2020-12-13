@@ -32,14 +32,19 @@ var (
 	mutex           lock.RWMutex
 )
 
+const (
+	// DefaultConfigName is the name used by default in the standard CNI
+	// configuration
+	DefaultConfigName = "cilium"
+)
+
 // PluginContext is the context given to chaining plugins
 type PluginContext struct {
-	Logger     *logrus.Entry
-	Args       *skel.CmdArgs
-	CniArgs    types.ArgsSpec
-	NetConf    *types.NetConf
-	CniVersion string
-	Client     *client.Client
+	Logger  *logrus.Entry
+	Args    *skel.CmdArgs
+	CniArgs types.ArgsSpec
+	NetConf *types.NetConf
+	Client  *client.Client
 }
 
 // ChainingPlugin is the interface each chaining plugin must implement
@@ -51,6 +56,14 @@ type ChainingPlugin interface {
 	// ImplementsAdd returns true if the chaining plugin implements its own
 	// add logic
 	ImplementsAdd() bool
+
+	// Delete is called on CNI DELETE. It is given the plugin context from
+	// the previous plugin.
+	Delete(ctx context.Context, pluginContext PluginContext) (err error)
+
+	// ImplementsDelete returns true if the chaining plugin implements its
+	// own delete logic
+	ImplementsDelete() bool
 }
 
 // Register is called by chaining plugins to register themselves. After
@@ -58,6 +71,10 @@ type ChainingPlugin interface {
 func Register(name string, p ChainingPlugin) error {
 	mutex.Lock()
 	defer mutex.Unlock()
+
+	if name == DefaultConfigName {
+		return fmt.Errorf("invalid chain name. '%s' is reserved", DefaultConfigName)
+	}
 
 	if _, ok := chainingPlugins[name]; ok {
 		return fmt.Errorf("chaining plugin with name %s already exists", name)

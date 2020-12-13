@@ -21,30 +21,16 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 )
 
-// IDSet is a wrapper type around a set of unsigned 16-bit integers, with
-// a mutex for protecting access.
-type IDSet struct {
-	Mutex lock.RWMutex
-	IDs   map[uint16]struct{}
-}
-
-// NewIDSet returns a new instance of an IDSet.
-func NewIDSet() *IDSet {
-	return &IDSet{
-		IDs: map[uint16]struct{}{},
-	}
-}
-
 // Endpoint refers to any structure which has the following properties:
 // * a node-local ID stored as a uint16
 // * a security identity
 // * a means of incrementing its policy revision
+// * a means of checking if it represents a node or a pod.
 type Endpoint interface {
 	GetID16() uint16
-	RLockAlive() error
-	RUnlock()
-	GetSecurityIdentity() *identity.Identity
+	GetSecurityIdentity() (*identity.Identity, error)
 	PolicyRevisionBumpEvent(rev uint64)
+	IsHost() bool
 }
 
 // EndpointSet is used to be able to group together a given set of Endpoints
@@ -55,20 +41,24 @@ type EndpointSet struct {
 	endpoints map[Endpoint]struct{}
 }
 
-// NewEndpointSet returns an EndpointSet with the Endpoints map allocated with
-// the specified capacity.
-func NewEndpointSet(capacity int) *EndpointSet {
+// NewEndpointSet returns an EndpointSet with the given Endpoints map
+func NewEndpointSet(m map[Endpoint]struct{}) *EndpointSet {
+	if m != nil {
+		return &EndpointSet{
+			endpoints: m,
+		}
+	}
 	return &EndpointSet{
-		endpoints: make(map[Endpoint]struct{}, capacity),
+		endpoints: map[Endpoint]struct{}{},
 	}
 }
 
-// ForEach runs epFunc asynchronously for all endpoints in the EndpointSet. It
-// signals to the provided WaitGroup when epFunc has been executed for each
-// endpoint.
-func (e *EndpointSet) ForEach(wg *sync.WaitGroup, epFunc func(epp Endpoint)) {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
+// ForEachGo runs epFunc asynchronously inside a go routine for each endpoint in
+// the EndpointSet. It signals to the provided WaitGroup when epFunc has been
+// executed for each endpoint.
+func (e *EndpointSet) ForEachGo(wg *sync.WaitGroup, epFunc func(epp Endpoint)) {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
 
 	wg.Add(len(e.endpoints))
 
@@ -95,8 +85,9 @@ func (e *EndpointSet) Insert(ep Endpoint) {
 }
 
 // Len returns the number of elements in the EndpointSet.
-func (e *EndpointSet) Len() int {
+func (e *EndpointSet) Len() (nElem int) {
 	e.mutex.RLock()
-	defer e.mutex.RUnlock()
-	return len(e.endpoints)
+	nElem = len(e.endpoints)
+	e.mutex.RUnlock()
+	return
 }

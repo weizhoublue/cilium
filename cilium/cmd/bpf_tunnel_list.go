@@ -17,15 +17,16 @@ package cmd
 import (
 	"os"
 
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/maps/tunnel"
 
 	"github.com/spf13/cobra"
 )
 
 const (
-	tunnelTitle = "TUNNEL"
+	tunnelTitle      = "TUNNEL"
+	destinationTitle = "VALUE"
 )
 
 var bpfTunnelListCmd = &cobra.Command{

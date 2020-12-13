@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,16 @@
 
 package v2
 
+type CiliumClusterwideNetworkPolicyExpansion interface{}
+
 type CiliumEndpointExpansion interface{}
 
+type CiliumExternalWorkloadExpansion interface{}
+
+type CiliumIdentityExpansion interface{}
+
+type CiliumLocalRedirectPolicyExpansion interface{}
+
 type CiliumNetworkPolicyExpansion interface{}
+
+type CiliumNodeExpansion interface{}

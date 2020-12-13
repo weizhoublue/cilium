@@ -31,8 +31,11 @@ var (
 		Conntrack:           &specConntrack,
 		Debug:               &specDebug,
 		DebugLB:             &specDebugLB,
+		DebugPolicy:         &specDebugPolicy,
 		DropNotify:          &specDropNotify,
 		TraceNotify:         &specTraceNotify,
+		PolicyVerdictNotify: &specPolicyVerdictNotify,
+		PolicyAuditMode:     &specPolicyAuditMode,
 		MonitorAggregation:  &specMonitorAggregation,
 		NAT46:               &specNAT46,
 	}

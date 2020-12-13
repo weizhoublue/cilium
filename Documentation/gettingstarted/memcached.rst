@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 **********************************
 Getting Started Securing Memcached
@@ -30,7 +30,7 @@ Step 2: Deploy the Demo Application
 
 Now that we have Cilium deployed and ``kube-dns`` operating correctly we can
 deploy our demo memcached application.  Since our first
-`HTTP-aware Cilium demo <https://www.cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you>`_ was based on Star Wars, we continue with the theme for the memcached demo as well.
+`HTTP-aware Cilium demo <https://cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you/>`_ was based on Star Wars, we continue with the theme for the memcached demo as well.
 
 Ever wonder how the Alliance Fleet manages the changing positions of their ships? The Alliance Fleet uses memcached to store the coordinates of their ships. The Alliance Fleet leverages the memcached-svc service implemented as a memcached server. Each ship in the fleet constantly updates its coordinates and has the ability to get the coordinates of other ships in the Alliance Fleet.
 
@@ -89,17 +89,17 @@ We suggest having a main terminal window to execute *kubectl* commands and two a
 
 In **all three** terminal windows, set some handy environment variables for the demo with the following script:
 
-.. parsed-literal::x
+.. parsed-literal::
 
-   $  curl -s \ |SCM_WEB|\/examples/kubernetes-memcached/memcd-env.sh > memcd-env.sh
-   $  source memcd-env.sh
+    $ curl -s \ |SCM_WEB|\/examples/kubernetes-memcached/memcd-env.sh > memcd-env.sh
+    $ source memcd-env.sh
 
 
 In the terminal window dedicated for the A-wing pod, exec in, use python to import the binary memcached library and set the client connection to the memcached server:
 
 .. parsed-literal::
 
-    $ kubectl exec -ti $AWING_POD sh
+    $ kubectl exec -ti $AWING_POD -- sh
     # python
     Python 3.7.0 (default, Sep  5 2018, 03:25:31)
     [GCC 6.3.0 20170516] on linux
@@ -111,7 +111,7 @@ In the terminal window dedicated for the Alliance-Tracker, exec in, use python t
 
 .. parsed-literal::
 
-    $ kubectl exec -ti $TRACKER_POD sh
+    $ kubectl exec -ti $TRACKER_POD -- sh
     # python
     Python 3.7.0 (default, Sep  5 2018, 03:25:31)
     [GCC 6.3.0 20170516] on linux
@@ -312,7 +312,8 @@ L7 memcached-aware network security policies.  To clean up, in your main termina
 
 .. parsed-literal::
 
-    $ minikube delete
+   $ kubectl delete -f \ |SCM_WEB|\/examples/kubernetes-memcached/memcd-sw-app.yaml
+   $ kubectl delete cnp secure-fleet
 
 For some handy memcached references, see below:
 

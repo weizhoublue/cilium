@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _k8s_install_kubespray:
 
@@ -14,17 +14,18 @@ The guide is to use Kubespray for creating an AWS Kubernetes cluster running
 Cilium as the CNI. The guide uses:
 
   - Kubespray v2.6.0
-  - Latest `Cilium released version <https://github.com/cilium/cilium/releases>`__ (instructions for using the version are mentioned below)
+  - Latest `Cilium released version`_ (instructions for using the version are mentioned below)
 
-Please consult `Kubespray Prerequisites <https://github.com/kubernetes-incubator/kubespray#requirements>`__ and Cilium :ref:`admin_system_reqs`. 
+Please consult `Kubespray Prerequisites <https://github.com/kubernetes-sigs/kubespray#requirements>`__ and Cilium :ref:`admin_system_reqs`. 
 
+.. _Cilium released version: `latest released Cilium version`_
 
 Installing Kubespray
 ====================
 
 .. code:: bash
 
-  $ git clone --branch v2.6.0 https://github.com/kubernetes-incubator/kubespray 
+  $ git clone --branch v2.6.0 https://github.com/kubernetes-sigs/kubespray
 
 Install dependencies from ``requirements.txt``
 
@@ -39,7 +40,6 @@ Infrastructure Provisioning
 
 We will use Terraform for provisioning AWS infrastructure.
 
--------------------------
 Configure AWS credentials
 -------------------------
 
@@ -52,7 +52,6 @@ Export the variables for your AWS credentials
   export AWS_SSH_KEY_NAME="yyy"
   export AWS_DEFAULT_REGION="zzz"
 
------------------------------
 Configure Terraform Variables
 -----------------------------
 
@@ -108,7 +107,6 @@ Example ``terraform.tfvars`` file:
   kube_insecure_apiserver_address = "0.0.0.0"
 
 
------------------------
 Apply the configuration
 -----------------------
 
@@ -143,13 +141,14 @@ Installing Kubernetes cluster with Cilium as CNI
 
 Kubespray uses Ansible as its substrate for provisioning and orchestration. Once the infrastructure is created, you can run the Ansible playbook to install Kubernetes and all the required dependencies. Execute the below command in the kubespray clone repo, providing the correct path of the AWS EC2 ssh private key in ``ansible_ssh_private_key_file=<path to EC2 SSH private key file>``
 
-We recommend using the `latest released Cilium version <https://github.com/cilium/cilium/releases>`__ by editing ``roles/download/defaults/main.yml``. Open the file, search for ``cilium_version``, and replace the version with the latest released. As an example, the updated version entry will look like: ``cilium_version: "v1.2.0"``.
+We recommend using the `latest released Cilium version`_ by editing ``roles/download/defaults/main.yml``. Open the file, search for ``cilium_version``, and replace the version with the latest released. As an example, the updated version entry will look like: ``cilium_version: "v1.2.0"``.
 
 
 .. code:: bash
 
   $ ansible-playbook -i ./inventory/hosts ./cluster.yml -e ansible_user=core -e bootstrap_os=coreos -e kube_network_plugin=cilium -b --become-user=root --flush-cache  -e ansible_ssh_private_key_file=<path to EC2 SSH private key file>
 
+.. _latest released Cilium version: https://github.com/cilium/cilium/releases
 
 Validate Cluster
 ================
@@ -171,10 +170,7 @@ Execute the commands below from the bastion host. If ``kubectl`` isn't installed
 
 You should see that nodes are in ``Ready`` state and Cilium pods are in ``Running`` state
 
-Demo Application
-================
-
-Follow this `link <https://cilium.readthedocs.io/en/stable/gettingstarted/minikube/#step-2-deploy-the-demo-application>`__ to deploy a demo application and verify the correctness of the installation.
+.. include:: k8s-install-connectivity-test.rst
 
 Delete Cluster
 ==============

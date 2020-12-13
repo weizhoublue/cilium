@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2016-2019 Authors of Cilium
+# Copyright 2016-2020 Authors of Cilium
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,17 +19,27 @@ RUNDIR=$2
 IP4_HOST=$3
 IP6_HOST=$4
 MODE=$5
-# Only set if MODE = "direct", "ipvlan", "lb" or "flannel"
-NATIVE_DEV=$6
-XDP_DEV=$7
-XDP_MODE=$8
-MTU=$9
-IPSEC=${10}
-MASQ=${11}
-ENCRYPT_DEV=${12}
-HOSTLB=${13}
-CGROUP_ROOT=${14}
-BPFFS_ROOT=${15}
+# Only set if MODE = "direct", "ipvlan", "flannel"
+NATIVE_DEVS=$6
+HOST_DEV1=$7
+HOST_DEV2=$8
+XDP_DEV=$9
+XDP_MODE=${10}
+MTU=${11}
+IPSEC=${12}
+ENCRYPT_DEV=${13}
+HOSTLB=${14}
+HOSTLB_UDP=${15}
+HOSTLB_PEER=${16}
+CGROUP_ROOT=${17}
+BPFFS_ROOT=${18}
+NODE_PORT=${19}
+NODE_PORT_BIND=${20}
+MCPU=${21}
+NODE_PORT_IPV4_ADDRS=${22}
+NODE_PORT_IPV6_ADDRS=${23}
+NR_CPUS=${24}
+ENDPOINT_ROUTES=${25}
 
 ID_HOST=1
 ID_WORLD=2
@@ -43,29 +53,13 @@ set -e
 set -x
 set -o pipefail
 
-if [[ ! $(command -v cilium) ]]; then
-	echo "Can't be initialized because 'cilium' is not in the path."
+if [[ ! $(command -v cilium-map-migrate) ]]; then
+	echo "Can't be initialized because 'cilium-map-migrate' is not in the path."
 	exit 1
 fi
 
 # Remove old legacy files
 rm $RUNDIR/encap.state 2> /dev/null || true
-
-# Enable JIT if compiled into kernel
-echo 1 > /proc/sys/net/core/bpf_jit_enable || true
-
-# Disable rp_filter
-echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
-
-# Disable unprivileged BPF
-echo 1 > /proc/sys/kernel/unprivileged_bpf_disabled || true
-
-if [ "$IP6_HOST" != "<nil>" ]; then
-# Docker <17.05 has an issue which causes IPv6 to be disabled in the initns for all
-# interface (https://github.com/docker/libnetwork/issues/1720)
-# Enable IPv6 for now
-	echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6 || true
-fi
 
 # This directory was created by the daemon and contains the per container header file
 DIR="$PWD/globals"
@@ -86,36 +80,6 @@ function setup_dev()
 		echo 1 > /proc/sys/net/ipv4/conf/${NAME}/accept_local
 		echo 0 > /proc/sys/net/ipv4/conf/${NAME}/send_redirects
 	fi
-}
-
-function setup_veth_pair()
-{
-	local -r NAME1=$1
-	local -r NAME2=$2
-
-	# Only recreate the veth pair if it does not exist already.
-	# This avoids problems with changing MAC addresses.
- 	if [ "$(ip link show $NAME1 type veth | cut -d ' ' -f 2)" != "${NAME1}@${NAME2}:" ] ; then
-		ip link del $NAME1 2> /dev/null || true
-		ip link add $NAME1 type veth peer name $NAME2
-	fi
-
-	setup_dev $NAME1
-	setup_dev $NAME2
-}
-
-function setup_ipvlan_slave()
-{
-	local -r NATIVE_DEV=$1
-	local -r HOST_DEV=$2
-
-	# No issues with changing MAC addresses since all ipvlan
-	# slaves always inherits MAC from native device.
-	ip link del $HOST_DEV 2> /dev/null || true
-
-	ip link add link $NATIVE_DEV name $HOST_DEV type ipvlan mode l3
-
-	setup_dev $HOST_DEV
 }
 
 function move_local_rules_af()
@@ -162,13 +126,17 @@ function move_local_rules()
 
 function setup_proxy_rules()
 {
+	if [ "$MODE" = "ipvlan" ]; then
+		return
+	fi
+
 	# Any packet from an ingress proxy uses a separate routing table that routes
 	# the packet back to the cilium host device.
 	from_ingress_rulespec="fwmark 0xA00/0xF00 pref 10 lookup $PROXY_RT_TABLE"
 
 	# Any packet to an ingress or egress proxy uses a separate routing table
 	# that routes the packet to the loopback device regardless of the destination
-	# address in the packet. For this to work the skb must have a socket set
+	# address in the packet. For this to work the ctx must have a socket set
 	# (e.g., via TPROXY).
 	to_proxy_rulespec="fwmark 0x200/0xF00 pref 9 lookup $TO_PROXY_RT_TABLE"
 
@@ -177,16 +145,27 @@ function setup_proxy_rules()
 			if [ -z "$(ip -4 rule list $to_proxy_rulespec)" ]; then
 				ip -4 rule add $to_proxy_rulespec
 			fi
-			if [ -z "$(ip -4 rule list $from_ingress_rulespec)" ]; then
-				ip -4 rule add $from_ingress_rulespec
+			if [ "$ENDPOINT_ROUTES" = "true" ]; then
+				if [ ! -z "$(ip -4 rule list $from_ingress_rulespec)" ]; then
+					ip -4 rule delete $from_ingress_rulespec
+				fi
+			else
+				if [ -z "$(ip -4 rule list $from_ingress_rulespec)" ]; then
+					ip -4 rule add $from_ingress_rulespec
+				fi
 			fi
 		fi
 
 		# Traffic to the host proxy is local
 		ip route replace table $TO_PROXY_RT_TABLE local 0.0.0.0/0 dev lo
 		# Traffic from ingress proxy goes to Cilium address space via the cilium host device
-		ip route replace table $PROXY_RT_TABLE $IP4_HOST/32 dev $HOST_DEV1
-		ip route replace table $PROXY_RT_TABLE default via $IP4_HOST
+		if [ "$ENDPOINT_ROUTES" = "true" ]; then
+			ip route delete table $PROXY_RT_TABLE $IP4_HOST/32 dev $HOST_DEV1 2>/dev/null || true
+			ip route delete table $PROXY_RT_TABLE default via $IP4_HOST 2>/dev/null || true
+		else
+			ip route replace table $PROXY_RT_TABLE $IP4_HOST/32 dev $HOST_DEV1
+			ip route replace table $PROXY_RT_TABLE default via $IP4_HOST
+		fi
 	else
 		ip -4 rule del $to_proxy_rulespec 2> /dev/null || true
 		ip -4 rule del $from_ingress_rulespec 2> /dev/null || true
@@ -202,18 +181,29 @@ function setup_proxy_rules()
 					if [ -z "$(ip -6 rule list $to_proxy_rulespec)" ]; then
 						ip -6 rule add $to_proxy_rulespec
 					fi
-					if [ -z "$(ip -6 rule list $from_ingress_rulespec)" ]; then
-						ip -6 rule add $from_ingress_rulespec
+					if [ "$ENDPOINT_ROUTES" = "true" ]; then
+						if [ ! -z "$(ip -6 rule list $from_ingress_rulespec)" ]; then
+							ip -6 rule delete $from_ingress_rulespec
+						fi
+					else
+						if [ -z "$(ip -6 rule list $from_ingress_rulespec)" ]; then
+							ip -6 rule add $from_ingress_rulespec
+						fi
 					fi
 				fi
-	
+
 				IP6_LLADDR=$(ip -6 addr show dev $HOST_DEV2 | grep inet6 | head -1 | awk '{print $2}' | awk -F'/' '{print $1}')
 				if [ -n "$IP6_LLADDR" ]; then
 					# Traffic to the host proxy is local
 					ip -6 route replace table $TO_PROXY_RT_TABLE local ::/0 dev lo
 					# Traffic from ingress proxy goes to Cilium address space via the cilium host device
-					ip -6 route replace table $PROXY_RT_TABLE ${IP6_LLADDR}/128 dev $HOST_DEV1
-					ip -6 route replace table $PROXY_RT_TABLE default via $IP6_LLADDR dev $HOST_DEV1
+					if [ "$ENDPOINT_ROUTES" = "true" ]; then
+						ip -6 route delete table $PROXY_RT_TABLE ${IP6_LLADDR}/128 dev $HOST_DEV1 2>/dev/null || true
+						ip -6 route delete table $PROXY_RT_TABLE default via $IP6_LLADDR dev $HOST_DEV1 2>/dev/null || true
+					else
+						ip -6 route replace table $PROXY_RT_TABLE ${IP6_LLADDR}/128 dev $HOST_DEV1
+						ip -6 route replace table $PROXY_RT_TABLE default via $IP6_LLADDR dev $HOST_DEV1
+					fi
 				fi
 			else
 				ip -6 rule del $to_proxy_rulespec 2> /dev/null || true
@@ -228,6 +218,13 @@ function mac2array()
 	echo "{0x${1//:/,0x}}"
 }
 
+function rnd_mac_addr()
+{
+    local lower=$(od /dev/urandom -N5 -t x1 -An | sed 's/ /:/g')
+    local upper=$(( 0x$(od /dev/urandom -N1 -t x1 -An | cut -d' ' -f2) & 0xfe | 0x02 ))
+    printf '%02x%s' $upper $lower
+}
+
 function bpf_compile()
 {
 	IN=$1
@@ -235,15 +232,26 @@ function bpf_compile()
 	TYPE=$3
 	EXTRA_OPTS=$4
 
-	clang -O2 -g -target bpf -emit-llvm				\
-	      -Wno-address-of-packed-member -Wno-unknown-warning-option	\
-	      -I. -I$DIR -I$LIB -I$LIB/include				\
-	      -D__NR_CPUS__=$(nproc)					\
-	      -DENABLE_ARP_RESPONDER					\
-	      -DHANDLE_NS						\
-	      $EXTRA_OPTS						\
-	      -c $LIB/$IN -o - |					\
-	llc -march=bpf -mcpu=probe -mattr=dwarfris -filetype=$TYPE -o $OUT
+	clang -O2 -target bpf -std=gnu89 -nostdinc -emit-llvm	\
+	      -g -Wall -Wextra -Werror -Wshadow			\
+	      -Wno-address-of-packed-member			\
+	      -Wno-unknown-warning-option			\
+	      -Wno-gnu-variable-sized-type-not-at-end		\
+	      -Wdeclaration-after-statement			\
+	      -I. -I$DIR -I$LIB -I$LIB/include			\
+	      -D__NR_CPUS__=$NR_CPUS				\
+	      -DENABLE_ARP_RESPONDER=1				\
+	      $EXTRA_OPTS					\
+	      -c $LIB/$IN -o - |				\
+	llc -march=bpf -mcpu=$MCPU -mattr=dwarfris -filetype=$TYPE -o $OUT
+}
+
+function xdp_unload()
+{
+	DEV=$1
+	MODE=$2
+
+	ip link set dev $DEV $MODE off 2> /dev/null || true
 }
 
 function xdp_load()
@@ -256,17 +264,26 @@ function xdp_load()
 	SEC=$6
 	CIDR_MAP=$7
 
-	bpf_compile $IN $OUT obj "$OPTS"
+	NODE_MAC=$(ip link show $DEV | grep ether | awk '{print $2}')
+	NODE_MAC="{.addr=$(mac2array $NODE_MAC)}"
 
-	ip link set dev $DEV $MODE off
+	bpf_compile $IN $OUT obj "$OPTS -DNODE_MAC=${NODE_MAC}"
 	rm -f "$CILIUM_BPF_MNT/xdp/globals/$CIDR_MAP" 2> /dev/null || true
 	cilium-map-migrate -s $OUT
 	set +e
-	ip link set dev $DEV $MODE obj $OUT sec $SEC
+	ip -force link set dev $DEV $MODE obj $OUT sec $SEC
 	RETCODE=$?
 	set -e
 	cilium-map-migrate -e $OUT -r $RETCODE
 	return $RETCODE
+}
+
+function bpf_unload()
+{
+	DEV=$1
+	WHERE=$2
+
+	tc filter del dev $DEV $WHERE 2> /dev/null || true
 }
 
 function bpf_load()
@@ -278,26 +295,17 @@ function bpf_load()
 	OUT=$5
 	SEC=$6
 	CALLS_MAP=$7
-	SKIP=$8
 
 	NODE_MAC=$(ip link show $DEV | grep ether | awk '{print $2}')
 	NODE_MAC="{.addr=$(mac2array $NODE_MAC)}"
 
-	if [ "$WHERE" == "ingress" ]; then
-		OPTS_DIR="-DBPF_PKT_DIR=1"
-	else
-		OPTS_DIR="-DBPF_PKT_DIR=0"
-	fi
-
-	OPTS="${OPTS} ${OPTS_DIR} -DNODE_MAC=${NODE_MAC} -DCALLS_MAP=${CALLS_MAP}"
+	OPTS="${OPTS} -DNODE_MAC=${NODE_MAC} -DCALLS_MAP=${CALLS_MAP}"
 	bpf_compile $IN $OUT obj "$OPTS"
-	if [ "$SKIP" != "no_qdisc_reset" ]; then
-		tc qdisc del dev $DEV clsact 2> /dev/null || true
-		tc qdisc add dev $DEV clsact
-	fi
+	tc qdisc replace dev $DEV clsact || true
+	[ -z "$(tc filter show dev $DEV $WHERE | grep -v 'pref 1 bpf chain 0 $\|pref 1 bpf chain 0 handle 0x1')" ] || tc filter del dev $DEV $WHERE
 	cilium-map-migrate -s $OUT
 	set +e
-	tc filter add dev $DEV $WHERE prio 1 handle 1 bpf da obj $OUT sec $SEC
+	tc filter replace dev $DEV $WHERE prio 1 handle 1 bpf da obj $OUT sec $SEC
 	RETCODE=$?
 	set -e
 	cilium-map-migrate -e $OUT -r $RETCODE
@@ -311,12 +319,11 @@ function bpf_load_cgroups()
 	OUT=$3
 	PROG_TYPE=$4
 	WHERE=$5
-	SEC=$6
-	CALLS_MAP=$7
-	CGRP=$8
-	BPFMNT=$9
+	CALLS_MAP=$6
+	CGRP=$7
+	BPFMNT=$8
 
-	OPTS="${OPTS} ${OPTS_DIR} -DCALLS_MAP=${CALLS_MAP}"
+	OPTS="${OPTS} -DCALLS_MAP=${CALLS_MAP}"
 	bpf_compile $IN $OUT obj "$OPTS"
 
 	TMP_FILE="$BPFMNT/tc/globals/cilium_cgroups_$WHERE"
@@ -324,7 +331,7 @@ function bpf_load_cgroups()
 
 	cilium-map-migrate -s $OUT
 	set +e
-	tc exec bpf pin $TMP_FILE obj $OUT type $PROG_TYPE attach_type $WHERE sec $SEC
+	tc exec bpf pin $TMP_FILE obj $OUT type $PROG_TYPE attach_type $WHERE sec $WHERE
 	RETCODE=$?
 	set -e
 	cilium-map-migrate -e $OUT -r $RETCODE
@@ -339,6 +346,19 @@ function bpf_load_cgroups()
 	return $RETCODE
 }
 
+function bpf_clear_cgroups()
+{
+	CGRP=$1
+	HOOK=$2
+
+	set +e
+	ID=$(bpftool cgroup show $CGRP | grep $HOOK | awk '{print $1}')
+	set -e
+	if [ -n "$ID" ]; then
+		bpftool cgroup detach $CGRP $HOOK id $ID
+	fi
+}
+
 function encap_fail()
 {
 	(>&2 echo "ERROR: Setup of encapsulation device $ENCAP_DEV has failed. Is another program using a $MODE device?")
@@ -346,38 +366,6 @@ function encap_fail()
 	(>&2 ip link show type $MODE)
 	exit 1
 }
-
-$LIB/run_probes.sh $LIB $RUNDIR
-
-# Base device setup
-case "${MODE}" in
-	"flannel")
-		HOST_DEV1="${NATIVE_DEV}"
-		HOST_DEV2="${NATIVE_DEV}"
-
-		setup_dev "${NATIVE_DEV}"
-		;;
-	"ipvlan")
-		HOST_DEV1="cilium_host"
-		HOST_DEV2="${HOST_DEV1}"
-
-		setup_ipvlan_slave $NATIVE_DEV $HOST_DEV1
-
-		ip link set $HOST_DEV1 mtu $MTU
-		;;
-	*)
-		HOST_DEV1="cilium_host"
-		HOST_DEV2="cilium_net"
-
-		setup_veth_pair $HOST_DEV1 $HOST_DEV2
-
-		ip link set $HOST_DEV1 arp off
-		ip link set $HOST_DEV2 arp off
-
-		ip link set $HOST_DEV1 mtu $MTU
-		ip link set $HOST_DEV2 mtu $MTU
-        ;;
-esac
 
 # node_config.h header generation
 case "${MODE}" in
@@ -405,6 +393,25 @@ case "${MODE}" in
 		sed -i '/^#.*CILIUM_IFINDEX.*$/d' $RUNDIR/globals/node_config.h
 		CILIUM_IDX=$(cat /sys/class/net/${HOST_DEV1}/ifindex)
 		echo "#define CILIUM_IFINDEX $CILIUM_IDX" >> $RUNDIR/globals/node_config.h
+
+		CILIUM_EPHEMERAL_MIN=$(cat /proc/sys/net/ipv4/ip_local_port_range | awk '{print $1}')
+		echo "#define EPHEMERAL_MIN $CILIUM_EPHEMERAL_MIN" >> $RUNDIR/globals/node_config.h
+
+		if [ "$NODE_PORT" = "true" ]; then
+			MAC_BY_IFINDEX_MACRO="#define NATIVE_DEV_MAC_BY_IFINDEX(IFINDEX) ({ \\
+	union macaddr __mac = {.addr = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0}}; \\
+	switch (IFINDEX) { \\\\\n"
+			MAC_BY_IFINDEX_MACRO_END="	} \\
+	__mac; })"
+			for NATIVE_DEV in ${NATIVE_DEVS//;/ }; do
+				IDX=$(cat /sys/class/net/${NATIVE_DEV}/ifindex)
+				MAC=$(ip link show $NATIVE_DEV | grep ether | awk '{print $2}')
+				MAC=$(mac2array $MAC)
+				MAC_BY_IFINDEX_MACRO="${MAC_BY_IFINDEX_MACRO}	case ${IDX}: {union macaddr __tmp = {.addr = ${MAC}}; __mac=__tmp;} break; \\\\\n"
+			done
+			MAC_BY_IFINDEX_MACRO="${MAC_BY_IFINDEX_MACRO}${MAC_BY_IFINDEX_MACRO_END}"
+			echo -e "${MAC_BY_IFINDEX_MACRO}" >> $RUNDIR/globals/node_config.h
+		fi
 esac
 
 # Address management
@@ -426,11 +433,9 @@ esac
 # Decrease priority of the rule to identify local addresses
 move_local_rules
 
-if [ "$MODE" != "ipvlan" ]; then
-	# Install new rules before local rule to ensure that packets from the proxy are
-	# using a separate routing table
-	setup_proxy_rules
-fi
+# Install new rules before local rule to ensure that packets from the proxy are
+# using a separate routing table
+setup_proxy_rules
 
 sed -i '/ENCAP_GENEVE/d' $RUNDIR/globals/node_config.h
 sed -i '/ENCAP_VXLAN/d' $RUNDIR/globals/node_config.h
@@ -443,72 +448,87 @@ fi
 if [ "$MODE" = "vxlan" -o "$MODE" = "geneve" ]; then
 	ENCAP_DEV="cilium_${MODE}"
 	ip link show $ENCAP_DEV || {
-		ip link add $ENCAP_DEV type $MODE external || encap_fail
+		ip link add name $ENCAP_DEV address $(rnd_mac_addr) type $MODE external || encap_fail
 	}
+	ip link set $ENCAP_DEV mtu $MTU || encap_fail
 
-	setup_dev $ENCAP_DEV
-	ip link set $ENCAP_DEV up || encap_fail
+	setup_dev $ENCAP_DEV || encap_fail
 
 	ENCAP_IDX=$(cat /sys/class/net/${ENCAP_DEV}/ifindex)
 	sed -i '/^#.*ENCAP_IFINDEX.*$/d' $RUNDIR/globals/node_config.h
 	echo "#define ENCAP_IFINDEX $ENCAP_IDX" >> $RUNDIR/globals/node_config.h
 
 	CALLS_MAP="cilium_calls_overlay_${ID_WORLD}"
-	POLICY_MAP="cilium_policy_reserved_${ID_WORLD}"
-	COPTS="-DSECLABEL=${ID_WORLD} -DPOLICY_MAP=${POLICY_MAP}"
+	COPTS="-DSECLABEL=${ID_WORLD} -DFROM_ENCAP_DEV=1"
+	if [ "$NODE_PORT" = "true" ]; then
+		COPTS="${COPTS} -DDISABLE_LOOPBACK_LB"
+	fi
 	bpf_load $ENCAP_DEV "$COPTS" "ingress" bpf_overlay.c bpf_overlay.o from-overlay ${CALLS_MAP}
+	bpf_load $ENCAP_DEV "$COPTS" "egress" bpf_overlay.c bpf_overlay.o to-overlay ${CALLS_MAP}
 else
 	# Remove eventual existing encapsulation device from previous run
 	ip link del cilium_vxlan 2> /dev/null || true
 	ip link del cilium_geneve 2> /dev/null || true
 fi
 
-if [ "$MODE" = "direct" ] || [ "$MODE" = "ipvlan" ]; then
-	if [ -z "$NATIVE_DEV" ]; then
+if [ "$MODE" = "direct" ] || [ "$MODE" = "ipvlan" ] || [ "$NODE_PORT" = "true" ] ; then
+	if [ "$NATIVE_DEVS" == "<nil>" ]; then
 		echo "No device specified for $MODE mode, ignoring..."
 	else
 		if [ "$IP6_HOST" != "<nil>" ]; then
 			echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
 		fi
 
-		CALLS_MAP=cilium_calls_netdev_${ID_WORLD}
-		POLICY_MAP="cilium_policy_reserved_${ID_WORLD}"
-		COPTS="-DSECLABEL=${ID_WORLD} -DPOLICY_MAP=${POLICY_MAP}"
-		if [ "$MASQ" = "true" ]; then
-			SECTION="masq-pre"
-		else
-			SECTION="from-netdev"
+		if [ "$NODE_PORT_IPV4_ADDRS" != "<nil>" ]; then
+			declare -A v4_addrs
+			for a in ${NODE_PORT_IPV4_ADDRS//;/ }; do
+				IFS== read iface addr <<< "$a"
+				v4_addrs[$iface]=$addr
+			done
 		fi
-		bpf_load $NATIVE_DEV "$COPTS" "ingress" bpf_netdev.c bpf_netdev.o $SECTION $CALLS_MAP
-		if [ "$MASQ" = "true" ]; then
-			bpf_load $NATIVE_DEV "$COPTS" "egress" bpf_netdev.c bpf_netdev.o masq $CALLS_MAP "no_qdisc_reset"
-		fi
-
-		echo "$NATIVE_DEV" > $RUNDIR/device.state
-	fi
-elif [ "$MODE" = "lb" ]; then
-	if [ -z "$NATIVE_DEV" ]; then
-		echo "No device specified for $MODE mode, ignoring..."
-	else
-		if [ "$IP6_HOST" != "<nil>" ]; then
-			echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+		if [ "$NODE_PORT_IPV6_ADDRS" != "<nil>" ]; then
+			declare -A v6_addrs
+			for a in ${NODE_PORT_IPV6_ADDRS//;/ }; do
+				IFS== read iface addr <<< "$a"
+				v6_addrs[$iface]=$addr
+			done
 		fi
 
-		CALLS_MAP="cilium_calls_lb"
-		COPTS="-DLB_L3 -DLB_L4"
-		bpf_load $NATIVE_DEV "$COPTS" "ingress" bpf_lb.c bpf_lb.o from-netdev $CALLS_MAP
-
-		echo "$NATIVE_DEV" > $RUNDIR/device.state
+		echo "$NATIVE_DEVS" > $RUNDIR/device.state
 	fi
 else
 	FILE=$RUNDIR/device.state
 	if [ -f $FILE ]; then
-		DEV=$(cat $FILE)
-		echo "Removed BPF program from device $DEV"
-		tc qdisc del dev $DEV clsact 2> /dev/null || true
+		DEVS=$(cat $FILE)
+		for DEV in ${DEVS//,/ }; do
+			echo "Removed BPF program from device $DEV"
+			tc qdisc del dev $DEV clsact 2> /dev/null || true
+		done
 		rm $FILE
 	fi
 fi
+
+# Remove bpf_host.o from previously used devices
+for iface in $(ip -o -a l | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1 | grep -v cilium); do
+	found=false
+	for NATIVE_DEV in ${NATIVE_DEVS//;/ }; do
+		if [ "${iface}" == "$NATIVE_DEV" ]; then
+			found=true
+			break
+		fi
+	done
+	$found && continue
+	for where in ingress egress; do
+		if tc filter show dev "$iface" "$where" | grep -q "bpf_netdev[^\.]*.o"; then
+			echo "Removing bpf_netdev.o from $where of $iface"
+			tc filter del dev "$iface" "$where" || true
+		fi
+		if tc filter show dev "$iface" "$where" | grep -q "bpf_host.o"; then
+			echo "Removing bpf_host.o from $where of $iface"
+			tc filter del dev "$iface" "$where" || true
+		fi
+	done
+done
 
 if [ "$HOSTLB" = "true" ]; then
 	if [ "$IP6_HOST" != "<nil>" ]; then
@@ -516,36 +536,96 @@ if [ "$HOSTLB" = "true" ]; then
 	fi
 
 	CALLS_MAP="cilium_calls_lb"
-	COPTS="-DLB_L3 -DLB_L4"
-	if [ "$IP6_HOST" != "<nil>" ]; then
-		bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr connect6 from-sock6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+	COPTS=""
+	if [ "$IP6_HOST" != "<nil>" ] || [ "$IP4_HOST" != "<nil>" ] && [ -f /proc/sys/net/ipv6/conf/all/forwarding ]; then
+		bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr connect6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		if [ "$HOSTLB_PEER" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr getpeername6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		fi
+		if [ "$NODE_PORT" = "true" ] && [ "$NODE_PORT_BIND" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sock post_bind6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		else
+			bpf_clear_cgroups $CGROUP_ROOT post_bind6
+		fi
+		if [ "$HOSTLB_UDP" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr sendmsg6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr recvmsg6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		else
+			bpf_clear_cgroups $CGROUP_ROOT sendmsg6
+			bpf_clear_cgroups $CGROUP_ROOT recvmsg6
+		fi
 	fi
 	if [ "$IP4_HOST" != "<nil>" ]; then
-		bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr connect4 from-sock4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr connect4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		if [ "$HOSTLB_PEER" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr getpeername4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		fi
+		if [ "$NODE_PORT" = "true" ] && [ "$NODE_PORT_BIND" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sock post_bind4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		else
+			bpf_clear_cgroups $CGROUP_ROOT post_bind4
+		fi
+		if [ "$HOSTLB_UDP" = "true" ]; then
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr sendmsg4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr recvmsg4 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+		else
+			bpf_clear_cgroups $CGROUP_ROOT sendmsg4
+			bpf_clear_cgroups $CGROUP_ROOT recvmsg4
+		fi
 	fi
+else
+	bpf_clear_cgroups $CGROUP_ROOT post_bind4
+	bpf_clear_cgroups $CGROUP_ROOT post_bind6
+	bpf_clear_cgroups $CGROUP_ROOT connect4
+	bpf_clear_cgroups $CGROUP_ROOT connect6
+	bpf_clear_cgroups $CGROUP_ROOT sendmsg4
+	bpf_clear_cgroups $CGROUP_ROOT sendmsg6
+	bpf_clear_cgroups $CGROUP_ROOT recvmsg4
+	bpf_clear_cgroups $CGROUP_ROOT recvmsg6
+	bpf_clear_cgroups $CGROUP_ROOT getpeername4
+	bpf_clear_cgroups $CGROUP_ROOT getpeername6
 fi
 
-# bpf_host.o requires to see an updated node_config.h which includes ENCAP_IFINDEX
-CALLS_MAP="cilium_calls_netdev_ns_${ID_HOST}"
-POLICY_MAP="cilium_policy_reserved_${ID_HOST}"
-COPTS="-DFROM_HOST -DFIXED_SRC_SECCTX=${ID_HOST} -DSECLABEL=${ID_HOST} -DPOLICY_MAP=${POLICY_MAP}"
-if [ "$MODE" == "ipvlan" ]; then
-	COPTS+=" -DENABLE_EXTRA_HOST_DEV"
-fi
-bpf_load $HOST_DEV1 "$COPTS" "egress" bpf_netdev.c bpf_host.o from-netdev $CALLS_MAP
-bpf_load $HOST_DEV1 "" "ingress" bpf_hostdev_ingress.c bpf_hostdev_ingress.o to-host $CALLS_MAP "no_qdisc_reset"
-
-# bpf_ipsec.o is also needed by proxy redirects, so we load it unconditionally
-bpf_load $HOST_DEV2 "" "ingress" bpf_ipsec.c bpf_ipsec.o from-netdev $CALLS_MAP
 if [ "$IPSEC" == "true" ]; then
-	if [ $ENCRYPT_DEV != "" ]; then
+	if [ "$ENCRYPT_DEV" != "<nil>" ]; then
+		CALLS_MAP="cilium_calls_netdev_ns_${ID_HOST}"
 		bpf_load $ENCRYPT_DEV "" "ingress" bpf_network.c bpf_network.o from-network $CALLS_MAP
 	fi
 fi
+if [ "$HOST_DEV1" != "$HOST_DEV2" ]; then
+	bpf_unload $HOST_DEV2 "egress"
+fi
 
-if [ -n "$XDP_DEV" ]; then
+# Remove bpf_xdp.o from previously used devices
+for iface in $(ip -o -a l | grep prog/xdp | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1 | grep -v cilium); do
+	[ "$iface" == "$XDP_DEV" ] && continue
+	for mode in xdpdrv xdpgeneric; do
+		xdp_unload "$iface" "$mode"
+	done
+done
+
+if [ "$XDP_DEV" != "<nil>" ]; then
+	if ip -one link show dev $XDP_DEV | grep -v -q $XDP_MODE; then
+		for mode in xdpdrv xdpgeneric; do
+			xdp_unload "$XDP_DEV" "$mode"
+		done
+	fi
 	CIDR_MAP="cilium_cidr_v*"
-	COPTS=""
+	COPTS="-DSECLABEL=${ID_WORLD} -DCALLS_MAP=cilium_calls_xdp"
+	if [ "$NODE_PORT" = "true" ]; then
+		COPTS="${COPTS} -DDISABLE_LOOPBACK_LB"
+	fi
+	if [ "$NODE_PORT" = "true" ]; then
+		NATIVE_DEV_IDX=$(cat /sys/class/net/${XDP_DEV}/ifindex)
+		COPTS="${COPTS} -DNATIVE_DEV_IFINDEX=${NATIVE_DEV_IDX}"
+		# Currently it assumes that XDP_DEV is listed among NATIVE_DEVS
+		if [ "$IP4_HOST" != "<nil>" ]; then
+			COPTS="${COPTS} -DIPV4_NODEPORT=${v4_addrs[$XDP_DEV]}"
+		fi
+		if [ "$IP6_HOST" != "<nil>" ]; then
+			COPTS="${COPTS} -DIPV6_NODEPORT_VAL={.addr={${v6_addrs[$XDP_DEV]}}}"
+		fi
+	fi
 	xdp_load $XDP_DEV $XDP_MODE "$COPTS" bpf_xdp.c bpf_xdp.o from-netdev $CIDR_MAP
 fi
 

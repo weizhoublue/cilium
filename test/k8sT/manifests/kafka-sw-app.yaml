@@ -1,8 +1,12 @@
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kafka-broker
 spec:
+  selector:
+    matchLabels:
+      app: kafka
+      zgroup: kafkaTestApp
   replicas: 1
   template:
     metadata:
@@ -13,9 +17,7 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: kafka
-        # Normally we would specify an exact version of the image instead of
-        # 'latest', but this is the only tagged version on Dockerhub.
-        image: docker.io/spotify/kafkaproxy:latest
+        image: docker.io/cilium/kafkaproxy:1.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 9092
@@ -24,6 +26,14 @@ spec:
           value: kafka-service
         - name: ADVERTISED_PORT
           value: "9092"
+        - name: CONSUMER_THREADS
+          value: "1"
+        - name: ZK_CONNECT
+          value: "zk.connect=localhost:2181/root/path"
+        - name: GROUP_ID
+          value: "groupid=test"
+        - name: TOPICS
+          value: "empire-announce,deathstar-plans,test-topic"
         livenessProbe:
           tcpSocket:
             port: 9092
@@ -52,11 +62,15 @@ spec:
     app: kafka
   clusterIP: None
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: empire-hq
 spec:
+  selector:
+    matchLabels:
+      app: empire-hq
+      zgroup: kafkaTestApp
   replicas: 1
   template:
     metadata:
@@ -67,16 +81,22 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: empire-hq
-        image: docker.io/cilium/kafkaclient:latest
+        image: docker.io/cilium/kafkaclient:1.0
         imagePullPolicy: IfNotPresent
       nodeSelector:
-        "kubernetes.io/hostname": k8s1
+        "cilium.io/ci-node": k8s1
+
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: empire-outpost-8888
 spec:
+  selector:
+    matchLabels:
+      app: empire-outpost
+      outpostid: "8888"
+      zgroup: kafkaTestApp
   replicas: 1
   template:
     metadata:
@@ -88,14 +108,19 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: empire-outpost-8888
-        image: docker.io/cilium/kafkaclient:latest
+        image: docker.io/cilium/kafkaclient:1.0
         imagePullPolicy: IfNotPresent
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: empire-outpost-9999
 spec:
+  selector:
+    matchLabels:
+      app: empire-outpost
+      outpostid: "9999"
+      zgroup: kafkaTestApp
   replicas: 1
   template:
     metadata:
@@ -107,14 +132,18 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: empire-outpost-9999
-        image: docker.io/cilium/kafkaclient:latest
+        image: docker.io/cilium/kafkaclient:1.0
         imagePullPolicy: IfNotPresent
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: empire-backup
 spec:
+  selector:
+    matchLabels:
+      app: empire-backup
+      zgroup: kafkaTestApp
   replicas: 1
   template:
     metadata:
@@ -125,5 +154,5 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: empire-backup
-        image: docker.io/cilium/kafkaclient:latest
+        image: docker.io/cilium/kafkaclient:1.0
         imagePullPolicy: IfNotPresent

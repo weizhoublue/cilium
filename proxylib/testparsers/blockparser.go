@@ -38,17 +38,17 @@ const (
 )
 
 func init() {
-	log.Info("init(): Registering blockParserFactory")
+	log.Debug("init(): Registering blockParserFactory")
 	RegisterParserFactory(blockParserName, blockParserFactory)
 }
 
 type BlockParser struct {
 	connection *Connection
-	inserted   bool
+	inserted   int
 }
 
-func (p *BlockParserFactory) Create(connection *Connection) Parser {
-	log.Infof("BlockParserFactory: Create: %v", connection)
+func (p *BlockParserFactory) Create(connection *Connection) interface{} {
+	log.Debugf("BlockParserFactory: Create: %v", connection)
 	return &BlockParser{connection: connection}
 }
 
@@ -117,15 +117,22 @@ func (p *BlockParser) OnData(reply, endStream bool, data [][]byte) (OpType, int)
 		return ERROR, int(ERROR_INVALID_FRAME_LENGTH)
 	}
 
-	if p.inserted {
-		p.inserted = false
-		return DROP, block_len
+	if p.inserted > 0 {
+		if p.inserted == block_len {
+			p.inserted = 0
+			return DROP, block_len
+		}
+		// partial insert in progress
+		n := p.connection.Inject(reply, []byte(block)[p.inserted:])
+		// Drop the INJECT block in the current direction
+		p.inserted += n
+		return INJECT, n
 	}
 
 	if !reply {
-		log.Infof("BlockParser: Request: %s", block)
+		log.Debugf("BlockParser: Request: %s", block)
 	} else {
-		log.Infof("BlockParser: Response: %s", block)
+		log.Debugf("BlockParser: Response: %s", block)
 	}
 
 	if missing == 0 && block_len == 0 {
@@ -133,7 +140,7 @@ func (p *BlockParser) OnData(reply, endStream bool, data [][]byte) (OpType, int)
 		return NOP, 0
 	}
 
-	log.Infof("BlockParser: missing: %d", missing)
+	log.Debugf("BlockParser: missing: %d", missing)
 
 	if bytes.Contains(block, []byte("PASS")) {
 		p.connection.Log(cilium.EntryType_Request, &cilium.LogEntry_GenericL7{
@@ -171,10 +178,10 @@ func (p *BlockParser) OnData(reply, endStream bool, data [][]byte) (OpType, int)
 	}
 	if bytes.Contains(block, []byte("INSERT")) {
 		// Inject the block in the current direction
-		p.connection.Inject(reply, []byte(block))
+		n := p.connection.Inject(reply, []byte(block))
 		// Drop the INJECT block in the current direction
-		p.inserted = true
-		return INJECT, block_len
+		p.inserted = n
+		return INJECT, n
 	}
 
 	return ERROR, int(ERROR_INVALID_FRAME_TYPE)

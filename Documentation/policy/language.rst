@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _policy_examples:
 
@@ -226,6 +226,26 @@ be only accessible if the source endpoint also has the label ``env=prod``.
 
         .. literalinclude:: ../../examples/policies/l3/requires/requires.json
 
+This ``fromRequires`` rule doesn't allow anything on its own and needs to be
+combined with other rules to allow traffic. For example, when combined with the
+example policy below, the endpoint with label ``env=prod`` will become
+accessible from endpoints that have both labels ``env=prod`` and
+``role=frontend``.
+
+.. only:: html
+
+   .. tabs::
+     .. group-tab:: k8s YAML
+
+        .. literalinclude:: ../../examples/policies/l3/requires/endpoints.yaml
+     .. group-tab:: JSON
+
+        .. literalinclude:: ../../examples/policies/l3/requires/endpoints.json
+
+.. only:: epub or latex
+
+        .. literalinclude:: ../../examples/policies/l3/requires/endpoints.json
+
 .. _Services based:
 
 Services based
@@ -292,20 +312,33 @@ by the selected endpoints.
 The following entities are defined:
 
 host
-    The host entity includes all cluster nodes. This also includes all
-    containers running in host networking mode.
+    The host entity includes the local host. This also includes all
+    containers running in host networking mode on the local host.
+remote-node
+    Any node in any of the connected clusters other than the local host. This
+    also includes all containers running in host-networking mode on remote
+    nodes. (Requires the option ``enable-remote-node-identity`` to be enabled)
 cluster
     Cluster is the logical group of all network endpoints inside of the local
-    cluster. This includes all Cilium-managed endpoints of the local cluster.
-    It also includes the host entity to cover host networking containers as
-    well as the init entity to include endpoints currently being bootstrapped.
+    cluster. This includes all Cilium-managed endpoints of the local cluster,
+    unmanaged endpoints in the local cluster, as well as the host,
+    remote-node, and init identities.
 init
     The init entity contains all endpoints in bootstrap phase for which the
-    security identity has not been resolved yet. See section
+    security identity has not been resolved yet. This is typically only
+    observed in non-Kubernetes environments. See section
     :ref:`endpoint_lifecycle` for details.
+health
+    The health entity represents the health endpoints, used to check cluster
+    connectivity health. Each node managed by Cilium hosts a health endpoint.
+    See `cluster_connectivity_health` for details on health checks.
+unmanaged
+    The unmanaged entity represents endpoints not managed by Cilium. Unmanaged
+    endpoints are considered part of the cluster and are included in the
+    cluster entity.
 world
     The world entity corresponds to all endpoints outside of the cluster.
-    Allowing to world is identical to allowing to CIDR 0/0. An alternative
+    Allowing to world is identical to allowing to CIDR 0.0.0.0/0. An alternative
     to allowing from and to world is to define fine grained DNS or CIDR based
     policies.
 all
@@ -322,7 +355,7 @@ Access to/from local host
 Allow all endpoints with the label ``env=dev`` to access the host that is
 serving the particular endpoint.
 
-.. note:: Kubernetes will automatically allow all communication from and to the
+.. note:: Kubernetes will automatically allow all communication from the
 	  local host of all local endpoints. You can run the agent with the
 	  option ``--allow-localhost=policy`` to disable this behavior which
 	  will give you control over this via policy.
@@ -341,6 +374,27 @@ serving the particular endpoint.
 
         .. literalinclude:: ../../examples/policies/l3/entities/host.json
 
+.. _policy-remote-node:
+
+Access to/from all nodes in the cluster
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Allow all endpoints with the label ``env=dev`` to receive traffic from any host
+in the cluster that Cilium is running on.
+
+.. only:: html
+
+   .. tabs::
+     .. group-tab:: k8s YAML
+
+        .. literalinclude:: ../../examples/policies/l3/entities/nodes.yaml
+     .. group-tab:: JSON
+
+        .. literalinclude:: ../../examples/policies/l3/entities/nodes.json
+
+.. only:: epub or latex
+
+        .. literalinclude:: ../../examples/policies/l3/entities/nodes.json
 
 Access to/from outside cluster
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -383,6 +437,11 @@ will apply to traffic where one side of the connection is:
 * The host network namespace where the pod is running.
 * Within the cluster prefix but the IP's networking is not provided by Cilium.
 
+Conversely, CIDR rules do not apply to traffic where both sides of the
+connection are either managed by Cilium or use an IP belonging to a node in the
+cluster (including host networking pods). This traffic may be allowed using
+labels, services or entities -based policies as described above.
+
 .. note::
 
    When running Cilium on Linux 4.10 or earlier, there are :ref:`cidr_limitations`.
@@ -406,8 +465,8 @@ Egress
 toCIDR
   List of destination prefixes/CIDRs that endpoints selected by
   ``endpointSelector`` are allowed to talk to. Note that endpoints which are
-  selected by a ``fromEndpoints`` are automatically allowed to talk to their
-  respective destination endpoints.
+  selected by a ``fromEndpoints`` are automatically allowed to reply back to
+  the respective destination endpoints.
 
 toCIDRSet
   List of destination prefixes/CIDRs that are allowed to talk to all endpoints
@@ -442,14 +501,14 @@ DNS based
 ---------
 
 DNS policies are used to define Layer 3 policies to endpoints that are not
-managed by cilium, but have DNS queryable domain names. The IP addresses
+managed by Cilium, but have DNS queryable domain names. The IP addresses
 provided in DNS responses are allowed by Cilium in a similar manner to IPs in
 `CIDR based`_ policies. They are an alternative when the remote IPs may change
 or are not know a priori, or when DNS is more convenient. To enforce policy on
 DNS requests themselves, see `Layer 7 Examples`_.
 
-IP information is captured from DNS responses per-Endpoint via a `DNS Proxy`_
-or `DNS Polling`_. An L3 `CIDR based`_ rule is generated for every ``toFQDNs``
+IP information is captured from DNS responses per-Endpoint via a `DNS Proxy`_.
+An L3 `CIDR based`_ rule is generated for every ``toFQDNs``
 rule and applies to the same endpoints. The IP information is selected for
 insertion by ``matchName`` or ``matchPattern`` rules, and is collected from all
 DNS responses seen by Cilium on the node. Multiple selectors may be included in
@@ -474,8 +533,8 @@ IPs to be allowed are selected via:
 
 ``toFQDNs.matchPattern``
   Inserts IPs of domains that match the pattern in ``matchPattern``, accounting
-  for wildcards. Patterns are composed of literal characters that that are
-  allowed in domain names: a-z, 0-9, ``.`` and ``-``.
+  for wildcards. Patterns are composed of literal characters that are allowed
+  in domain names: a-z, 0-9, ``.`` and ``-``.
 
   ``*`` is allowed as a wildcard with a number of convenience behaviors:
 
@@ -486,8 +545,12 @@ IPs to be allowed are selected via:
   * ``*`` alone matches all names, and inserts all cached DNS IPs into this
     rule.
 
-.. note:: `DNS Polling`_ will not poll ``matchPattern`` entries even if they
-          are literal DNS names.
+The example below allows all DNS traffic on port 53 to the DNS service and
+intercepts it via the `DNS Proxy`_. If using a non-standard DNS port for
+a DNS application behind a Kubernetes service, the port must match the backend
+port. When the application makes a request for my-remote-service.com, Cilium
+learns the IP address and will allow traffic due to the match on the name under
+the ``toFQDNs.matchName`` rule.
 
 Example
 ~~~~~~~
@@ -511,43 +574,46 @@ Example
 
 Managing Long-Lived Connections & Minimum DNS Cache Times
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Often, an application may keep a connection open for longer than the configured
-DNS TTL. Without further DNS queries the remote IP used in the long-lived
-connection may expire out of the DNS cache. When this occurs, existing
-connections will become disallowed by policy and will be blocked. In cases
-where an application retries the connection, a new DNS query is issued and the
-IP is added to the policy.
+Often, an application may keep a connection open for longer than the DNS TTL.
+Without further DNS queries the remote IP used in the long-lived connection may
+expire out of the DNS cache. When this occurs, existing connections established
+before the TTL expires will continue to be allowed until they terminate. Unused
+IPs will no longer be allowed, however, even when from the same DNS lookup as
+an in-use IP. This tracking is per-endpoint per-IP and DNS entries in this
+state will be have ``source: connection`` with a single IP listed within the
+``cilium fqdn cache list`` output.
 
-A minimum TTL is used to ensure a lower bound to DNS data expiration, and DNS
-data in the Cilium DNS cache will not expire sooner than this minimum. It
-can be configured with the ``--tofqdns-min-ttl`` CLI option. The value is in
-integer seconds and must be 1 or more. The default is 1 week, or 1 hour when
-`DNS Polling`_ is enabled.
+A minimum TTL is used to ensure a lower time bound to DNS data expiration, and
+IPs allowed by a ``toFQDNs`` rule will be allowed at least this long It can be
+configured with the ``--tofqdns-min-ttl`` CLI option. The value is in integer
+seconds and must be 1 or more, the default is 1 hour.
 
 Some care needs to be taken when setting ``--tofqdns-min-ttl`` with DNS data
 that returns many distinct IPs over time. A long TTL will keep each IP cached
-long after the related connections may have terminated. Large numbers of IPs
+long after the related connections have terminated. Large numbers of IPs each
 have corresponding Security Identities and too many may slow down Cilium policy
-regeneration. This can be especially pronounced when using `DNS Polling`_ to
-obtain DNS data. In such cases a shorter minimum TTL is recommended, as
-`DNS Polling`_ will recover up-do-date IPs regularly.
-
-.. note:: It is recommended that ``--tofqdns-min-ttl`` be set to the minimum
-          time a connection must be maintained.
+regeneration.
 
 Managing Short-Lived Connections & Maximum IPs per FQDN/endpoint
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The minimal TTL for DNS entries in the cache is deliberately long with 1 week
-per default. This is done to accommodate long-lived, persistent connections.  On
-the other end of the spectrum are workloads which perform short-lived
-connections in repetition to FQDNs which are backed by a large number of IP
-addresses (e.g. AWS S3). Such workloads can grow the number of IPs mapping to an
-FQDN quickly. In order to limit the number of IP addresses that map a particular
-FQDN, each FQDN per endpoint has a max capacity of IPs that are being maintained
-(default: 50). Once the capacity is exceeded, the oldest entries are
+The minimum TTL for DNS entries in the cache is deliberately long with 1 hour
+as the default. This is done to accommodate long-lived persistent connections.
+On the other end of the spectrum are workloads that perform short-lived
+connections in repetition to FQDNs that are backed by a large number of IP
+addresses (e.g. AWS S3).
+
+Many short-lived connections can grow the number of IPs mapping to an FQDN
+quickly. In order to limit the number of IP addresses that map a particular
+FQDN, each FQDN has a per-endpoint max capacity of IPs that will be retained
+(default: 50). Once this limit is exceeded, the oldest IP entries are
 automatically expired from the cache. This capacity can be changed using the
 ``--tofqdns-max-ip-per-hostname`` option.
+
+As with long-lived connections above, live connections are not expired until
+they terminate. It is safe to mix long- and short-lived connections from the
+same Pod. IPs above the limit described above will only be removed if unused by
+a connection.
 
 
 
@@ -578,7 +644,7 @@ which is defined as follows:
         type PortProtocol struct {
                 // Port is an L4 port number. For now the string will be strictly
                 // parsed as a single uint16. In the future, this field may support
-                // ranges in the form "1024-2048
+                // ranges in the form "1024-2048"
                 Port string `json:"port"`
 
                 // Protocol is the L4 protocol. If omitted or empty, any protocol
@@ -715,6 +781,9 @@ latter rule will have no effect.
           endpoint. This might change in the future when support for ranges is
           added.
 
+.. note:: Layer 7 rules are not currently supported in `HostPolicies`, i.e.,
+          policies that use :ref:`NodeSelector`.
+
 HTTP
 ----
 
@@ -768,7 +837,7 @@ All GET /path1 and PUT /path2 when header set
 The following example limits all endpoints which carry the labels
 ``app=myService`` to only be able to receive packets on port 80 using TCP.
 While communicating on this port, the only API endpoints allowed will be ``GET
-/path1`` and ``PUT /path2`` with the HTTP header ``X-My_header`` set to
+/path1``, and ``PUT /path2`` with the HTTP header ``X-My-Header`` set to
 ``true``:
 
 .. only:: html
@@ -785,11 +854,12 @@ While communicating on this port, the only API endpoints allowed will be ``GET
 
         .. literalinclude:: ../../examples/policies/l7/http/http.json
 
+.. _kafka_policy:
 
 Kafka (beta)
 ------------
 
-.. note:: Kafka support is currently in beta phase.
+.. include:: ../beta.rst
 
 PortRuleKafka is a list of Kafka protocol constraints. All fields are optional,
 if all fields are empty or missing, the rule will match all Kafka messages.
@@ -921,9 +991,9 @@ DNS policy may be applied via:
   * ``*`` alone matches all names, and inserts all IPs in DNS responses into
     the cilium-agent DNS cache.
 
-In this example, L7 DNS policy allows queries for ``cilium.io`` and any
-subdomains of ``cilium.io`` and ``api.cilium.io``. No other DNS queries will be
-allowed.
+In this example, L7 DNS policy allows queries for ``cilium.io``, any subdomains
+of ``cilium.io``, and any subdomains of ``api.cilium.io``. No other DNS queries
+will be allowed.
 
 The separate L3 ``toFQDNs`` egress rule allows connections to any IPs returned
 in DNS queries for ``cilium.io``, ``sub.cilium.io``, ``service1.api.cilium.io``
@@ -957,7 +1027,7 @@ allowed but connections to the returned IPs are not, as there is no L3
           FQDN must be allowed in their entirety. e.g. A query for
           ``servicename`` that succeeds with
           ``servicename.namespace.svc.cluster.local.`` must have the latter
-          allowed with ``matchName`` or ``matchPattern``.
+          allowed with ``matchName`` or ``matchPattern``. See `Alpine/musl deployments and DNS Refused`_.
 
 .. _DNS Obtaining Data:
 
@@ -965,13 +1035,13 @@ Obtaining DNS Data for use by ``toFQDNs``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 IPs are obtained via intercepting DNS requests with a proxy or DNS polling, and
 matching names are inserted irrespective of how the data is obtained. These IPs
-can be selected with ``toFQDN`` rules. DNS responses are cached within cilium
+can be selected with ``toFQDN`` rules. DNS responses are cached within Cilium
 agent respecting TTL.
 
 .. _DNS Proxy:
 
-DNS Proxy (preferred)
-"""""""""""""""""""""
+DNS Proxy 
+"""""""""
   A DNS Proxy intercepts egress DNS traffic and records IPs seen in the
   responses. This interception is, itself, a separate policy rule governing the
   DNS requests, and must be specified separately. For details on how to enforce
@@ -979,7 +1049,7 @@ DNS Proxy (preferred)
   Examples`_.
 
   Only IPs in intercepted DNS responses to an application will be allowed in
-  the cilium policy rules. For a given domain name, IPs from responses to all
+  the Cilium policy rules. For a given domain name, IPs from responses to all
   pods managed by a Cilium instance are allowed by policy (respecting TTLs).
   This ensures that allowed IPs are consistent with those returned to
   applications. The DNS Proxy is the only method to allow IPs from responses
@@ -989,11 +1059,6 @@ DNS Proxy (preferred)
   The following example obtains DNS data by interception without blocking any
   DNS requests. It allows L3 connections to ``cilium.io``, ``sub.cilium.io``
   and any subdomains of ``sub.cilium.io``.
-
-.. note:: The port number 53 shown in the examples is currently the
-          only supported port number on which DNS requests can be
-          proxied. This is the standard DNS port number, so it should
-          work for most uses.
 
 .. only:: html
 
@@ -1009,248 +1074,194 @@ DNS Proxy (preferred)
 
         .. literalinclude:: ../../examples/policies/l7/dns/dns-visibility.json
 
-.. _DNS Polling:
+Alpine/musl deployments and DNS Refused
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-DNS Polling
-"""""""""""
-  DNS Polling periodically issues a DNS lookup for each ``matchName`` from
-  cilium-agent. The result is used to regenerate endpoint policy.  Despite the
-  name, the ``matchName`` field does not have to be a fully-qualified domain
-  name. In cases where search domains are configured for cilium-agent, the DNS
-  lookups from Cilium will not be qualified and will utilize the search list.
-  Unqualified names must be matched as-is by ``matchPattern`` in order to
-  insert related IPs.
+Some common container images treat the DNS ``Refused`` response when the `DNS
+Proxy`_ rejects a query as a more general failure. This stops traversal of the
+search list defined in ``/etc/resolv.conf``. It is common for pods to search by
+appending ``.svc.cluster.local.`` to DNS queries. When this occurs, a lookup
+for ``cilium.io`` may first be attempted as
+``cilium.io.namespace.svc.cluster.local.`` and rejected by the proxy. Instead
+of continuing and eventually attempting ``cilium.io.`` alone, the Pod treats
+the DNS lookup is treated as failed.
 
-  DNS lookups are repeated with an interval of 5 seconds, and are made for
-  A(IPv4) and AAAA(IPv6) addresses. Should a lookup fail, the most recent IP
-  data is used instead. An IP change will trigger a regeneration of the Cilium
-  policy for each endpoint and increment the per cilium-agent policy repository
-  revision.
+This can be mitigated with the ``--tofqdns-dns-reject-response-code`` option.
+The default is ``refused`` but ``nameError`` can be selected, causing the proxy
+to return a NXDomain response to refused queries.
 
-  Polling may be enabled by the ``--tofqdns-enable-poller`` cilium-agent
-  CLI option. It is disabled by default.
-
-  The DNS polling implementation is very limited. It may not behave as expected.
-
-  #. The DNS polling is done from the cilium-agent process. This may result in
-     different IPs being returned in the DNS response than those seen by an
-     application.
-
-  #. When using DNS Polling with DNS responses that return a new IP on every
-     query, the IP being whitelisted may differ from the one used for
-     connections by applications. This is because the application will make
-     a DNS query independent from the poll.
-
-  #. When DNS lookups return many distinct IPs over time, large values of
-     ``--tofqdns-min-ttl`` may result in unacceptably slow policy
-     regeneration. See `DNS and Long-Lived Connections`_ for details.
-
-  #. The lookups from Cilium follow the configuration of the environment it
-     is in via ``/etc/resolv.conf``. When running as a kubernetes pod, the
-     contents of ``resolv.conf`` are controlled via the ``dnsPolicy`` field of a
-     spec. When running directly on a host, it will use the host's file.
-     Irrespective of how the DNS lookups are configured, TTLs and caches on the
-     resolver will impact the IPs seen by the cilium-agent lookups.
-
-.. note:: Connections to the DNS resolver must be explicitly whitelisted to
-          allow DNS queries. This is independent of the source of DNS
-          information, whether from polling or the DNS proxy.
+A more pod-specific solution is to configure ``ndots`` appropriately for each
+Pod, via ``dnsConfig``, so that the search list is not used for DNS lookups
+that do not need it. See the `Kubernetes documentation <https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-dns-config>`_
+for instructions.
 
 
-Kubernetes
-==========
+.. _deny_policies:
 
-This section covers Kubernetes specific network policy aspects.
+Deny Policies
+=============
 
-.. _k8s_namespaces:
+.. include:: ../beta.rst
 
-Namespaces
-----------
+Deny policies, available and enabled by default since Cilium 1.9, allows to
+explicitly restrict certain traffic to and from a Pod.
 
-`Namespaces <https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/>`_
-are used to create virtual clusters within a Kubernetes cluster. All Kubernetes objects
-including NetworkPolicy and CiliumNetworkPolicy belong to a particular
-namespace. Depending on how a policy is being defined and created, Kubernetes
-namespaces are automatically being taken into account:
+Deny policies take precedence over allow policies, regardless of whether they
+are a Cilium Network Policy, a Clusterwide Cilium Network Policy or even a
+Kubernetes Network Policy.
 
-* Network policies created and imported as `CiliumNetworkPolicy` CRD and
-  `NetworkPolicy` apply within the namespace, i.e. the policy only applies
-  to pods within that namespace. It is however possible to grant access to and
-  from pods in other namespaces as described below.
+Similarly to "allow" policies, Pods will enter default-deny mode as soon a
+single policy selects it.
 
-* Network policies imported directly via the :ref:`api_ref` apply to all
-  namespaces unless a namespace selector is specified as described below.
+If multiple allow and deny policies are applied to the same pod, the following
+table represents the expected enforcement for that Pod:
 
-.. note:: While specification of the namespace via the label
-	  ``k8s:io.kubernetes.pod.namespace`` in the ``fromEndpoints`` and
-	  ``toEndpoints`` fields is deliberately supported. Specification of the
-	  namespace in the ``endpointSelector`` is prohibited as it would
-	  violate the namespace isolation principle of Kubernetes. The
-	  ``endpointSelector`` always applies to pods of the namespace which is
-	  associated with the CiliumNetworkPolicy resource itself.
++--------------------------------------------------------------------------------------------+
+| **Ingress Policies Deployed to Server Pod (Yes / No)**                                     |
++---------------------+-----------------------+---------+---------+--------+--------+--------+
+|                     | Layer 7 (HTTP)        | Yes     | Yes     | Yes    | Yes    | No     |
+|                     +-----------------------+---------+---------+--------+--------+--------+
+|                     | Layer 4 (80/TCP)      | Yes     | Yes     | Yes    | Yes    | No     |
+| **Allow Policies**  +-----------------------+---------+---------+--------+--------+--------+
+|                     | Layer 4 (81/TCP)      | Yes     | Yes     | Yes    | Yes    | No     |
+|                     +-----------------------+---------+---------+--------+--------+--------+
+|                     | Layer 3 (Pod: Client) | Yes     | Yes     | Yes    | Yes    | No     |
++---------------------+-----------------------+---------+---------+--------+--------+--------+
+|                     | Layer 4 (80/TCP)      | No      | Yes     | No     | Yes    | Yes    |
+| **Deny Policies**   +-----------------------+---------+---------+--------+--------+--------+
+|                     | Layer 3 (Pod: Client) | No      | No      | Yes    | Yes    | No     |
++---------------------+-----------------------+---------+---------+--------+--------+--------+
+| **Traffic connection (Allowed / Denied)**                                                  |
++---------------------+-----------------------+---------+---------+--------+--------+--------+
+|                     | curl server:81        | Allowed | Allowed | Denied | Denied | Denied |
+|                     +-----------------------+---------+---------+--------+--------+--------+
+| **Client → Server** | curl server:80        | Allowed | Denied  | Denied | Denied | Denied |
+|                     +-----------------------+---------+---------+--------+--------+--------+
+|                     | ping server           | Allowed | Allowed | Denied | Denied | Denied |
++---------------------+-----------------------+---------+---------+--------+--------+--------+
 
-Example: Enforce namespace boundaries
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If we pick the second column in the above table, the bottom section shows the
+forwarding behaviour for a policy that selects curl or ping traffic between the
+client and server:
 
-This example demonstrates how to enforce Kubernetes namespace-based boundaries
-for the namespaces ``ns1`` and ``ns2`` by enabling default-deny on all pods of
-either namespace and then allowing communication from all pods within the same
-namespace.
+* Curl to port 81 is allowed because there is an allow policy on port 81, and
+  no deny policy on that port;
+* Curl to port 80 is denied because there is a deny policy on that port;
+* Ping to the server is allowed because there is a Layer 3 allow policy and no deny.
 
-.. note:: The example locks down ingress of the pods in ``ns1`` and ``ns2``.
-	  This means that the pods can still communicate egress to anywhere
-	  unless the destination is in either ``ns1`` or ``ns2`` in which case
-	  both source and destination have to be in the same namespace. In
-	  order to enforce namespace boundaries at egress, the same example can
-	  be used by specifying the rules at egress in addition to ingress.
+The following policy will deny ingress from "world" on all namespaces on all
+Pods managed by Cilium. Existing inter-cluster policies will still be allowed
+as this policy is allowing traffic from everywhere except from "world".
 
 .. only:: html
 
    .. tabs::
      .. group-tab:: k8s YAML
 
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/isolate-namespaces.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/isolate-namespaces.json
+        .. literalinclude:: ../../examples/policies/l3/entities/from_world_deny.yaml
 
 .. only:: epub or latex
 
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/isolate-namespaces.json
+        .. literalinclude:: ../../examples/policies/l3/entities/from_world_deny.yaml
 
-Example: Expose pods across namespaces
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Deny policies do not support: policy enforcement at L7, i.e., specifically
+denying an URL and ``toFQDNs``, i.e., specifically denying traffic to a specific
+domain name.
 
-The following example exposes all pods with the label ``name=leia`` in the
-namespace ``ns1`` to all pods with the label ``name=luke`` in the namespace
-``ns2``.
+Limitations and known issues
+----------------------------
 
-Refer to the :git-tree:`example YAML files <examples/policies/kubernetes/namespace/demo-pods.yaml>`
-for a fully functional example including pods deployed to different namespaces.
+The current known limitation is a deny policy with ``toEntities`` "world" for
+which a ``toFQDNs`` can cause traffic to be allowed if such traffic is
+considered external to the cluster.
+
+.. code-block:: yaml
+
+  apiVersion: "cilium.io/v2"
+  kind: CiliumNetworkPolicy
+  metadata:
+    name: "deny-egress-to-world"
+  spec:
+    endpointSelector:
+      matchLabels:
+        k8s-app.guestbook: web
+    egressDeny:
+    - toEntities:
+      - "world"
+    egress:
+      - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            "k8s:k8s-app": kube-dns
+        toPorts:
+          - ports:
+             - port: "53"
+               protocol: ANY
+            rules:
+              dns:
+                - matchPattern: "*"
+      - toFQDNs:
+          - matchName: "www.google.com"
+
+.. _HostPolicies:
+
+Host Policies
+=============
+
+.. include:: ../beta.rst
+
+Host policies take the form of a `CiliumClusterwideNetworkPolicy` with a
+:ref:`NodeSelector` instead of an `EndpointSelector`. Host policies can have
+layer 3 and layer 4 rules on both ingress and egress. They cannot have layer
+7 rules.
+
+Host policies apply to all the nodes selected by their :ref:`NodeSelector`. In
+each selected node, they apply only to the host namespace, including
+host-networking pods. They therefore don't apply to communications between
+non-host-networking pods and locations outside of the cluster.
+
+Installation of Host Policies requires the addition of the following ``helm``
+flags when installing Cilium:
+
+* ``--set devices='{interface}'`` where ``interface`` refers to the
+  network device Cilium is configured on such as ``eth0``. Omitting this option
+  leads Cilium to auto-detect what interface the host firewall applies to.
+* ``--set hostFirewall=true``
+
+The following policy will allow ingress traffic for any node with the label
+``type=ingress-worker`` on TCP ports 22, 6443 (kube-apiserver), 2379 (etcd) and 4240
+(health checks), as well as UDP port 8472 (VXLAN).
+
+Replace the ``port:`` value with ports used in your environment.
 
 .. only:: html
 
    .. tabs::
      .. group-tab:: k8s YAML
 
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/namespace-policy.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/namespace-policy.json
+        .. literalinclude:: ../../examples/policies/host/lock-down-ingress.yaml
 
 .. only:: epub or latex
 
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/namespace-policy.json
+        .. literalinclude:: ../../examples/policies/host/lock-down-ingress.yaml
 
-Example: Allow egress to kube-dns in kube-system namespace
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Troubleshooting Host Policies
+-----------------------------
 
-The following example allows all pods in the namespace in which the policy is
-created to communicate with kube-dns on port 53/UDP in the ``kube-system``
-namespace.
+If you're having troubles with Host Policies please ensure the ``helm`` options
+listed above were applied during installation. To verify that your policy has
+been applied, you can run ``kubectl get CiliumClusterwideNetworkPolicy -o yaml``
+to validate the policy was accepted.
 
-.. only:: html
+If policies don't seem to be applied to your nodes, verify the ``nodeSelector``
+is labeled correctly in your environment. In the example configuration, you can
+run ``kubectl get nodes -o wide|grep type=ingress-worker`` to verify labels
+match the policy.
 
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/kubedns-policy.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/kubedns-policy.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../examples/policies/kubernetes/namespace/kubedns-policy.json
-
-
-ServiceAccounts
-----------------
-
-Kubernetes `Service Accounts
-<https://kubernetes.io/docs/concepts/configuration/assign-pod-node/>`_ are used
-to associate an identity to a pod or process managed by Kubernetes and grant
-identities access to Kubernetes resources and secrets. Cilium supports the
-specification of network security policies based on the service account
-identity of a pod.
-
-The service account of a pod is either defined via the `service account
-admission controller
-<https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#serviceaccount>`_
-or can be directly specified in the Pod, Deployment, ReplicationController
-resource like this:
-
-.. code:: bash
-
-        apiVersion: v1
-        kind: Pod
-        metadata:
-          name: my-pod
-        spec:
-          serviceAccountName: leia
-          ...
-
-Example
-~~~~~~~
-
-The following example grants any pod running under the service account of
-"luke" to issue a ``HTTP GET /public`` request on TCP port 80 to all pods
-running associated to the service account of "leia".
-
-Refer to the :git-tree:`example YAML files <examples/policies/kubernetes/serviceaccount/demo-pods.yaml>`
-for a fully functional example including deployment and service account
-resources.
-
-
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../examples/policies/kubernetes/serviceaccount/serviceaccount-policy.yaml
-     .. group-tab:: JSON
-
-        .. literalinclude:: ../../examples/policies/kubernetes/serviceaccount/serviceaccount-policy.json
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../examples/policies/kubernetes/serviceaccount/serviceaccount-policy.json
-
-Multi-Cluster
--------------
-
-When operating multiple cluster with cluster mesh, the cluster name is exposed
-via the label ``io.cilium.k8s.policy.cluster`` and can be used to restrict
-policies to a particular cluster.
-
-.. only:: html
-
-   .. tabs::
-     .. group-tab:: k8s YAML
-
-        .. literalinclude:: ../../examples/policies/kubernetes/clustermesh/cross-cluster-policy.yaml
-
-.. only:: epub or latex
-
-        .. literalinclude:: ../../examples/policies/kubernetes/clustermesh/cross-cluster-policy.yaml
-
-Well-known Identities
----------------------
-
-The following is a list of well-known identities which Cilium is aware of
-automatically and will hand out a security identity without requiring to
-contact any external dependencies such as the kvstore. The purpose of this is
-to allow bootstrapping Cilium and enable network connectivity with policy
-enforcement in the cluster for essential services without depending on any
-dependencies.
-
-======================== ============ ================ =========== ============================================================================
-Deployment               Namespace    ServiceAccount   Numeric ID  Labels
-======================== ============ ================ =========== ============================================================================
-etcd-operator            kube-system  default          100         ``io.cilium/app=etcd-operator``
-cilium-etcd              kube-system  default          101         ``app=etcd``, ``etcd_cluster=cilium-etcd``, ``io.cilium/app=etcd-operator``
-kube-dns                 kube-system  kube-dns         102         ``k8s-app=kube-dns``
-kube-dns (EKS)           kube-system  default          103         ``k8s-app=kube-dns``, ``eks.amazonaws.com/component=kube-dns``
-core-dns                 kube-system  coredns          104         ``k8s-app=kube-dns``
-cilium-operator          kube-system  cilium-operator  105         ``name=cilium-operator``, ``io.cilium/app=operator``
-======================== ============ ================ =========== ============================================================================
+You can verify the policy was applied by running ``kubectl exec -n $CILIUM_NAMESPACE cilium-xxxx -- cilium policy get``
+for the Cilium agent pod. Verify that the host is selected by the policy using
+``cilium endpoint list`` and look for the endpoint with ``reserved:host`` as the
+label and ensure that policy is enabled in the selected direction. Ensure the
+traffic is arriving on the device visible on the ``NodePort`` field of the
+``cilium status list`` output. Use ``cilium monitor`` with ``--related-to`` and
+the endpoint ID of the ``reserved:host`` endpoint to view traffic.

@@ -17,10 +17,10 @@ package cache
 import (
 	"fmt"
 
+	"github.com/cilium/cilium/pkg/allocator"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/idpool"
 	"github.com/cilium/cilium/pkg/kvstore"
-	"github.com/cilium/cilium/pkg/kvstore/allocator"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 )
@@ -106,7 +106,7 @@ func (l *localIdentityCache) lookupOrCreate(lbls labels.Labels) (*identity.Ident
 		l.events <- allocator.AllocatorEvent{
 			Typ: kvstore.EventTypeCreate,
 			ID:  idpool.ID(id.ID),
-			Key: globalIdentity{id.LabelArray},
+			Key: GlobalIdentity{id.LabelArray},
 		}
 	}
 
@@ -120,8 +120,7 @@ func (l *localIdentityCache) release(id *identity.Identity) bool {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	stringRepresentation := string(id.Labels.SortedList())
-	if id, ok := l.identitiesByLabels[stringRepresentation]; ok {
+	if id, ok := l.identitiesByLabels[string(id.Labels.SortedList())]; ok {
 		switch {
 		case id.ReferenceCount > 1:
 			id.ReferenceCount--
@@ -155,8 +154,7 @@ func (l *localIdentityCache) lookup(lbls labels.Labels) *identity.Identity {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
 
-	stringRepresentation := string(lbls.SortedList())
-	if id, ok := l.identitiesByLabels[stringRepresentation]; ok {
+	if id, ok := l.identitiesByLabels[string(lbls.SortedList())]; ok {
 		return id
 	}
 

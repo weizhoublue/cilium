@@ -16,13 +16,13 @@ package sockmap
 
 import (
 	"fmt"
-	"net"
+	"sync"
 	"unsafe"
 
-	"github.com/cilium/cilium/common/types"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/types"
 )
 
 // SockmapKey is the 5-tuple used to lookup a socket
@@ -56,39 +56,14 @@ func (v SockmapValue) String() string {
 }
 
 // GetValuePtr returns the unsafe pointer to the BPF value.
-func (v SockmapValue) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(&v) }
+func (v *SockmapValue) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 
 // GetKeyPtr returns the unsafe pointer to the BPF key
-func (k SockmapKey) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(&k) }
+func (k *SockmapKey) GetKeyPtr() unsafe.Pointer { return unsafe.Pointer(k) }
 
 // NewValue returns a new empty instance of the structure representing the BPF
 // map value
 func (k SockmapKey) NewValue() bpf.MapValue { return &SockmapValue{} }
-
-// NewSockmapKey returns a new key using 5-tuple input.
-func NewSockmapKey(dip, sip net.IP, sport, dport uint32) SockmapKey {
-	result := SockmapKey{}
-
-	if sip4 := sip.To4(); sip4 != nil {
-		result.Family = bpf.EndpointKeyIPv4
-		copy(result.SIP[:], sip4)
-	} else {
-		result.Family = bpf.EndpointKeyIPv6
-		copy(result.SIP[:], sip)
-	}
-
-	if dip4 := dip.To4(); dip4 != nil {
-		result.Family = bpf.EndpointKeyIPv4
-		copy(result.SIP[:], dip4)
-	} else {
-		result.Family = bpf.EndpointKeyIPv6
-		copy(result.DIP[:], dip)
-	}
-
-	result.DPort = dport
-	result.SPort = sport
-	return result
-}
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "sockmap")
 
@@ -100,20 +75,36 @@ const (
 )
 
 var (
+	buildMap sync.Once
 	// SockMap represents the BPF map for sockets
-	SockMap = bpf.NewMap(mapName,
-		bpf.MapTypeSockHash,
-		&SockmapKey{},
-		int(unsafe.Sizeof(SockmapKey{})),
-		&SockmapValue{},
-		4,
-		MaxEntries,
-		0, 0,
-		bpf.ConvertKeyValue,
-	)
+	SockMap *bpf.Map
 )
+
+// CreateWithName creates a new sockmap map.
+//
+// The specified mapName allows non-standard map paths to be used, for instance
+// for testing purposes.
+func CreateWithName(name string) error {
+	buildMap.Do(func() {
+		SockMap = bpf.NewMap(name,
+			bpf.MapTypeSockHash,
+			&SockmapKey{},
+			int(unsafe.Sizeof(SockmapKey{})),
+			&SockmapValue{},
+			4,
+			MaxEntries,
+			0, 0,
+			bpf.ConvertKeyValue,
+		)
+	})
+
+	_, err := SockMap.OpenOrCreate()
+	return err
+}
 
 // SockmapCreate will create sockmap map
 func SockmapCreate() {
-	SockMap.OpenOrCreate()
+	if err := CreateWithName(mapName); err != nil {
+		log.WithError(err).Warning("Unable to open or create socket map")
+	}
 }

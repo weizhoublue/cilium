@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 Welcome to Cilium's documentation!
 ==================================
@@ -18,13 +18,10 @@ The documentation is divided into the following sections:
   understanding required to run a full Cilium deployment and understand its
   behavior.
 
-* :ref:`arch_guide`: Describes the components of the Cilium architecture and
-  how these components integrate with existing architectures, such as Kubernetes.
-
 * :ref:`gs_install` :  Details instructions for installing, configuring, and
   troubleshooting Cilium in different deployment modes.
 
-* :ref:`policy_guide` : Detailed walkthrough of the policy language structure
+* :ref:`network_policy` : Detailed walkthrough of the policy language structure
   and the supported formats.
 
 * :ref:`metrics` : Instructions for configuring metrics collection from Cilium.
@@ -32,7 +29,7 @@ The documentation is divided into the following sections:
 * :ref:`admin_guide` : Describes how to troubleshoot Cilium in different
   deployment modes.
 
-* :ref:`bpf_guide` : Provides a technical deep dive of BPF and XDP technology,
+* :ref:`bpf_guide` : Provides a technical deep dive of eBPF and XDP technology,
   primarily focused at developers.
 
 * :ref:`api_ref` : Details the Cilium agent API for interacting with a local
@@ -47,35 +44,21 @@ The documentation is divided into the following sections:
 
    intro
    gettingstarted/index
-   concepts
-   architecture
+   concepts/index
    gettinghelp
 
 .. toctree::
    :maxdepth: 2
-   :caption: Integrations
+   :caption: Operations
 
-   kubernetes/index
-   istio/index
-   docker/index
-   mesos/index
-   envoy/index
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Administration
-
-   install/system_requirements
-   install/upgrade
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Configuration
-   :glob:
-
+   operations/system_requirements
+   operations/upgrade
+   configuration/index
    policy/index
-   configuration/*
-   troubleshooting
+   operations/metrics
+   operations/scalability/index
+   operations/performance/index
+   operations/troubleshooting
 
 .. toctree::
    :maxdepth: 2
@@ -84,12 +67,15 @@ The documentation is divided into the following sections:
    community
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :caption: For Developers
 
-   contributing
+   contributing/development/index
+   contributing/release/index
+   contributing/testing/index
    bpf
    api
+   hubble
 
 .. toctree::
    :maxdepth: 2
@@ -100,3 +86,4 @@ The documentation is divided into the following sections:
    kvstore
    further_reading
    glossary
+

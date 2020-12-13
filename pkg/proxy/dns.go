@@ -15,17 +15,12 @@
 package proxy
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/fqdn/dnsproxy"
-	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/logger"
 	"github.com/cilium/cilium/pkg/revert"
-	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
 
@@ -48,44 +43,14 @@ type dnsConfiguration struct {
 // setRules replaces old l7 rules of a redirect with new ones.
 // TODO: Get rid of the duplication between 'currentRules' and 'r.rules'
 func (dr *dnsRedirect) setRules(wg *completion.WaitGroup, newRules policy.L7DataMap) error {
-	var toRemove, toAdd []string
-
-	for _, rule := range dr.currentRules {
-		for _, dnsRule := range rule.DNS {
-			if len(dnsRule.MatchName) > 0 {
-				dnsName := strings.ToLower(dns.Fqdn(dnsRule.MatchName))
-				dnsNameAsRE := matchpattern.ToRegexp(dnsName)
-				toRemove = append(toRemove, dnsNameAsRE)
-			}
-			if len(dnsRule.MatchPattern) > 0 {
-				dnsPattern := matchpattern.Sanitize(dnsRule.MatchPattern)
-				dnsPatternAsRE := matchpattern.ToRegexp(dnsPattern)
-				toRemove = append(toRemove, dnsPatternAsRE)
-			}
-		}
-	}
-
-	for _, rule := range dr.redirect.rules {
-		for _, dnsRule := range rule.DNS {
-			if len(dnsRule.MatchName) > 0 {
-				dnsName := strings.ToLower(dns.Fqdn(dnsRule.MatchName))
-				dnsNameAsRE := matchpattern.ToRegexp(dnsName)
-				toAdd = append(toAdd, dnsNameAsRE)
-			}
-			if len(dnsRule.MatchPattern) > 0 {
-				dnsPattern := matchpattern.Sanitize(dnsRule.MatchPattern)
-				dnsPatternAsRE := matchpattern.ToRegexp(dnsPattern)
-				toAdd = append(toAdd, dnsPatternAsRE)
-			}
-		}
-	}
-
 	log.WithFields(logrus.Fields{
-		"add":                toAdd,
-		"remove":             toRemove,
+		"newRules":           newRules,
 		logfields.EndpointID: dr.redirect.endpointID,
 	}).Debug("DNS Proxy updating matchNames in allowed list during UpdateRules")
-	DefaultDNSProxy.UpdateAllowed(toAdd, toRemove, fmt.Sprintf("%d", dr.redirect.endpointID))
+	if err := DefaultDNSProxy.UpdateAllowed(dr.redirect.endpointID, dr.redirect.dstPort, newRules); err != nil {
+		return err
+	}
+	dr.redirect.localEndpoint.OnDNSPolicyUpdateLocked(DefaultDNSProxy.GetRules(uint16(dr.redirect.endpointID)))
 	dr.currentRules = copyRules(dr.redirect.rules)
 
 	return nil
@@ -94,7 +59,7 @@ func (dr *dnsRedirect) setRules(wg *completion.WaitGroup, newRules policy.L7Data
 // UpdateRules atomically replaces the proxy rules in effect for this redirect.
 // It is not aware of revision number and doesn't account for out-of-order
 // calls to UpdateRules or the returned RevertFunc.
-func (dr *dnsRedirect) UpdateRules(wg *completion.WaitGroup, l4 *policy.L4Filter) (revert.RevertFunc, error) {
+func (dr *dnsRedirect) UpdateRules(wg *completion.WaitGroup) (revert.RevertFunc, error) {
 	oldRules := dr.currentRules
 	err := dr.setRules(wg, dr.redirect.rules)
 	revertFunc := func() error {
@@ -105,19 +70,11 @@ func (dr *dnsRedirect) UpdateRules(wg *completion.WaitGroup, l4 *policy.L4Filter
 
 // Close the redirect.
 func (dr *dnsRedirect) Close(wg *completion.WaitGroup) (revert.FinalizeFunc, revert.RevertFunc) {
-	for _, rule := range dr.currentRules {
-		for _, dnsRule := range rule.DNS {
-			dnsName := strings.ToLower(dns.Fqdn(dnsRule.MatchName))
-			dnsNameAsRE := matchpattern.ToRegexp(dnsName)
-			DefaultDNSProxy.RemoveAllowed(dnsNameAsRE, fmt.Sprintf("%d", dr.redirect.endpointID))
-
-			dnsPattern := matchpattern.Sanitize(dnsRule.MatchPattern)
-			dnsPatternAsRE := matchpattern.ToRegexp(dnsPattern)
-			DefaultDNSProxy.RemoveAllowed(dnsPatternAsRE, fmt.Sprintf("%d", dr.redirect.endpointID))
-		}
-	}
-	dr.currentRules = nil
-	return func() {}, nil
+	return func() {
+		DefaultDNSProxy.UpdateAllowed(dr.redirect.endpointID, dr.redirect.dstPort, nil)
+		dr.redirect.localEndpoint.OnDNSPolicyUpdateLocked(nil)
+		dr.currentRules = nil
+	}, nil
 }
 
 // creatednsRedirect creates a redirect to the dns proxy. The redirect structure passed

@@ -15,7 +15,7 @@
 package cmd
 
 import (
-	"github.com/cilium/cilium/common"
+	"github.com/cilium/cilium/pkg/common"
 
 	"github.com/spf13/cobra"
 )
@@ -27,10 +27,11 @@ var bpfPolicyDeleteCmd = &cobra.Command{
 	PreRun: requireEndpointID,
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium bpf policy delete")
-		updatePolicyKey(parsePolicyUpdateArgs(cmd, args), false)
+		updatePolicyKey(parsePolicyUpdateArgs(cmd, args, isDeny), false)
 	},
 }
 
 func init() {
+	bpfPolicyDeleteCmd.Flags().BoolVar(&isDeny, "deny", false, "Sets deny mode")
 	bpfPolicyCmd.AddCommand(bpfPolicyDeleteCmd)
 }

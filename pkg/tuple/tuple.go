@@ -15,8 +15,7 @@
 package tuple
 
 import (
-	"bytes"
-	"fmt"
+	"strings"
 	"unsafe"
 
 	"github.com/cilium/cilium/pkg/bpf"
@@ -39,8 +38,8 @@ type TupleKey interface {
 	// ToHost converts fields to host byte order.
 	ToHost() TupleKey
 
-	// Dumps contents of key to buffer. Returns true if successful.
-	Dump(buffer *bytes.Buffer, reverse bool) bool
+	// Dumps contents of key to sb. Returns true if successful.
+	Dump(sb *strings.Builder, reverse bool) bool
 
 	// Returns flags containing the direction of the tuple key.
 	GetFlags() uint8
@@ -66,5 +65,5 @@ func (t *TupleValStub) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(t) }
 
 // String stub method.
 func (t *TupleValStub) String() string {
-	return fmt.Sprintf("<TupleValStub>")
+	return "<TupleValStub>"
 }

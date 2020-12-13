@@ -1,9 +1,22 @@
+// Copyright 2019-2020 Authors of Cilium
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package RuntimeTest
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
+	"context"
+	"sync"
 	"time"
 
 	. "github.com/cilium/cilium/test/ginkgo-ext"
@@ -14,327 +27,7 @@ import (
 	"github.com/onsi/gomega/types"
 )
 
-func runOnNetNextOnly(f func()) func() {
-	if helpers.RunsOnNetNext() {
-		return f
-	}
-	return func() {}
-}
-
-var _ = Describe("RuntimeConnectivityInVethModeTest", runtimeConnectivityTest("veth"))
-var _ = Describe("RuntimeConnectivityInIpvlanModeTest", runOnNetNextOnly(runtimeConnectivityTest("ipvlan")))
-
-// TODO(brb) Either create a dummy netdev or determine the master device at runtime
-const ipvlanMasterDevice = "enp0s8"
-
-var runtimeConnectivityTest = func(datapathMode string) func() {
-	return func() {
-		var (
-			vm          *helpers.SSHMeta
-			monitorStop = func() error { return nil }
-		)
-
-		BeforeAll(func() {
-			vm = helpers.InitRuntimeHelper(helpers.Runtime, logger)
-
-			if datapathMode == "ipvlan" {
-				vm.SetUpCiliumInIpvlanMode(ipvlanMasterDevice)
-				// cilium-docker has to be restarted because the datapath mode
-				// has changed
-				vm.Exec("sudo systemctl restart cilium-docker")
-			}
-
-			ExpectCiliumReady(vm)
-		})
-
-		JustBeforeEach(func() {
-			monitorStop = vm.MonitorStart()
-		})
-
-		AfterAll(func() {
-			// Restore the datapath mode and cilium-docker
-			if datapathMode == "ipvlan" {
-				vm.SetUpCilium()
-				vm.Exec("sudo systemctl restart cilium-docker")
-			}
-		})
-
-		removeContainer := func(containerName string) {
-			By("removing container %s", containerName)
-			res := vm.ContainerRm(containerName)
-			ExpectWithOffset(1, res).To(helpers.CMDSuccess(), "cannot delete container")
-		}
-
-		AfterEach(func() {
-			vm.PolicyDelAll().ExpectSuccess("Policies cannot be deleted")
-		})
-
-		JustAfterEach(func() {
-			vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-			Expect(monitorStop()).To(BeNil(), "cannot stop monitor command")
-		})
-
-		AfterFailed(func() {
-			vm.ReportFailed()
-		})
-
-		Context("Basic Connectivity test", func() {
-
-			BeforeEach(func() {
-				vm.ContainerCreate(helpers.Client, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.client")
-				vm.ContainerCreate(helpers.Server, constants.NetperfImage, helpers.CiliumDockerNetwork, "-l id.server")
-				vm.PolicyDelAll()
-				vm.WaitEndpointsReady()
-				err := helpers.WithTimeout(func() bool {
-					if data, _ := vm.GetEndpointsNames(); len(data) < 2 {
-						logger.Info("Waiting for endpoints to be ready")
-						return false
-					}
-					return true
-				}, "Endpoints are not ready", &helpers.TimeoutConfig{Timeout: 150 * time.Second})
-				Expect(err).Should(BeNil())
-
-				err = helpers.WithTimeout(func() bool {
-					res := vm.ContainerExec(helpers.Server, "netperf -H 127.0.0.1 -l 1")
-					if !res.WasSuccessful() {
-						logger.Info("Waiting for netserver to come up")
-					}
-					return res.WasSuccessful()
-				}, "netserver did not come up in time", &helpers.TimeoutConfig{Timeout: 20 * time.Second})
-				Expect(err).Should(BeNil(), "timeout while waiting for netserver to start inside netperf container")
-			}, 150)
-
-			AfterEach(func() {
-				removeContainer(helpers.Client)
-				removeContainer(helpers.Server)
-				return
-			})
-
-			It("Test connectivity between containers without policies imported", func() {
-				// TODO: this code is duplicated in the next "It" in this file. refactor it into a function.
-				// See if we can make the "Filter" strings for getting IPv4 and IPv6 addresses into constants.
-				By("inspecting container %s", helpers.Server)
-				serverData := vm.ContainerInspect(helpers.Server)
-				serverIP, err := serverData.Filter(fmt.Sprintf("{[0].NetworkSettings.Networks.%s.IPAddress}", helpers.CiliumDockerNetwork))
-				Expect(err).Should(BeNil())
-
-				By("serverIP: %q", serverIP)
-				serverIPv6, err := serverData.Filter(fmt.Sprintf("{[0].NetworkSettings.Networks.%s.GlobalIPv6Address}", helpers.CiliumDockerNetwork))
-				By("serverIPv6: %q", serverIPv6)
-				Expect(err).Should(BeNil())
-
-				By("checking %q can ping to %q IPv6", helpers.Client, helpers.Server)
-				res := vm.ContainerExec(helpers.Client, helpers.Ping6(serverIPv6.String()))
-				res.ExpectSuccess()
-
-				By("checking %q can ping to %q IPv4", helpers.Client, helpers.Server)
-				res = vm.ContainerExec(helpers.Client, helpers.Ping(serverIP.String()))
-				res.ExpectSuccess()
-
-				// TODO: remove this hardcoding ; it is not clean. Have command wrappers that take maps of strings.
-				By("netperf to %q from %q IPv6", helpers.Server, helpers.Client)
-				cmd := fmt.Sprintf(
-					"netperf -c -C -t TCP_SENDFILE -H %s", serverIPv6)
-
-				res = vm.ContainerExec(helpers.Client, cmd)
-				res.ExpectSuccess()
-			}, 300)
-
-			It("Test connectivity between containers with policy imported", func() {
-				policyID, err := vm.PolicyImportAndWait(
-					fmt.Sprintf("%s/test.policy", vm.ManifestsPath()), 150*time.Second)
-				Expect(err).Should(BeNil())
-				logger.Debugf("New policy created with id '%d'", policyID)
-
-				serverData := vm.ContainerInspect(helpers.Server)
-				serverIP, err := serverData.Filter(fmt.Sprintf("{[0].NetworkSettings.Networks.%s.IPAddress}", helpers.CiliumDockerNetwork))
-				Expect(err).Should(BeNil())
-				By("serverIP: %q", serverIP)
-				serverIPv6, err := serverData.Filter(fmt.Sprintf("{[0].NetworkSettings.Networks.%s.GlobalIPv6Address}", helpers.CiliumDockerNetwork))
-				By("serverIPv6: %q", serverIPv6)
-				Expect(err).Should(BeNil())
-
-				By("%q can ping to %q IPV6", helpers.Client, helpers.Server)
-				res := vm.ContainerExec(helpers.Client, helpers.Ping6(serverIPv6.String()))
-				res.ExpectSuccess()
-
-				By("%s can ping to %s IPv4", helpers.Client, helpers.Server)
-				res = vm.ContainerExec(helpers.Client, helpers.Ping(serverIP.String()))
-				res.ExpectSuccess()
-
-				By("netperf to %q from %q (should succeed)", helpers.Server, helpers.Client)
-				cmd := fmt.Sprintf("netperf -c -C -H %s", serverIP)
-				res = vm.ContainerExec(helpers.Client, cmd)
-
-				// TODO: remove this hardcoding ; it is not clean. Have command wrappers that take maps of strings.
-				By("netperf to %q from %q IPv6 with -t TCP_SENDFILE", helpers.Server, helpers.Client)
-				cmd = fmt.Sprintf(
-					"netperf -c -C -t TCP_SENDFILE -H %s", serverIPv6)
-
-				res = vm.ContainerExec(helpers.Client, cmd)
-				res.ExpectSuccess()
-
-				By("super_netperf to %q from %q (should succeed)", helpers.Server, helpers.Client)
-				cmd = fmt.Sprintf("super_netperf 10 -c -C -t TCP_SENDFILE -H %s", serverIP)
-				res = vm.ContainerExec(helpers.Client, cmd)
-				res.ExpectSuccess()
-
-				By("ping from %q to %q", helpers.Host, helpers.Server)
-				res = vm.Exec(helpers.Ping(serverIP.String()))
-				res.ExpectSuccess()
-			}, 300)
-
-			It("Test NAT46 connectivity between containers", func() {
-				if datapathMode == "ipvlan" {
-					Skip("NAT64 is not implemented in the ipvlan mode")
-				}
-				endpoints, err := vm.GetEndpointsIds()
-				Expect(err).Should(BeNil(), "could not get endpoint IDs")
-
-				server, err := vm.ContainerInspectNet(helpers.Server)
-				Expect(err).Should(BeNil())
-				By("server: %q", server)
-
-				client, err := vm.ContainerInspectNet(helpers.Client)
-				Expect(err).Should(BeNil())
-				By("client: %q", client)
-
-				status := vm.EndpointSetConfig(endpoints[helpers.Client], "NAT46", helpers.OptionEnabled)
-				Expect(status).Should(BeTrue())
-
-				areEndpointsReady := vm.WaitEndpointsReady()
-				Expect(areEndpointsReady).Should(BeTrue(), "Endpoints not ready after timeout")
-
-				res := vm.ContainerExec(helpers.Client, helpers.Ping6(fmt.Sprintf(
-					"::FFFF:%s", server[helpers.IPv4])))
-
-				res.ExpectSuccess()
-
-				res = vm.ContainerExec(helpers.Server,
-					helpers.Ping6(fmt.Sprintf("::FFFF:%s", client[helpers.IPv4])))
-				res.ExpectFail(fmt.Sprintf("unexpectedly succeeded pinging IPv6 %s from %s",
-					client[helpers.IPv4], helpers.Server))
-			})
-		})
-
-		Context("With CNI", func() {
-			var (
-				cniPlugin = "/opt/cni/bin/cilium-cni"
-				cniServer = "cni-server"
-				cniClient = "cni-client"
-				netDPath  = "/etc/cni/net.d/"
-				tmpDir    *helpers.CmdRes
-			)
-
-			BeforeAll(func() {
-				// Remove any CNI plugin installed in the provision server. This
-				// helps to avoid issues on installing the new CNI
-				_ = vm.ExecWithSudo(fmt.Sprintf("rm -rf %[1]s/*.conf", netDPath)).ExpectSuccess(
-					"CNI config cannot be deleted")
-
-				tmpDir = vm.Exec("mktemp -d")
-				tmpDir.ExpectSuccess("TMP folder cannot be created %s", tmpDir.Output())
-			})
-
-			AfterAll(func() {
-				vm.Exec(fmt.Sprintf("rm -rf %s", tmpDir.Output()))
-			})
-
-			BeforeEach(func() {
-				vm.PolicyDelAll().ExpectSuccess("Policies cannot be deleted")
-			})
-
-			AfterEach(func() {
-				vm.ContainerRm(cniServer)
-				vm.ContainerRm(cniClient)
-				vm.Exec(fmt.Sprintf("docker rm -f $(docker ps --filter ancestor=%s --format '{{.ID}}')", constants.BusyboxImage))
-			})
-
-			runCNIContainer := func(name string, label string) {
-				res := vm.Exec(fmt.Sprintf("docker run -t -d --net=none -l %s %s", label, constants.BusyboxImage))
-				res.ExpectSuccess()
-				containerID := res.SingleOut()
-
-				pid := vm.Exec(fmt.Sprintf("docker inspect -f '{{ .State.Pid }}' %s", containerID))
-				pid.ExpectSuccess()
-				netnspath := fmt.Sprintf("/proc/%s/ns/net", pid.SingleOut())
-
-				res = vm.Exec(fmt.Sprintf(
-					"sudo -E PATH=$PATH:/opt/cni/bin -E CNI_PATH=%[1]s/bin %[1]s/cni/scripts/exec-plugins.sh add %s %s",
-					tmpDir.SingleOut(), containerID, netnspath))
-				res.ExpectSuccess("CNI exec-plugins did not work correctly")
-
-				res = vm.ContainerCreate(
-					name, constants.NetperfImage,
-					fmt.Sprintf("container:%s", containerID), fmt.Sprintf("-l %s", label))
-				res.ExpectSuccess("Container %s cannot be created", name)
-			}
-
-			It("Basic connectivity test", func() {
-				filename := "05-cilium-cni.conf"
-				cniConf := `{"name": "cilium",
-				"type": "cilium-cni"}`
-				err := helpers.RenderTemplateToFile(filename, cniConf, os.ModePerm)
-				Expect(err).To(BeNil())
-
-				cmd := vm.ExecWithSudo(fmt.Sprintf("mv %s %s",
-					helpers.GetFilePath(filename),
-					filepath.Join(netDPath, filename)))
-				cmd.ExpectSuccess("cannot install cilium cni plugin conf")
-				script := fmt.Sprintf(`
-				cd %s && \
-				git clone https://github.com/containernetworking/cni -b v0.5.2 --single-branch && \
-				cd cni && \
-				./build.sh
-			`, tmpDir.SingleOut())
-				vm.Exec(script).ExpectSuccess("Cannot install cni")
-				vm.Exec(fmt.Sprintf("cp %s %s", cniPlugin, filepath.Join(tmpDir.SingleOut(), "bin")))
-
-				By("Importing policy")
-				policyFileName := "CNI-policy.json"
-				policy := `
-				[{
-					"endpointSelector": {"matchLabels":{"id.server":""}},
-					"ingress": [{
-						"fromEndpoints": [
-						{"matchLabels":{"reserved:host":""}},
-						{"matchLabels":{"id.client":""}}
-					]
-					}]
-				}]`
-				err = helpers.RenderTemplateToFile(policyFileName, policy, os.ModePerm)
-				Expect(err).Should(BeNil())
-				_, err = vm.PolicyImportAndWait(helpers.GetFilePath(policyFileName), helpers.HelperTimeout)
-				Expect(err).Should(BeNil(), fmt.Sprintf("Cannot import policy %s", policyFileName))
-
-				By("Adding containers")
-
-				runCNIContainer(cniServer, "id.server")
-				runCNIContainer(cniClient, "id.client")
-
-				areEndpointsReady := vm.WaitEndpointsReady()
-				Expect(areEndpointsReady).Should(BeTrue())
-
-				serverIPv4 := vm.ContainerExec(
-					cniServer,
-					`ip -4 a show dev eth0 scope global | grep inet | sed -e 's%.*inet \(.*\)\/.*%\1%'`)
-
-				serverIPv6 := vm.ContainerExec(
-					cniServer,
-					`ip -6 a show dev eth0 scope global | grep inet6 | sed -e 's%.*inet6 \(.*\)\/.*%\1%'`)
-
-				vm.ContainerExec(cniClient, helpers.Ping(serverIPv4.SingleOut())).ExpectSuccess(
-					"cannot ping from client to server %q", serverIPv4.SingleOut())
-
-				vm.ContainerExec(cniClient, helpers.Ping6(serverIPv6.SingleOut())).ExpectSuccess(
-					"cannot ping6 from client to server %q", serverIPv6.SingleOut())
-			})
-		})
-	}
-}
-
 var _ = Describe("RuntimeConntrackInVethModeTest", runtimeConntrackTest("veth"))
-var _ = Describe("RuntimeConntrackInIpvlanModeTest", runOnNetNextOnly(runtimeConntrackTest("ipvlan")))
 
 var runtimeConntrackTest = func(datapathMode string) func() {
 	return func() {
@@ -356,25 +49,13 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 
 		BeforeAll(func() {
 			vm = helpers.InitRuntimeHelper(helpers.Runtime, logger)
-
-			if datapathMode == "ipvlan" {
-				vm.SetUpCiliumInIpvlanMode(ipvlanMasterDevice)
-				// cilium-docker has to be restarted because the datapath mode
-				// has changed
-				vm.Exec("sudo systemctl restart cilium-docker")
-			}
-
 			ExpectCiliumReady(vm)
 
 			ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementAlways)
 		})
 
 		AfterAll(func() {
-			// Restore the datapath mode and cilium-docker
-			if datapathMode == "ipvlan" {
-				vm.SetUpCilium()
-				vm.Exec("sudo systemctl restart cilium-docker")
-			}
+			vm.CloseSSHClient()
 		})
 
 		clientServerConnectivity := func() {
@@ -465,14 +146,16 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 					assert:      BeFalse,
 				},
 				{
+					// see comment below about ICMP ids
 					from:        helpers.Client,
-					to:          helpers.Ping6(serverDockerNetworking[helpers.IPv6]),
+					to:          helpers.Ping6WithID(serverDockerNetworking[helpers.IPv6], 1111),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
 				{
+					// see comment below about ICMP ids
 					from:        helpers.Client,
-					to:          helpers.Ping(serverDockerNetworking[helpers.IPv4]),
+					to:          helpers.PingWithID(serverDockerNetworking[helpers.IPv4], 1111),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
@@ -491,25 +174,25 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.TCP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.TCP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.TCP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.TCP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.UDP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.UDP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.UDP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.UDP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
@@ -524,13 +207,19 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 
 			By("Testing bidirectional connectivity from client to server")
 
+			// NB: Previous versions of this test did not specify the ICMP id, which
+			// presumably caused transient errors (see #12891) when the ICMP ids for the
+			// valid direction (client->server) matched the ICMP ids for the invalid
+			// direction (server->client). We now ensure that the ICMP ids do not match.
+			// Furthermore, the original issue can be now easily reproduced by changing
+			// 2222 to 1111 below.
 			By("container %s pinging %s IPv6 (should NOT work)", helpers.Server, helpers.Client)
-			res = vm.ContainerExec(helpers.Server, helpers.Ping6(clientDockerNetworking[helpers.IPv6]))
+			res = vm.ContainerExec(helpers.Server, helpers.Ping6WithID(clientDockerNetworking[helpers.IPv6], 2222))
 			ExpectWithOffset(1, res).ShouldNot(helpers.CMDSuccess(),
 				"container %q unexpectedly was able to ping to %q IP:%q", helpers.Server, helpers.Client, clientDockerNetworking[helpers.IPv6])
 
 			By("container %s pinging %s IPv4 (should NOT work)", helpers.Server, helpers.Client)
-			res = vm.ContainerExec(helpers.Server, helpers.Ping(clientDockerNetworking[helpers.IPv4]))
+			res = vm.ContainerExec(helpers.Server, helpers.PingWithID(clientDockerNetworking[helpers.IPv4], 2222))
 			ExpectWithOffset(1, res).ShouldNot(helpers.CMDSuccess(),
 				"%q was unexpectedly able to ping to %q IP:%q", helpers.Server, helpers.Client, clientDockerNetworking[helpers.IPv4])
 
@@ -638,25 +327,25 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 				},
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.TCP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.TCP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.TCP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.TCP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.UDP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv6], helpers.UDP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
 				{
 					from:        helpers.Client,
-					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.UDP_RR),
+					to:          helpers.Netperf(serverDockerNetworking[helpers.IPv4], helpers.UDP_RR, ""),
 					destination: helpers.Server,
 					assert:      BeTrue,
 				},
@@ -689,7 +378,7 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 		})
 
 		JustBeforeEach(func() {
-			monitorStop = vm.MonitorStart()
+			_, monitorStop = vm.MonitorStart()
 		})
 
 		AfterEach(func() {
@@ -709,6 +398,7 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 
 		AfterFailed(func() {
 			vm.ReportFailed("cilium policy get")
+			vm.ReportFailed("cilium bpf policy get --all")
 		})
 
 		It("Conntrack-related configuration options for endpoints", func() {
@@ -767,4 +457,74 @@ var runtimeConntrackTest = func(datapathMode string) func() {
 		})
 
 	}
+}
+
+var restartChaosTest = func() {
+	var vm *helpers.SSHMeta
+
+	BeforeAll(func() {
+		vm = helpers.InitRuntimeHelper(helpers.Runtime, logger)
+	})
+
+	AfterAll(func() {
+		vm.CloseSSHClient()
+	})
+
+	It("Checking that during restart no traffic is dropped using Egress + Ingress Traffic", func() {
+		By("Installing sample containers")
+		vm.SampleContainersActions(helpers.Create, helpers.CiliumDockerNetwork)
+		vm.PolicyDelAll().ExpectSuccess("Cannot deleted all policies")
+
+		_, err := vm.PolicyImportAndWait(vm.GetFullPath(policiesL4Json), helpers.HelperTimeout)
+		Expect(err).Should(BeNil(), "Cannot install L4 policy")
+
+		areEndpointsReady := vm.WaitEndpointsReady()
+		Expect(areEndpointsReady).Should(BeTrue(), "Endpoints are not ready after timeout")
+
+		By("Starting background connection from app2 to httpd1 container")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		srvIP, err := vm.ContainerInspectNet(helpers.Httpd1)
+		Expect(err).Should(BeNil(), "Cannot get httpd1 server address")
+		type BackgroundTestAsserts struct {
+			res  *helpers.CmdRes
+			time time.Time
+		}
+		backgroundChecks := []*BackgroundTestAsserts{}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			for {
+				select {
+				default:
+					res := vm.ContainerExec(
+						helpers.App1,
+						helpers.CurlFail("http://%s/", srvIP[helpers.IPv4]))
+					assert := &BackgroundTestAsserts{
+						res:  res,
+						time: time.Now(),
+					}
+					backgroundChecks = append(backgroundChecks, assert)
+				case <-ctx.Done():
+					wg.Done()
+					return
+				}
+			}
+		}()
+		// Sleep a bit to make sure that the goroutine starts.
+		time.Sleep(50 * time.Millisecond)
+
+		err = vm.RestartCilium()
+		Expect(err).Should(BeNil(), "restarting Cilium failed")
+
+		By("Stopping background connections")
+		cancel()
+		wg.Wait()
+
+		GinkgoPrint("Made %d connections in total", len(backgroundChecks))
+		Expect(backgroundChecks).ShouldNot(BeEmpty(), "No background connections were made")
+		for _, check := range backgroundChecks {
+			check.res.ExpectSuccess("Curl from app2 to httpd1 should work but it failed at %s", check.time)
+		}
+	})
 }

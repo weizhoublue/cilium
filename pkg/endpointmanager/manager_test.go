@@ -22,11 +22,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/checker"
+	"github.com/cilium/cilium/pkg/completion"
+	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/endpoint"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
+	"github.com/cilium/cilium/pkg/endpoint/regeneration"
+	"github.com/cilium/cilium/pkg/fqdn/restore"
+	"github.com/cilium/cilium/pkg/lock"
+	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/policy"
+	"github.com/cilium/cilium/pkg/revert"
+	"github.com/cilium/cilium/pkg/testutils/allocator"
 
 	. "gopkg.in/check.v1"
 )
@@ -34,9 +43,61 @@ import (
 // Hook up gocheck into the "go test" runner.
 func Test(t *testing.T) { TestingT(t) }
 
-type EndpointManagerSuite struct{}
+type EndpointManagerSuite struct {
+	repo *policy.Repository
+}
 
 var _ = Suite(&EndpointManagerSuite{})
+
+func (s *EndpointManagerSuite) SetUpSuite(c *C) {
+	s.repo = policy.NewPolicyRepository(nil, nil)
+}
+
+func (s *EndpointManagerSuite) GetPolicyRepository() *policy.Repository {
+	return s.repo
+}
+
+func (s *EndpointManagerSuite) UpdateProxyRedirect(e regeneration.EndpointUpdater, l4 *policy.L4Filter, wg *completion.WaitGroup) (uint16, error, revert.FinalizeFunc, revert.RevertFunc) {
+	return 0, nil, nil, nil
+}
+
+func (s *EndpointManagerSuite) RemoveProxyRedirect(e regeneration.EndpointInfoSource, id string, wg *completion.WaitGroup) (error, revert.FinalizeFunc, revert.RevertFunc) {
+	return nil, nil, nil
+}
+
+func (s *EndpointManagerSuite) UpdateNetworkPolicy(e regeneration.EndpointUpdater, policy *policy.L4Policy,
+	proxyWaitGroup *completion.WaitGroup) (error, revert.RevertFunc) {
+	return nil, nil
+}
+
+func (s *EndpointManagerSuite) RemoveNetworkPolicy(e regeneration.EndpointInfoSource) {}
+
+func (s *EndpointManagerSuite) QueueEndpointBuild(ctx context.Context, epID uint64) (func(), error) {
+	return nil, nil
+}
+
+func (s *EndpointManagerSuite) GetCompilationLock() *lock.RWMutex {
+	return nil
+}
+
+func (s *EndpointManagerSuite) GetCIDRPrefixLengths() (s6, s4 []int) {
+	return nil, nil
+}
+
+func (s *EndpointManagerSuite) SendNotification(msg monitorAPI.AgentNotifyMessage) error {
+	return nil
+}
+
+func (s *EndpointManagerSuite) Datapath() datapath.Datapath {
+	return nil
+}
+
+func (s *EndpointManagerSuite) GetDNSRules(epID uint16) restore.DNSRules {
+	return nil
+}
+
+func (s *EndpointManagerSuite) RemoveRestoredDNSRules(epID uint16) {
+}
 
 type DummyRuleCacheOwner struct{}
 
@@ -44,9 +105,17 @@ func (d *DummyRuleCacheOwner) ClearPolicyConsumers(id uint16) *sync.WaitGroup {
 	return &sync.WaitGroup{}
 }
 
+type dummyEpSyncher struct{}
+
+func (epSync *dummyEpSyncher) RunK8sCiliumEndpointSync(e *endpoint.Endpoint, conf endpoint.EndpointStatusConfiguration) {
+}
+
+func (epSync *dummyEpSyncher) DeleteK8sCiliumEndpointSync(e *endpoint.Endpoint) {
+}
+
 func (s *EndpointManagerSuite) TestLookup(c *C) {
-	ep := endpoint.NewEndpointWithState(10, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
 	type args struct {
 		id string
 	}
@@ -83,7 +152,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			name: "endpoint by cilium local ID",
 			preTestRun: func() {
 				ep.ID = 1234
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -98,7 +167,8 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
 				ep.ID = 0
 			},
 		},
@@ -106,7 +176,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			name: "endpoint by cilium global ID",
 			preTestRun: func() {
 				ep.ID = 1234
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -120,15 +190,16 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
 				ep.ID = 0
 			},
 		},
 		{
 			name: "endpoint by container ID",
 			preTestRun: func() {
-				ep.ContainerID = "1234"
-				Insert(ep)
+				ep.SetContainerID("1234")
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -143,15 +214,16 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
-				ep.ContainerID = ""
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
+				ep.SetContainerID("")
 			},
 		},
 		{
 			name: "endpoint by docker endpoint ID",
 			preTestRun: func() {
-				ep.DockerEndpointID = "1234"
-				Insert(ep)
+				ep.SetDockerEndpointID("1234")
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -166,15 +238,16 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
-				ep.DockerEndpointID = ""
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
+				ep.SetDockerEndpointID("")
 			},
 		},
 		{
 			name: "endpoint by container name",
 			preTestRun: func() {
-				ep.ContainerName = "foo"
-				Insert(ep)
+				ep.SetContainerName("foo")
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -189,8 +262,9 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
-				ep.ContainerName = ""
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
+				ep.SetContainerName("")
 			},
 		},
 		{
@@ -198,7 +272,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 			preTestRun: func() {
 				ep.SetK8sNamespace("default")
 				ep.SetK8sPodName("foo")
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -213,7 +287,8 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
 				ep.SetK8sPodName("")
 			},
 		},
@@ -223,7 +298,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				ipv4, err := addressing.NewCiliumIPv4("127.0.0.1")
 				ep.IPv4 = ipv4
 				c.Assert(err, IsNil)
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -238,7 +313,8 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 10, endpoint.StateReady)
 				ep.IPv4 = nil
 			},
 		},
@@ -283,7 +359,7 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		got, err := Lookup(args.id)
+		got, err := mgr.Lookup(args.id)
 		c.Assert(err, want.errCheck, want.err, Commentf("Test Name: %s", tt.name))
 		c.Assert(got, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
@@ -291,8 +367,8 @@ func (s *EndpointManagerSuite) TestLookup(c *C) {
 }
 
 func (s *EndpointManagerSuite) TestLookupCiliumID(c *C) {
-	ep := endpoint.NewEndpointWithState(2, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 2, endpoint.StateReady)
 	type args struct {
 		id uint16
 	}
@@ -312,7 +388,7 @@ func (s *EndpointManagerSuite) TestLookupCiliumID(c *C) {
 			name: "existing cilium ID",
 			preTestRun: func() {
 				ep.ID = 1
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -325,7 +401,7 @@ func (s *EndpointManagerSuite) TestLookupCiliumID(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
 				ep.ID = 0
 			},
 		},
@@ -351,15 +427,17 @@ func (s *EndpointManagerSuite) TestLookupCiliumID(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		got := LookupCiliumID(args.id)
+		got := mgr.LookupCiliumID(args.id)
+		exists := mgr.EndpointExists(args.id)
 		c.Assert(got, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
+		c.Assert(exists, checker.Equals, want.ep != nil, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
 	}
 }
 
 func (s *EndpointManagerSuite) TestLookupContainerID(c *C) {
-	ep := endpoint.NewEndpointWithState(3, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 3, endpoint.StateReady)
 	type args struct {
 		id string
 	}
@@ -379,7 +457,7 @@ func (s *EndpointManagerSuite) TestLookupContainerID(c *C) {
 			name: "existing container ID",
 			preTestRun: func() {
 				ep.SetContainerID("foo")
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -392,7 +470,7 @@ func (s *EndpointManagerSuite) TestLookupContainerID(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
 				ep.SetContainerID("")
 			},
 		},
@@ -418,15 +496,15 @@ func (s *EndpointManagerSuite) TestLookupContainerID(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		got := LookupContainerID(args.id)
+		got := mgr.LookupContainerID(args.id)
 		c.Assert(got, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
 	}
 }
 
 func (s *EndpointManagerSuite) TestLookupIPv4(c *C) {
-	ep := endpoint.NewEndpointWithState(4, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 4, endpoint.StateReady)
 	type args struct {
 		ip string
 	}
@@ -448,7 +526,7 @@ func (s *EndpointManagerSuite) TestLookupIPv4(c *C) {
 				ip, err := addressing.NewCiliumIPv4("127.0.0.1")
 				c.Assert(err, IsNil)
 				ep.IPv4 = ip
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -461,7 +539,7 @@ func (s *EndpointManagerSuite) TestLookupIPv4(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
 				ep.IPv4 = nil
 			},
 		},
@@ -487,15 +565,15 @@ func (s *EndpointManagerSuite) TestLookupIPv4(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		got := LookupIPv4(args.ip)
+		got := mgr.LookupIPv4(args.ip)
 		c.Assert(got, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
 	}
 }
 
 func (s *EndpointManagerSuite) TestLookupPodName(c *C) {
-	ep := endpoint.NewEndpointWithState(5, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 5, endpoint.StateReady)
 	type args struct {
 		podName string
 	}
@@ -516,7 +594,7 @@ func (s *EndpointManagerSuite) TestLookupPodName(c *C) {
 			preTestRun: func() {
 				ep.SetK8sNamespace("default")
 				ep.SetK8sPodName("foo")
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -529,7 +607,7 @@ func (s *EndpointManagerSuite) TestLookupPodName(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
 				ep.IPv4 = nil
 			},
 		},
@@ -555,15 +633,15 @@ func (s *EndpointManagerSuite) TestLookupPodName(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		got := LookupPodName(args.podName)
+		got := mgr.LookupPodName(args.podName)
 		c.Assert(got, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
 	}
 }
 
 func (s *EndpointManagerSuite) TestUpdateReferences(c *C) {
-	ep := endpoint.NewEndpointWithState(6, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 6, endpoint.StateReady)
 	type args struct {
 		ep *endpoint.Endpoint
 	}
@@ -583,7 +661,7 @@ func (s *EndpointManagerSuite) TestUpdateReferences(c *C) {
 			name: "Updating all references",
 			preTestRun: func() {
 				ep.ID = 1
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				// Update endpoint before running test
@@ -605,7 +683,7 @@ func (s *EndpointManagerSuite) TestUpdateReferences(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
 				ep.SetK8sNamespace("")
 				ep.SetK8sPodName("")
 				ep.SetContainerID("")
@@ -619,31 +697,29 @@ func (s *EndpointManagerSuite) TestUpdateReferences(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		UpdateReferences(args.ep)
+		args.ep.UpdateReferences(mgr)
 
-		ep = LookupContainerID(want.ep.GetContainerID())
+		ep = mgr.LookupContainerID(want.ep.GetContainerID())
 		c.Assert(ep, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 
-		ep = lookupDockerEndpoint(want.ep.DockerEndpointID)
+		ep = mgr.lookupDockerEndpoint(want.ep.GetDockerEndpointID())
 		c.Assert(ep, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 
-		ep = LookupIPv4(want.ep.IPv4.String())
+		ep = mgr.LookupIPv4(want.ep.IPv4.String())
 		c.Assert(ep, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 
-		ep = lookupDockerContainerName(want.ep.ContainerName)
+		ep = mgr.lookupDockerContainerName(want.ep.GetContainerName())
 		c.Assert(ep, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 
-		want.ep.UnconditionalRLock()
-		ep = LookupPodName(want.ep.GetK8sNamespaceAndPodNameLocked())
-		want.ep.RUnlock()
+		ep = mgr.LookupPodName(want.ep.GetK8sNamespaceAndPodName())
 		c.Assert(ep, checker.DeepEquals, want.ep, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
 	}
 }
 
 func (s *EndpointManagerSuite) TestRemove(c *C) {
-	ep := endpoint.NewEndpointWithState(7, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 7, endpoint.StateReady)
 	type args struct {
 	}
 	type want struct {
@@ -659,7 +735,7 @@ func (s *EndpointManagerSuite) TestRemove(c *C) {
 			name: "Updating all references",
 			preTestRun: func() {
 				ep.ID = 1
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{}
@@ -674,16 +750,16 @@ func (s *EndpointManagerSuite) TestRemove(c *C) {
 	for _, tt := range tests {
 		tt.preTestRun()
 
-		RemoveAll()
-		c.Assert(len(endpoints), Equals, 0, Commentf("Test Name: %s", tt.name))
-		c.Assert(len(endpointsAux), Equals, 0, Commentf("Test Name: %s", tt.name))
+		mgr.RemoveAll()
+		c.Assert(len(mgr.endpoints), Equals, 0, Commentf("Test Name: %s", tt.name))
+		c.Assert(len(mgr.endpointsAux), Equals, 0, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
 	}
 }
 
 func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
-	ep := endpoint.NewEndpointWithState(1, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 1, endpoint.StateReady)
 	type args struct {
 		ep *endpoint.Endpoint
 	}
@@ -702,7 +778,7 @@ func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.Options = option.NewIntOptions(&endpoint.EndpointMutableOptionLibrary)
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupWant: func() want {
 				return want{
@@ -710,7 +786,8 @@ func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 1, endpoint.StateReady)
 				ep.ID = 0
 				ep.Options = nil
 			},
@@ -721,7 +798,7 @@ func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
 				ep.ID = 1
 				ep.Options = option.NewIntOptions(&endpoint.EndpointMutableOptionLibrary)
 				ep.Options.SetIfUnset(option.ConntrackLocal, option.OptionEnabled)
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupWant: func() want {
 				return want{
@@ -729,7 +806,8 @@ func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 1, endpoint.StateReady)
 				ep.ID = 0
 				ep.Options = nil
 			},
@@ -738,15 +816,15 @@ func (s *EndpointManagerSuite) TestHasGlobalCT(c *C) {
 	for _, tt := range tests {
 		tt.preTestRun()
 		want := tt.setupWant()
-		got := HasGlobalCT()
+		got := mgr.HasGlobalCT()
 		c.Assert(got, checker.DeepEquals, want.result, Commentf("Test Name: %s", tt.name))
 		tt.postTestRun()
 	}
 }
 
 func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
-	ep := endpoint.NewEndpointWithState(1, endpoint.StateReady)
-	ep.UpdateLogger(nil)
+	mgr := NewEndpointManager(&dummyEpSyncher{})
+	ep := endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 1, endpoint.StateReady)
 	type args struct {
 		ctx    context.Context
 		rev    uint64
@@ -768,7 +846,7 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.SetPolicyRevision(5)
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				return args{
@@ -783,8 +861,8 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
-				ep = endpoint.NewEndpointWithState(1, endpoint.StateReady)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 1, endpoint.StateReady)
 			},
 		},
 		{
@@ -792,7 +870,7 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.SetPolicyRevision(5)
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				ctx, cancel := context.WithTimeout(context.Background(), 0)
@@ -809,8 +887,8 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
-				ep = endpoint.NewEndpointWithState(1, endpoint.StateReady)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 1, endpoint.StateReady)
 			},
 		},
 		{
@@ -818,7 +896,7 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 			preTestRun: func() {
 				ep.ID = 1
 				ep.SetPolicyRevision(4)
-				Insert(ep)
+				ep.Expose(mgr)
 			},
 			setupArgs: func() args {
 				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -835,8 +913,8 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 				}
 			},
 			postTestRun: func() {
-				WaitEndpointRemoved(ep)
-				ep = endpoint.NewEndpointWithState(1, endpoint.StateReady)
+				mgr.WaitEndpointRemoved(ep)
+				ep = endpoint.NewEndpointWithState(s, &endpoint.FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 1, endpoint.StateReady)
 			},
 		},
 	}
@@ -844,7 +922,7 @@ func (s *EndpointManagerSuite) TestWaitForEndpointsAtPolicyRev(c *C) {
 		tt.preTestRun()
 		args := tt.setupArgs()
 		want := tt.setupWant()
-		got := WaitForEndpointsAtPolicyRev(args.ctx, args.rev)
+		got := mgr.WaitForEndpointsAtPolicyRev(args.ctx, args.rev)
 		c.Assert(got, want.errCheck, want.err, Commentf("Test Name: %s", tt.name))
 		if args.cancel != nil {
 			args.cancel()

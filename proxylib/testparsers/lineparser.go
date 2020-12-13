@@ -31,7 +31,7 @@ type LineParserFactory struct{}
 var lineParserFactory *LineParserFactory
 
 func init() {
-	log.Info("init(): Registering lineParserFactory")
+	log.Debug("init(): Registering lineParserFactory")
 	RegisterParserFactory("test.lineparser", lineParserFactory)
 }
 
@@ -40,8 +40,8 @@ type LineParser struct {
 	inserted   bool
 }
 
-func (p *LineParserFactory) Create(connection *Connection) Parser {
-	log.Infof("LineParserFactory: Create: %v", connection)
+func (p *LineParserFactory) Create(connection *Connection) interface{} {
+	log.Debugf("LineParserFactory: Create: %v", connection)
 	return &LineParser{connection: connection}
 }
 
@@ -52,7 +52,7 @@ func getLine(data [][]byte) ([]byte, bool) {
 		if index < 0 {
 			line.Write(s)
 		} else {
-			log.Infof("getLine: unit: %d length: %d index: %d", i, len(s), index)
+			log.Debugf("getLine: unit: %d length: %d index: %d", i, len(s), index)
 			line.Write(s[:index+1])
 			return line.Bytes(), true
 		}
@@ -77,9 +77,9 @@ func (p *LineParser) OnData(reply, endStream bool, data [][]byte) (OpType, int) 
 	}
 
 	if !reply {
-		log.Infof("LineParser: Request: %s", line)
+		log.Debugf("LineParser: Request: %s", line)
 	} else {
-		log.Infof("LineParser: Response: %s", line)
+		log.Debugf("LineParser: Response: %s", line)
 	}
 
 	if !ok {

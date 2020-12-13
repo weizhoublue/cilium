@@ -1,20 +1,6 @@
-/*
- *  Copyright (C) 2016-2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 #ifndef __LIB_ETH__
 #define __LIB_ETH__
 
@@ -36,7 +22,8 @@ union macaddr {
 	__u8 addr[6];
 };
 
-static inline int eth_addrcmp(const union macaddr *a, const union macaddr *b)
+static __always_inline int eth_addrcmp(const union macaddr *a,
+				       const union macaddr *b)
 {
 	int tmp;
 
@@ -47,7 +34,7 @@ static inline int eth_addrcmp(const union macaddr *a, const union macaddr *b)
 	return tmp;
 }
 
-static inline int eth_is_bcast(const union macaddr *a)
+static __always_inline int eth_is_bcast(const union macaddr *a)
 {
 	union macaddr bcast;
 
@@ -60,24 +47,66 @@ static inline int eth_is_bcast(const union macaddr *a)
 		return 0;
 }
 
-static inline int eth_load_saddr(struct __sk_buff *skb, __u8 *mac, int off)
+static __always_inline int eth_load_saddr(struct __ctx_buff *ctx, __u8 *mac,
+					  int off)
 {
-	return skb_load_bytes(skb, off + ETH_ALEN, mac, ETH_ALEN);
+	return ctx_load_bytes(ctx, off + ETH_ALEN, mac, ETH_ALEN);
 }
 
-static inline int eth_store_saddr(struct __sk_buff *skb, __u8 *mac, int off)
+static __always_inline int eth_store_saddr_aligned(struct __ctx_buff *ctx,
+						   const __u8 *mac, int off)
 {
-	return skb_store_bytes(skb, off + ETH_ALEN, mac, ETH_ALEN, 0);
+	return ctx_store_bytes(ctx, off + ETH_ALEN, mac, ETH_ALEN, 0);
 }
 
-static inline int eth_load_daddr(struct __sk_buff *skb, __u8 *mac, int off)
+static __always_inline int eth_store_saddr(struct __ctx_buff *ctx,
+					   const __u8 *mac, int off)
 {
-	return skb_load_bytes(skb, off, mac, ETH_ALEN);
+#if !CTX_DIRECT_WRITE_OK
+	return eth_store_saddr_aligned(ctx, mac, off);
+#else
+	void *data_end = ctx_data_end(ctx);
+	void *data = ctx_data(ctx);
+
+	if (ctx_no_room(data + off + ETH_ALEN * 2, data_end))
+		return -EFAULT;
+	/* Need to use builtin here since mac came potentially from
+	 * struct bpf_fib_lookup where it's not aligned on stack. :(
+	 */
+	__bpf_memcpy_builtin(data + off + ETH_ALEN, mac, ETH_ALEN);
+	return 0;
+#endif
 }
 
-static inline int eth_store_daddr(struct __sk_buff *skb, __u8 *mac, int off)
+static __always_inline int eth_load_daddr(struct __ctx_buff *ctx, __u8 *mac,
+					  int off)
 {
-	return skb_store_bytes(skb, off, mac, ETH_ALEN, 0);
+	return ctx_load_bytes(ctx, off, mac, ETH_ALEN);
+}
+
+static __always_inline int eth_store_daddr_aligned(struct __ctx_buff *ctx,
+						   const __u8 *mac, int off)
+{
+	return ctx_store_bytes(ctx, off, mac, ETH_ALEN, 0);
+}
+
+static __always_inline int eth_store_daddr(struct __ctx_buff *ctx,
+					   const __u8 *mac, int off)
+{
+#if !CTX_DIRECT_WRITE_OK
+	return eth_store_daddr_aligned(ctx, mac, off);
+#else
+	void *data_end = ctx_data_end(ctx);
+	void *data = ctx_data(ctx);
+
+	if (ctx_no_room(data + off + ETH_ALEN, data_end))
+		return -EFAULT;
+	/* Need to use builtin here since mac came potentially from
+	 * struct bpf_fib_lookup where it's not aligned on stack. :(
+	 */
+	__bpf_memcpy_builtin(data + off, mac, ETH_ALEN);
+	return 0;
+#endif
 }
 
 #endif /* __LIB_ETH__ */

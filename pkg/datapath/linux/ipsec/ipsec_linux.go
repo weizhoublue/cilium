@@ -21,27 +21,27 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
+	"github.com/cilium/cilium/pkg/datapath/linux/route"
 	"github.com/cilium/cilium/pkg/maps/encrypt"
-	"github.com/vishvananda/netlink"
 
 	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 )
 
 type IPSecDir string
 
 const (
-	IPSecDirIn   IPSecDir = "IPSEC_IN"
-	IPSecDirOut  IPSecDir = "IPSEC_OUT"
-	IPSecDirBoth IPSecDir = "IPSEC_BOTH"
+	IPSecDirIn      IPSecDir = "IPSEC_IN"
+	IPSecDirOut     IPSecDir = "IPSEC_OUT"
+	IPSecDirBoth    IPSecDir = "IPSEC_BOTH"
+	IPSecDirOutNode IPSecDir = "IPSEC_OUT_NODE"
 )
 
 type ipSecKey struct {
@@ -105,7 +105,7 @@ func ipSecJoinState(state *netlink.XfrmState, keys *ipSecKey) {
 	state.Reqid = keys.ReqID
 }
 
-func ipSecReplaceState(remoteIP, localIP net.IP) (uint8, error) {
+func ipSecReplaceStateIn(remoteIP, localIP net.IP) (uint8, error) {
 	key := getIPSecKeys(localIP)
 	if key == nil {
 		return 0, fmt.Errorf("IPSec key missing")
@@ -114,6 +114,30 @@ func ipSecReplaceState(remoteIP, localIP net.IP) (uint8, error) {
 	ipSecJoinState(state, key)
 	state.Src = localIP
 	state.Dst = remoteIP
+	state.Mark = &netlink.XfrmMark{
+		Value: linux_defaults.RouteMarkDecrypt,
+		Mask:  linux_defaults.IPsecMarkMaskIn,
+	}
+	state.OutputMark = linux_defaults.RouteMarkDecrypt
+
+	return key.Spi, netlink.XfrmStateAdd(state)
+}
+
+func ipSecReplaceStateOut(remoteIP, localIP net.IP) (uint8, error) {
+	key := getIPSecKeys(localIP)
+	if key == nil {
+		return 0, fmt.Errorf("IPSec key missing")
+	}
+	spiWide := uint32(key.Spi)
+	state := ipSecNewState()
+	ipSecJoinState(state, key)
+	state.Src = localIP
+	state.Dst = remoteIP
+	state.Mark = &netlink.XfrmMark{
+		Value: ((spiWide << 12) | linux_defaults.RouteMarkEncrypt),
+		Mask:  linux_defaults.IPsecMarkMask,
+	}
+	state.OutputMark = linux_defaults.RouteMarkEncrypt
 	return key.Spi, netlink.XfrmStateAdd(state)
 }
 
@@ -134,8 +158,8 @@ func ipSecReplacePolicyInFwd(src, dst *net.IPNet, dir netlink.Dir) error {
 
 	policy := ipSecNewPolicy()
 	policy.Dir = dir
-	policy.Src = src
-	policy.Dst = dst
+	policy.Src = &net.IPNet{IP: src.IP.Mask(src.Mask), Mask: src.Mask}
+	policy.Dst = &net.IPNet{IP: dst.IP.Mask(dst.Mask), Mask: dst.Mask}
 	policy.Mark = &netlink.XfrmMark{
 		Value: linux_defaults.RouteMarkDecrypt,
 		Mask:  linux_defaults.IPsecMarkMaskIn,
@@ -144,7 +168,8 @@ func ipSecReplacePolicyInFwd(src, dst *net.IPNet, dir netlink.Dir) error {
 	return netlink.XfrmPolicyUpdate(policy)
 }
 
-func ipSecReplacePolicyOut(src, dst *net.IPNet, dir IPSecDir) error {
+func ipSecReplacePolicyOut(src, dst, tmplSrc, tmplDst *net.IPNet, dir IPSecDir) error {
+	// TODO: Remove old policy pointing to target net
 	var spiWide uint32
 
 	key := getIPSecKeys(dst.IP)
@@ -154,14 +179,24 @@ func ipSecReplacePolicyOut(src, dst *net.IPNet, dir IPSecDir) error {
 	spiWide = uint32(key.Spi)
 
 	policy := ipSecNewPolicy()
+	if dir == IPSecDirOutNode {
+		wildcardIP := net.ParseIP("0.0.0.0")
+		wildcardMask := net.IPv4Mask(0, 0, 0, 0)
+		policy.Src = &net.IPNet{IP: wildcardIP, Mask: wildcardMask}
+	} else {
+		policy.Src = &net.IPNet{IP: src.IP.Mask(src.Mask), Mask: src.Mask}
+	}
+	policy.Dst = &net.IPNet{IP: dst.IP.Mask(dst.Mask), Mask: dst.Mask}
 	policy.Dir = netlink.XFRM_DIR_OUT
-	policy.Src = src
-	policy.Dst = dst
 	policy.Mark = &netlink.XfrmMark{
 		Value: ((spiWide << 12) | linux_defaults.RouteMarkEncrypt),
 		Mask:  linux_defaults.IPsecMarkMask,
 	}
-	ipSecAttachPolicyTempl(policy, key, src.IP, dst.IP, true)
+	if tmplSrc != nil && tmplDst != nil {
+		ipSecAttachPolicyTempl(policy, key, tmplSrc.IP, tmplDst.IP, true)
+	} else {
+		ipSecAttachPolicyTempl(policy, key, src.IP, dst.IP, true)
+	}
 	return netlink.XfrmPolicyUpdate(policy)
 }
 
@@ -180,6 +215,43 @@ func ipsecDeleteXfrmSpi(spi uint8) {
 		if s.Spi != int(spi) {
 			if err := netlink.XfrmStateDel(&s); err != nil {
 				scopedLog.WithError(err).Warning("deleting old xfrm state failed")
+			}
+		}
+	}
+}
+
+func ipsecDeleteXfrmState(ip net.IP) {
+	scopedLog := log.WithFields(logrus.Fields{
+		"remote-ip": ip,
+	})
+
+	xfrmStateList, err := netlink.XfrmStateList(0)
+	if err != nil {
+		scopedLog.WithError(err).Warning("deleting xfrm state, xfrm state list error")
+		return
+	}
+	for _, s := range xfrmStateList {
+		if ip.Equal(s.Dst) {
+			if err := netlink.XfrmStateDel(&s); err != nil {
+				scopedLog.WithError(err).Warning("deleting xfrm state failed")
+			}
+		}
+	}
+}
+
+func ipsecDeleteXfrmPolicy(ip net.IP) {
+	scopedLog := log.WithFields(logrus.Fields{
+		"remote-ip": ip,
+	})
+
+	xfrmPolicyList, err := netlink.XfrmPolicyList(0)
+	if err != nil {
+		scopedLog.WithError(err).Warning("deleting policy state, xfrm policy list error")
+	}
+	for _, p := range xfrmPolicyList {
+		if ip.Equal(p.Dst.IP) {
+			if err := netlink.XfrmPolicyDel(&p); err != nil {
+				scopedLog.WithError(err).Warning("deleting xfrm policy failed")
 			}
 		}
 	}
@@ -221,6 +293,9 @@ func ipsecDeleteXfrmSpi(spi uint8) {
  * State1(src=*,dst=10.182.0.1,spi=#spi,reqid=#reqid,...)
  * State2(src=*,dst=10.156.0.1,spi=#spi,reqid=#reqid,...)
  *
+ * setMark is used to set output-marks and use table 200 post-encryption
+ * This only applies to the subnet mode where sip/dip needs to be rewritten
+ *
  * Design Note: For newer kernels a BPF xfrm interface would greatly simplify the
  * state space. Basic idea would be to reference a state using any key generated
  * from BPF program allowing for a single state per security ctx.
@@ -242,7 +317,7 @@ func UpsertIPsecEndpoint(local, remote *net.IPNet, dir IPSecDir) (uint8, error) 
 	 */
 	if !local.IP.Equal(remote.IP) {
 		if dir == IPSecDirIn || dir == IPSecDirBoth {
-			if spi, err = ipSecReplaceState(local.IP, remote.IP); err != nil {
+			if spi, err = ipSecReplaceStateIn(local.IP, remote.IP); err != nil {
 				if !os.IsExist(err) {
 					return 0, fmt.Errorf("unable to replace local state: %s", err)
 				}
@@ -254,14 +329,14 @@ func UpsertIPsecEndpoint(local, remote *net.IPNet, dir IPSecDir) (uint8, error) 
 			}
 		}
 
-		if dir == IPSecDirOut || dir == IPSecDirBoth {
-			if spi, err = ipSecReplaceState(remote.IP, local.IP); err != nil {
+		if dir == IPSecDirOut || dir == IPSecDirOutNode || dir == IPSecDirBoth {
+			if spi, err = ipSecReplaceStateOut(remote.IP, local.IP); err != nil {
 				if !os.IsExist(err) {
 					return 0, fmt.Errorf("unable to replace remote state: %s", err)
 				}
 			}
 
-			if err = ipSecReplacePolicyOut(local, remote, dir); err != nil {
+			if err = ipSecReplacePolicyOut(local, remote, nil, nil, dir); err != nil {
 				if !os.IsExist(err) {
 					return 0, fmt.Errorf("unable to replace policy out: %s", err)
 				}
@@ -271,10 +346,82 @@ func UpsertIPsecEndpoint(local, remote *net.IPNet, dir IPSecDir) (uint8, error) 
 	return spi, nil
 }
 
+// UpsertIPsecEndpointPolicy adds a policy to the xfrm rules. Used to add a policy when the state
+// rule is already available.
+func UpsertIPsecEndpointPolicy(local, remote, localT, remoteT *net.IPNet, dir IPSecDir) error {
+	if err := ipSecReplacePolicyOut(local, remote, localT, remoteT, dir); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("unable to replace templated policy out: %s", err)
+		}
+	}
+	return nil
+}
+
+// DeleteIPsecEndpoint deletes a endpoint associated with the remote IP address
+func DeleteIPsecEndpoint(remote *net.IPNet) {
+	ipsecDeleteXfrmState(remote.IP)
+	ipsecDeleteXfrmPolicy(remote.IP)
+}
+
+func isXfrmPolicyCilium(policy netlink.XfrmPolicy) bool {
+	if policy.Mark == nil {
+		return false
+	}
+	if policy.Mark.Mask != linux_defaults.RouteMarkMask {
+		return false
+	}
+	if policy.Mark.Value == linux_defaults.RouteMarkDecrypt ||
+		policy.Mark.Value == linux_defaults.RouteMarkEncrypt {
+		return true
+	}
+	return false
+}
+
+func isXfrmStateCilium(state netlink.XfrmState) bool {
+	if state.Mark == nil {
+		return false
+	}
+	if state.Mark.Mask != linux_defaults.RouteMarkMask {
+		return false
+	}
+	if state.Mark.Value == linux_defaults.RouteMarkDecrypt ||
+		state.Mark.Value == linux_defaults.RouteMarkEncrypt {
+		return true
+	}
+	return false
+}
+
+// DeleteXfrm remove any remaining XFRM policy or state from tables
+func DeleteXfrm() {
+	xfrmPolicyList, err := netlink.XfrmPolicyList(0)
+	if err == nil {
+		for _, p := range xfrmPolicyList {
+			if isXfrmPolicyCilium(p) {
+				if err := netlink.XfrmPolicyDel(&p); err != nil {
+					log.WithError(err).Warning("deleting xfrm policy failed")
+				}
+			}
+		}
+	}
+	xfrmStateList, err := netlink.XfrmStateList(0)
+	if err == nil {
+		for _, s := range xfrmStateList {
+			if isXfrmStateCilium(s) {
+				if err := netlink.XfrmStateDel(&s); err != nil {
+					log.WithError(err).Warning("deleting old xfrm state failed")
+				}
+			}
+		}
+	}
+}
+
 func decodeIPSecKey(keyRaw string) (int, []byte, error) {
 	// As we have released the v1.4.0 docs telling the users to write the
 	// k8s secret with the prefix "0x" we have to remove it if it is present,
 	// so we can decode the secret.
+	if keyRaw == "\"\"" {
+		return 0, nil, nil
+	}
 	keyTrimmed := strings.TrimPrefix(keyRaw, "0x")
 	key, err := hex.DecodeString(keyTrimmed)
 	return len(keyTrimmed), key, err
@@ -299,7 +446,9 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 		"spi": spi,
 	})
 
-	encrypt.MapCreate()
+	if err := encrypt.MapCreate(); err != nil {
+		return 0, 0, fmt.Errorf("Encrypt map create failed: %v", err)
+	}
 
 	scanner := bufio.NewScanner(r)
 	scanner.Split(bufio.ScanLines)
@@ -401,16 +550,31 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 			}()
 		}
 	}
-	encrypt.MapUpdateContext(0, spi)
+	if err := encrypt.MapUpdateContext(0, spi); err != nil {
+		scopedLog.WithError(err).Warn("cilium_encrypt_state map updated failed:")
+		return 0, 0, err
+	}
 	return keyLen, spi, nil
 }
 
-// EnableIPv6Forwarding sets proc file to enable IPv6 forwarding
-func EnableIPv6Forwarding() error {
-	ip6ConfPath := "/proc/sys/net/ipv6/conf/"
-	device := "all"
-	forwarding := "forwarding"
-	forwardingOn := "1"
-	path := filepath.Join(ip6ConfPath, device, forwarding)
-	return ioutil.WriteFile(path, []byte(forwardingOn), 0644)
+// DeleteIPsecEncryptRoute removes nodes in main routing table by walking
+// routes and matching route protocol type.
+func DeleteIPsecEncryptRoute() {
+	filter := &netlink.Route{
+		Protocol: route.EncryptRouteProtocol,
+	}
+
+	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := netlink.RouteListFiltered(family, filter, netlink.RT_FILTER_PROTOCOL)
+		if err != nil {
+			log.WithError(err).Error("Unable to list direct routes")
+			return
+		}
+
+		for _, rt := range routes {
+			if err := netlink.RouteDel(&rt); err != nil {
+				log.WithError(err).Warningf("Unable to delete direct node route %s", rt.String())
+			}
+		}
+	}
 }

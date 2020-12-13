@@ -17,12 +17,14 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
-	"golang.org/x/net/context"
+	"github.com/cilium/cilium/api/v1/models"
+
 	. "gopkg.in/check.v1"
 )
 
@@ -37,8 +39,6 @@ func Test(t *testing.T) {
 
 func (cs *ClientTestSuite) TestHint(c *C) {
 	var err error
-
-	err = nil
 	c.Assert(Hint(err), IsNil)
 
 	err = errors.New("foo bar")
@@ -53,10 +53,20 @@ func (cs *ClientTestSuite) TestHint(c *C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
 
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	}
+	<-ctx.Done()
+	err = ctx.Err()
 
 	c.Assert(Hint(err), ErrorMatches, "Cilium API client timeout exceeded")
+}
+
+func (cs *ClientTestSuite) TestClusterReadiness(c *C) {
+	c.Assert(clusterReadiness(&models.RemoteCluster{Ready: true}), Equals, "ready")
+	c.Assert(clusterReadiness(&models.RemoteCluster{Ready: false}), Equals, "not-ready")
+}
+
+func (cs *ClientTestSuite) TestNumReadyClusters(c *C) {
+	c.Assert(numReadyClusters(&models.ClusterMeshStatus{}), Equals, 0)
+	c.Assert(numReadyClusters(&models.ClusterMeshStatus{
+		Clusters: []*models.RemoteCluster{{Ready: true}, {Ready: true}, {Ready: false}},
+	}), Equals, 2)
 }

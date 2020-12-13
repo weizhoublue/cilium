@@ -1,4 +1,4 @@
-// Copyright 2017 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,38 +28,9 @@ import (
 	. "gopkg.in/check.v1"
 )
 
-func (s *PolicyTestSuite) testDPortCoverage(c *C, policy L4Policy,
-	covers func([]*models.Port) api.Decision) {
-
-	ports := []*models.Port{}
-	c.Assert(covers(ports), Equals, api.Denied)
-
-	// Policy should match all of the below ports.
-	ports = []*models.Port{
-		{
-			Port:     8080,
-			Protocol: models.PortProtocolTCP,
-		},
-	}
-	c.Assert(covers(ports), Equals, api.Allowed)
-
-	// Adding another port outside the policy will now be denied.
-	ports = append(ports, &models.Port{Port: 8080, Protocol: models.PortProtocolUDP})
-	c.Assert(covers(ports), Equals, api.Denied)
-
-	// Ports with protocol any should match the TCP policy above.
-	ports = []*models.Port{
-		{
-			Port:     8080,
-			Protocol: models.PortProtocolANY,
-		},
-	}
-	c.Assert(covers(ports), Equals, api.Allowed)
-}
-
 func (s *PolicyTestSuite) TestCreateL4Filter(c *C) {
 	tuple := api.PortProtocol{Port: "80", Protocol: api.ProtoTCP}
-	portrule := api.PortRule{
+	portrule := &api.PortRule{
 		Ports: []api.PortProtocol{tuple},
 		Rules: &api.L7Rules{
 			HTTP: []api.PortRuleHTTP{
@@ -68,7 +39,7 @@ func (s *PolicyTestSuite) TestCreateL4Filter(c *C) {
 		},
 	}
 	selectors := []api.EndpointSelector{
-		{},
+		api.NewESFromLabels(),
 		api.NewESFromLabels(labels.ParseSelectLabel("bar")),
 	}
 
@@ -77,11 +48,50 @@ func (s *PolicyTestSuite) TestCreateL4Filter(c *C) {
 		// Regardless of ingress/egress, we should end up with
 		// a single L7 rule whether the selector is wildcarded
 		// or if it is based on specific labels.
-		filter := CreateL4IngressFilter(eps, nil, portrule, tuple, tuple.Protocol, nil)
-		c.Assert(len(filter.L7RulesPerEp), Equals, 1)
+		filter, err := createL4IngressFilter(testPolicyContext, eps, nil, portrule, tuple, tuple.Protocol, nil)
+		c.Assert(err, IsNil)
+		c.Assert(len(filter.L7RulesPerSelector), Equals, 1)
+		c.Assert(filter.IsEnvoyRedirect(), Equals, true)
+		c.Assert(filter.IsProxylibRedirect(), Equals, false)
 
-		filter = CreateL4EgressFilter(eps, portrule, tuple, tuple.Protocol, nil)
-		c.Assert(len(filter.L7RulesPerEp), Equals, 1)
+		filter, err = createL4EgressFilter(testPolicyContext, eps, portrule, tuple, tuple.Protocol, nil, nil)
+		c.Assert(err, IsNil)
+		c.Assert(len(filter.L7RulesPerSelector), Equals, 1)
+		c.Assert(filter.IsEnvoyRedirect(), Equals, true)
+		c.Assert(filter.IsProxylibRedirect(), Equals, false)
+	}
+}
+
+func (s *PolicyTestSuite) TestCreateL4FilterMissingSecret(c *C) {
+	tuple := api.PortProtocol{Port: "80", Protocol: api.ProtoTCP}
+	portrule := &api.PortRule{
+		Ports: []api.PortProtocol{tuple},
+		TerminatingTLS: &api.TLSContext{
+			Secret: &api.Secret{
+				Name: "notExisting",
+			},
+		},
+		Rules: &api.L7Rules{
+			HTTP: []api.PortRuleHTTP{
+				{Path: "/public", Method: "GET"},
+			},
+		},
+	}
+	selectors := []api.EndpointSelector{
+		api.NewESFromLabels(),
+		api.NewESFromLabels(labels.ParseSelectLabel("bar")),
+	}
+
+	for _, selector := range selectors {
+		eps := []api.EndpointSelector{selector}
+		// Regardless of ingress/egress, we should end up with
+		// a single L7 rule whether the selector is wildcarded
+		// or if it is based on specific labels.
+		_, err := createL4IngressFilter(testPolicyContext, eps, nil, portrule, tuple, tuple.Protocol, nil)
+		c.Assert(err, Not(IsNil))
+
+		_, err = createL4EgressFilter(testPolicyContext, eps, portrule, tuple, tuple.Protocol, nil, nil)
+		c.Assert(err, Not(IsNil))
 	}
 }
 
@@ -92,9 +102,6 @@ func (a SortablePolicyRules) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a SortablePolicyRules) Less(i, j int) bool { return a[i].Rule < a[j].Rule }
 
 func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
-	fooSelector := api.NewESFromLabels(labels.ParseSelectLabel("foo"))
-	wildcardSelector := api.NewESFromLabels()
-
 	model := &models.L4Policy{}
 	c.Assert(pretty.Sprintf("%+ v", model.Egress), checker.DeepEquals, "[]")
 	c.Assert(pretty.Sprintf("%+ v", model.Ingress), checker.DeepEquals, "[]")
@@ -110,29 +117,31 @@ func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
 		Ingress: L4PolicyMap{
 			"80/TCP": {
 				Port: 80, Protocol: api.ProtoTCP,
-				Endpoints: []api.EndpointSelector{fooSelector},
-				L7Parser:  "http",
-				L7RulesPerEp: L7DataMap{
-					fooSelector: api.L7Rules{
-						HTTP: []api.PortRuleHTTP{{Path: "/", Method: "GET"}},
+				L7Parser: "http",
+				L7RulesPerSelector: L7DataMap{
+					cachedFooSelector: &PerSelectorPolicy{
+						L7Rules: api.L7Rules{
+							HTTP: []api.PortRuleHTTP{{Path: "/", Method: "GET"}},
+						},
 					},
 				},
 				Ingress: true,
 			},
 			"9090/TCP": {
 				Port: 9090, Protocol: api.ProtoTCP,
-				Endpoints: []api.EndpointSelector{fooSelector},
-				L7Parser:  "tester",
-				L7RulesPerEp: L7DataMap{
-					fooSelector: api.L7Rules{
-						L7Proto: "tester",
-						L7: []api.PortRuleL7{
-							map[string]string{
-								"method": "PUT",
-								"path":   "/"},
-							map[string]string{
-								"method": "GET",
-								"path":   "/"},
+				L7Parser: "tester",
+				L7RulesPerSelector: L7DataMap{
+					cachedFooSelector: &PerSelectorPolicy{
+						L7Rules: api.L7Rules{
+							L7Proto: "tester",
+							L7: []api.PortRuleL7{
+								map[string]string{
+									"method": "PUT",
+									"path":   "/"},
+								map[string]string{
+									"method": "GET",
+									"path":   "/"},
+							},
 						},
 					},
 				},
@@ -140,17 +149,20 @@ func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
 			},
 			"8080/TCP": {
 				Port: 8080, Protocol: api.ProtoTCP,
-				Endpoints: []api.EndpointSelector{fooSelector},
-				L7Parser:  "http",
-				L7RulesPerEp: L7DataMap{
-					fooSelector: api.L7Rules{
-						HTTP: []api.PortRuleHTTP{
-							{Path: "/", Method: "GET"},
-							{Path: "/bar", Method: "GET"},
+				L7Parser: "http",
+				L7RulesPerSelector: L7DataMap{
+					cachedFooSelector: &PerSelectorPolicy{
+						L7Rules: api.L7Rules{
+							HTTP: []api.PortRuleHTTP{
+								{Path: "/", Method: "GET"},
+								{Path: "/bar", Method: "GET"},
+							},
 						},
 					},
-					wildcardSelector: api.L7Rules{
-						HTTP: []api.PortRuleHTTP{{Path: "/", Method: "GET"}},
+					wildcardCachedSelector: &PerSelectorPolicy{
+						L7Rules: api.L7Rules{
+							HTTP: []api.PortRuleHTTP{{Path: "/", Method: "GET"}},
+						},
 					},
 				},
 				Ingress: true,
@@ -177,7 +189,7 @@ func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
   "protocol": "TCP",
   "l7-rules": [
     {
-      "any.foo=": {
+      "\u0026LabelSelector{MatchLabels:map[string]string{any.foo: ,},MatchExpressions:[]LabelSelectorRequirement{},}": {
         "http": [
           {
             "path": "/",
@@ -193,7 +205,7 @@ func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
   "protocol": "TCP",
   "l7-rules": [
     {
-      "any.foo=": {
+      "\u0026LabelSelector{MatchLabels:map[string]string{any.foo: ,},MatchExpressions:[]LabelSelectorRequirement{},}": {
         "l7proto": "tester",
         "l7": [
           {
@@ -214,17 +226,7 @@ func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
   "protocol": "TCP",
   "l7-rules": [
     {
-      "\u003cnone\u003e": {
-        "http": [
-          {
-            "path": "/",
-            "method": "GET"
-          }
-        ]
-      }
-    },
-    {
-      "any.foo=": {
+      "\u0026LabelSelector{MatchLabels:map[string]string{any.foo: ,},MatchExpressions:[]LabelSelectorRequirement{},}": {
         "http": [
           {
             "path": "/",
@@ -232,6 +234,16 @@ func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
           },
           {
             "path": "/bar",
+            "method": "GET"
+          }
+        ]
+      }
+    },
+    {
+      "\u0026LabelSelector{MatchLabels:map[string]string{},MatchExpressions:[]LabelSelectorRequirement{},}": {
+        "http": [
+          {
+            "path": "/",
             "method": "GET"
           }
         ]
@@ -245,4 +257,7 @@ func (s *PolicyTestSuite) TestJSONMarshal(c *C) {
 	for i := range expectedIngress {
 		c.Assert(model.Ingress[i].Rule, Equals, expectedIngress[i])
 	}
+
+	c.Assert(policy.HasEnvoyRedirect(), Equals, true)
+	c.Assert(policy.HasProxylibRedirect(), Equals, true)
 }

@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package v2
 
 import (
+	"context"
 	time "time"
 
 	ciliumiov2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
@@ -59,13 +60,13 @@ func NewFilteredCiliumNetworkPolicyInformer(client versioned.Interface, namespac
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2().CiliumNetworkPolicies(namespace).List(options)
+				return client.CiliumV2().CiliumNetworkPolicies(namespace).List(context.TODO(), options)
 			},
 			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CiliumV2().CiliumNetworkPolicies(namespace).Watch(options)
+				return client.CiliumV2().CiliumNetworkPolicies(namespace).Watch(context.TODO(), options)
 			},
 		},
 		&ciliumiov2.CiliumNetworkPolicy{},

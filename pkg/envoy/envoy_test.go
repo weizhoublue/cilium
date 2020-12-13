@@ -30,6 +30,7 @@ import (
 	"github.com/cilium/cilium/pkg/envoy/xds"
 	"github.com/cilium/cilium/pkg/flowdebug"
 	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
@@ -77,6 +78,7 @@ func (s *EnvoySuite) TestEnvoy(c *C) {
 		c.Skip("skipping envoy unit test; CILIUM_ENABLE_ENVOY_UNIT_TEST not set")
 	}
 
+	logging.ConfigureLogLevel(true) // Use 'true' for debugging
 	flowdebug.Enable()
 
 	stateLogDir, err := ioutil.TempDir("", "envoy_go_test")
@@ -89,18 +91,26 @@ func (s *EnvoySuite) TestEnvoy(c *C) {
 	StartAccessLogServer(stateLogDir, xdsServer, &dummyEndpointInfoRegistry{})
 
 	// launch debug variant of the Envoy proxy
-	envoyProxy := StartEnvoy(stateLogDir, filepath.Join(stateLogDir, "cilium-envoy.log"), 42)
+	envoyProxy := StartEnvoy(stateLogDir, filepath.Join(stateLogDir, "cilium-envoy.log"), 0)
 	c.Assert(envoyProxy, NotNil)
 	log.Debug("started Envoy")
 
+	log.Debug("adding metrics listener")
+	xdsServer.AddMetricsListener(9095, s.waitGroup)
+
+	err = s.waitForProxyCompletion()
+	c.Assert(err, IsNil)
+	log.Debug("completed adding metrics listener")
+	s.waitGroup = completion.NewWaitGroup(ctx)
+
 	log.Debug("adding listener1")
-	xdsServer.AddListener("listener1", policy.ParserTypeHTTP, 8081, true, s.waitGroup)
+	xdsServer.AddListener("listener1", policy.ParserTypeHTTP, 8081, true, false, s.waitGroup)
 
 	log.Debug("adding listener2")
-	xdsServer.AddListener("listener2", policy.ParserTypeHTTP, 8082, true, s.waitGroup)
+	xdsServer.AddListener("listener2", policy.ParserTypeHTTP, 8082, true, false, s.waitGroup)
 
 	log.Debug("adding listener3")
-	xdsServer.AddListener("listener3", policy.ParserTypeHTTP, 8083, false, s.waitGroup)
+	xdsServer.AddListener("listener3", policy.ParserTypeHTTP, 8083, false, false, s.waitGroup)
 
 	err = s.waitForProxyCompletion()
 	c.Assert(err, IsNil)
@@ -118,7 +128,7 @@ func (s *EnvoySuite) TestEnvoy(c *C) {
 
 	// Add listener3 again
 	log.Debug("adding listener 3")
-	xdsServer.AddListener("listener3", policy.L7ParserType("test.headerparser"), 8083, false, s.waitGroup)
+	xdsServer.AddListener("listener3", policy.L7ParserType("test.headerparser"), 8083, false, false, s.waitGroup)
 
 	err = s.waitForProxyCompletion()
 	c.Assert(err, IsNil)
@@ -168,11 +178,11 @@ func (s *EnvoySuite) TestEnvoyNACK(c *C) {
 	rName := "listener:22"
 
 	log.Debug("adding ", rName)
-	xdsServer.AddListener(rName, policy.ParserTypeHTTP, 22, true, s.waitGroup)
+	xdsServer.AddListener(rName, policy.ParserTypeHTTP, 22, true, false, s.waitGroup)
 
 	err = s.waitForProxyCompletion()
 	c.Assert(err, Not(IsNil))
-	c.Assert(err, checker.DeepEquals, &xds.ProxyError{Err: xds.ErrNackReceived, Detail: "Error adding/updating listener listener:22: cannot bind '[::]:22': Address already in use"})
+	c.Assert(err, checker.DeepEquals, &xds.ProxyError{Err: xds.ErrNackReceived, Detail: "Error adding/updating listener(s) listener:22: cannot bind '[::]:22': Address already in use\n"})
 
 	s.waitGroup = completion.NewWaitGroup(ctx)
 	// Remove listener1

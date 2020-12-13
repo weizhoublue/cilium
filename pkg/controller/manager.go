@@ -21,7 +21,8 @@ import (
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/uuid"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -55,7 +56,11 @@ func GetGlobalStatus() models.ControllerStatuses {
 // controller. Updating a controller will cause the DoFunc to be run
 // immediately regardless of any previous conditions. It will also cause any
 // statistics to be reset.
-func (m *Manager) UpdateController(name string, params ControllerParams) *Controller {
+func (m *Manager) UpdateController(name string, params ControllerParams) {
+	m.updateController(name, params)
+}
+
+func (m *Manager) updateController(name string, params ControllerParams) *Controller {
 	start := time.Now()
 
 	// ensure the callbacks are valid
@@ -93,15 +98,19 @@ func (m *Manager) UpdateController(name string, params ControllerParams) *Contro
 	} else {
 		ctrl = &Controller{
 			name:       name,
-			uuid:       uuid.NewUUID().String(),
-			stop:       make(chan struct{}, 0),
+			uuid:       uuid.New().String(),
+			stop:       make(chan struct{}),
 			update:     make(chan struct{}, 1),
-			terminated: make(chan struct{}, 0),
+			terminated: make(chan struct{}),
 		}
 		ctrl.updateParamsLocked(params)
 		ctrl.getLogger().Debug("Starting new controller")
 
-		ctrl.ctxDoFunc, ctrl.cancelDoFunc = context.WithCancel(context.Background())
+		if params.Context == nil {
+			ctrl.ctxDoFunc, ctrl.cancelDoFunc = context.WithCancel(context.Background())
+		} else {
+			ctrl.ctxDoFunc, ctrl.cancelDoFunc = context.WithCancel(params.Context)
+		}
 		m.controllers[ctrl.name] = ctrl
 		m.mutex.Unlock()
 
@@ -180,7 +189,7 @@ func (m *Manager) TerminationChannel(name string) chan struct{} {
 		return c.terminated
 	}
 
-	c := make(chan struct{}, 0)
+	c := make(chan struct{})
 	close(c)
 	return c
 }
@@ -248,9 +257,9 @@ func FakeManager(failingControllers int) *Manager {
 		ctrl := &Controller{
 			name:              fmt.Sprintf("controller-%d", i),
 			uuid:              fmt.Sprintf("%d", i),
-			stop:              make(chan struct{}, 0),
+			stop:              make(chan struct{}),
 			update:            make(chan struct{}, 1),
-			terminated:        make(chan struct{}, 0),
+			terminated:        make(chan struct{}),
 			lastError:         fmt.Errorf("controller failed"),
 			failureCount:      1,
 			consecutiveErrors: 1,

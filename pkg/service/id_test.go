@@ -17,15 +17,31 @@
 package service
 
 import (
-	"encoding/json"
 	"net"
+	"testing"
 
 	"github.com/cilium/cilium/pkg/checker"
-	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 
 	. "gopkg.in/check.v1"
 )
+
+// Hook up gocheck into the "go test" runner.
+func Test(t *testing.T) {
+	TestingT(t)
+}
+
+type IDAllocTestSuite struct{}
+
+var _ = Suite(&IDAllocTestSuite{})
+
+func (e *IDAllocTestSuite) SetUpTest(c *C) {
+	serviceIDAlloc.resetLocalID()
+}
+
+func (e *IDAllocTestSuite) TearDownTest(c *C) {
+	serviceIDAlloc.resetLocalID()
+}
 
 var (
 	l3n4Addr1 = loadbalancer.L3n4Addr{
@@ -40,13 +56,17 @@ var (
 		IP:     net.IPv6loopback,
 		L4Addr: loadbalancer.L4Addr{Port: 1, Protocol: "UDP"},
 	}
+	l3n4Addr4 = loadbalancer.L3n4Addr{
+		IP:     net.IPv6loopback,
+		L4Addr: loadbalancer.L4Addr{Port: 2, Protocol: "UDP"},
+	}
 	wantL3n4AddrID = &loadbalancer.L3n4AddrID{
 		ID:       123,
 		L3n4Addr: l3n4Addr2,
 	}
 )
 
-func (ds *ServiceTestSuite) TestServices(c *C) {
+func (s *IDAllocTestSuite) TestServices(c *C) {
 	var nilL3n4AddrID *loadbalancer.L3n4AddrID
 	// Set up last free ID with zero
 	id, err := getMaxServiceID()
@@ -132,27 +152,25 @@ func (ds *ServiceTestSuite) TestServices(c *C) {
 	gotL3n4AddrID, err = AcquireID(l3n4Addr1, 99)
 	c.Assert(err, Equals, nil)
 	c.Assert(gotL3n4AddrID.ID, Equals, loadbalancer.ID(99))
+
+	// ID "99" has been already allocated to l3n4Addr1
+	gotL3n4AddrID, err = AcquireID(l3n4Addr4, 99)
+	c.Assert(err, NotNil)
+	c.Assert(gotL3n4AddrID, IsNil)
 }
 
-func (ds *ServiceTestSuite) TestGetMaxServiceID(c *C) {
+func (s *IDAllocTestSuite) TestGetMaxServiceID(c *C) {
 	lastID := uint32(MaxSetOfServiceID - 1)
 
-	marshaledID, err := json.Marshal(lastID)
+	err := setIDSpace(lastID, MaxSetOfServiceID)
 	c.Assert(err, IsNil)
-	if enableGlobalServiceIDs {
-		err := kvstore.Client().Set(LastFreeServiceIDKeyPath, marshaledID)
-		c.Assert(err, IsNil)
-	} else {
-		err := setIDSpace(lastID, MaxSetOfServiceID)
-		c.Assert(err, IsNil)
-	}
 
 	id, err := getMaxServiceID()
 	c.Assert(err, Equals, nil)
 	c.Assert(id, Equals, (MaxSetOfServiceID - 1))
 }
 
-func (ds *ServiceTestSuite) TestBackendID(c *C) {
+func (s *IDAllocTestSuite) TestBackendID(c *C) {
 	firstBackendID := loadbalancer.BackendID(FirstFreeBackendID)
 
 	id1, err := AcquireBackendID(l3n4Addr1)
@@ -172,7 +190,7 @@ func (ds *ServiceTestSuite) TestBackendID(c *C) {
 	c.Assert(existingID1, Equals, id1)
 }
 
-func (ds *ServiceTestSuite) BenchmarkAllocation(c *C) {
+func (s *IDAllocTestSuite) BenchmarkAllocation(c *C) {
 	addr := loadbalancer.L3n4Addr{
 		IP:     net.IPv6loopback,
 		L4Addr: loadbalancer.L4Addr{Port: 0, Protocol: "UDP"},

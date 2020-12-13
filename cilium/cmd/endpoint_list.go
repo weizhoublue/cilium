@@ -22,7 +22,6 @@ import (
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/command"
-	"github.com/cilium/cilium/pkg/endpoint"
 
 	"github.com/spf13/cobra"
 )
@@ -31,6 +30,7 @@ import (
 const (
 	PolicyEnabled  = "Enabled"
 	PolicyDisabled = "Disabled"
+	PolicyAudit    = "Disabled (Audit)"
 	UnknownState   = "Unknown"
 )
 
@@ -66,6 +66,12 @@ func endpointPolicyMode(ep *models.Endpoint) (string, string) {
 		return PolicyEnabled, PolicyDisabled
 	case models.EndpointPolicyEnabledEgress:
 		return PolicyDisabled, PolicyEnabled
+	case models.EndpointPolicyEnabledAuditBoth:
+		return PolicyAudit, PolicyAudit
+	case models.EndpointPolicyEnabledAuditIngress:
+		return PolicyAudit, PolicyDisabled
+	case models.EndpointPolicyEnabledAuditEgress:
+		return PolicyDisabled, PolicyAudit
 	}
 
 	return UnknownState, UnknownState
@@ -128,7 +134,7 @@ func listEndpoints() {
 }
 
 func printEndpointList(w *tabwriter.Writer, eps []*models.Endpoint) {
-	endpoint.OrderEndpointModelAsc(eps)
+	sort.Slice(eps, func(i, j int) bool { return eps[i].ID < eps[j].ID })
 
 	const (
 		labelsIDTitle      = "IDENTITY"

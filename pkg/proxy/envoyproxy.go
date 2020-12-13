@@ -16,12 +16,13 @@ package proxy
 
 import (
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/envoy"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/revert"
 )
 
@@ -38,20 +39,30 @@ var envoyOnce sync.Once
 
 // createEnvoyRedirect creates a redirect with corresponding proxy
 // configuration. This will launch a proxy instance.
-func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServer, wg *completion.WaitGroup) (RedirectImplementation, error) {
+func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServer, mayUseOriginalSourceAddr bool, wg *completion.WaitGroup) (RedirectImplementation, error) {
 	envoyOnce.Do(func() {
 		// Start Envoy on first invocation
 		envoyProxy = envoy.StartEnvoy(stateDir, option.Config.EnvoyLogPath, 0)
+
+		if option.Config.ProxyPrometheusPort < 0 || option.Config.ProxyPrometheusPort > 65535 {
+			log.WithField(logfields.Port, option.Config.ProxyPrometheusPort).Error("Envoy: Invalid configured proxy-prometheus-port")
+		} else if option.Config.ProxyPrometheusPort != 0 {
+			xdsServer.AddMetricsListener(uint16(option.Config.ProxyPrometheusPort), wg)
+		}
 	})
 
 	l := r.listener
 	if envoyProxy != nil {
 		redir := &envoyRedirect{
-			listenerName: fmt.Sprintf("%s:%d", l.name, l.proxyPort),
+			listenerName: net.JoinHostPort(l.name, fmt.Sprintf("%d", l.proxyPort)),
 			xdsServer:    xdsServer,
 		}
-
-		xdsServer.AddListener(redir.listenerName, l.parserType, l.proxyPort, l.ingress, wg)
+		// Only use original source address for egress
+		if l.ingress {
+			mayUseOriginalSourceAddr = false
+		}
+		xdsServer.AddListener(redir.listenerName, l.parserType, l.proxyPort, l.ingress,
+			mayUseOriginalSourceAddr, wg)
 
 		return redir, nil
 	}
@@ -61,7 +72,7 @@ func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServe
 
 // UpdateRules is a no-op for envoy, as redirect data is synchronized via the
 // xDS cache.
-func (k *envoyRedirect) UpdateRules(wg *completion.WaitGroup, l4 *policy.L4Filter) (revert.RevertFunc, error) {
+func (k *envoyRedirect) UpdateRules(wg *completion.WaitGroup) (revert.RevertFunc, error) {
 	return func() error { return nil }, nil
 }
 

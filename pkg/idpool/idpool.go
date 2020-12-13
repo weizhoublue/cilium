@@ -15,9 +15,7 @@
 package idpool
 
 import (
-	"math/rand"
 	"strconv"
-	"time"
 
 	"github.com/cilium/cilium/pkg/lock"
 )
@@ -78,15 +76,12 @@ type IDPool struct {
 }
 
 // NewIDPool returns a new ID pool
-func NewIDPool(minID ID, maxID ID) *IDPool {
-	p := &IDPool{
-		minID: minID,
-		maxID: maxID,
+func NewIDPool(minID ID, maxID ID) IDPool {
+	return IDPool{
+		minID:   minID,
+		maxID:   maxID,
+		idCache: newIDCache(minID, maxID),
 	}
-
-	p.idCache = newIDCache(p.minID, p.maxID)
-
-	return p
 }
 
 // LeaseAvailableID returns an available ID at random from the pool.
@@ -170,10 +165,7 @@ func newIDCache(minID ID, maxID ID) *idCache {
 		leased: make(map[ID]struct{}),
 	}
 
-	random := rand.New(rand.NewSource(time.Now().UnixNano()))
-	seq := random.Perm(n)
-	for i := 0; i < n; i++ {
-		id := ID(seq[i]) + minID
+	for id := minID; id < maxID+1; id++ {
 		c.ids[id] = struct{}{}
 	}
 

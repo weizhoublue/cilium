@@ -17,20 +17,13 @@ package RuntimeTest
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"strings"
-	"time"
 
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 
 	. "github.com/onsi/gomega"
 )
-
-func init() {
-	// ensure that our random numbers are seeded differently on each run
-	rand.Seed(time.Now().UnixNano())
-}
 
 const (
 	// MonitorDropNotification represents the DropNotification configuration
@@ -40,10 +33,6 @@ const (
 	// MonitorTraceNotification represents the TraceNotification configuration
 	// value for the Cilium monitor
 	MonitorTraceNotification = "TraceNotification"
-
-	// MonitorDebug represents the Debug configuration  value for
-	// the Cilium monitor
-	MonitorDebug = "Debug"
 )
 
 var _ = Describe("RuntimeMonitorTest", func() {
@@ -54,8 +43,19 @@ var _ = Describe("RuntimeMonitorTest", func() {
 		vm = helpers.InitRuntimeHelper(helpers.Runtime, logger)
 		ExpectCiliumReady(vm)
 
+		dbgDone := vm.MonitorDebug(true, "")
+		Expect(dbgDone).Should(BeTrue())
+
 		areEndpointsReady := vm.WaitEndpointsReady()
 		Expect(areEndpointsReady).Should(BeTrue())
+
+		endpoints, err := vm.GetEndpointsIds()
+		Expect(err).Should(BeNil())
+
+		for _, v := range endpoints {
+			dbgDone := vm.MonitorDebug(true, v)
+			Expect(dbgDone).Should(BeTrue())
+		}
 	})
 
 	JustAfterEach(func() {
@@ -68,6 +68,21 @@ var _ = Describe("RuntimeMonitorTest", func() {
 
 	BeforeEach(func() {
 		ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementDefault)
+	})
+
+	AfterAll(func() {
+		endpoints, err := vm.GetEndpointsIds()
+		Expect(err).Should(BeNil())
+
+		for _, v := range endpoints {
+			dbgDone := vm.MonitorDebug(false, v)
+			Expect(dbgDone).Should(BeTrue())
+		}
+
+		dbgDone := vm.MonitorDebug(false, "")
+		Expect(dbgDone).Should(BeTrue())
+
+		vm.CloseSSHClient()
 	})
 
 	Context("With Sample Containers", func() {
@@ -85,8 +100,8 @@ var _ = Describe("RuntimeMonitorTest", func() {
 		})
 
 		monitorConfig := func() {
-			res := vm.ExecCilium(fmt.Sprintf("config %s=true %s=true %s=true",
-				MonitorDebug, MonitorDropNotification, MonitorTraceNotification))
+			res := vm.ExecCilium(fmt.Sprintf("config %s=true %s=true",
+				MonitorDropNotification, MonitorTraceNotification))
 			ExpectWithOffset(1, res.WasSuccessful()).To(BeTrue(), "cannot update monitor config")
 		}
 
@@ -94,7 +109,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			monitorConfig()
 
 			ctx, cancel := context.WithCancel(context.Background())
-			res := vm.ExecInBackground(ctx, "cilium monitor -v")
+			res := vm.ExecInBackground(ctx, "cilium monitor -vv")
 			defer cancel()
 
 			areEndpointsReady := vm.WaitEndpointsReady()
@@ -108,7 +123,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 				vm.ContainerExec(k, helpers.Ping(helpers.Httpd1))
 				Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 					"%q is not in the output after timeout", filter)
-				Expect(res.Output().String()).Should(ContainSubstring(filter))
+				Expect(res.Stdout()).Should(ContainSubstring(filter))
 			}
 		})
 
@@ -132,7 +147,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				res := vm.ExecInBackground(ctx, fmt.Sprintf("cilium monitor --type %s -v", k))
+				res := vm.ExecInBackground(ctx, fmt.Sprintf("cilium monitor --type %s -vv", k))
 
 				vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 				vm.ContainerExec(helpers.App3, helpers.Ping(helpers.Httpd1))
@@ -140,12 +155,12 @@ var _ = Describe("RuntimeMonitorTest", func() {
 				Expect(res.WaitUntilMatch(v)).To(BeNil(),
 					"%q is not in the output after timeout", v)
 				Expect(res.CountLines()).Should(BeNumerically(">", 3))
-				Expect(res.Output().String()).Should(ContainSubstring(v))
+				Expect(res.Stdout()).Should(ContainSubstring(v))
 				cancel()
 			}
 
 			By("all types together")
-			command := "cilium monitor -v"
+			command := "cilium monitor -vv"
 			for k := range eventTypes {
 				command = command + " --type " + k
 			}
@@ -165,7 +180,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			for _, v := range eventTypes {
 				Expect(res.WaitUntilMatch(v)).To(BeNil(),
 					"%q is not in the output after timeout", v)
-				Expect(res.Output().String()).Should(ContainSubstring(v))
+				Expect(res.Stdout()).Should(ContainSubstring(v))
 			}
 
 			Expect(res.CountLines()).Should(BeNumerically(">", 3))
@@ -184,17 +199,17 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			defer cancel()
 
 			res := vm.ExecInBackground(ctx, fmt.Sprintf(
-				"cilium monitor --type debug --from %s -v", endpoints[helpers.App1]))
+				"cilium monitor --type debug --from %s -vv", endpoints[helpers.App1]))
 			vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 
 			filter := fmt.Sprintf("FROM %s DEBUG:", endpoints[helpers.App1])
 			Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 				"%q is not in the output after timeout", filter)
 			Expect(res.CountLines()).Should(BeNumerically(">", 3))
-			Expect(res.Output().String()).Should(ContainSubstring(filter))
+			Expect(res.Stdout()).Should(ContainSubstring(filter))
 
 			//MonitorDebug mode shouldn't have DROP lines
-			Expect(res.Output().String()).ShouldNot(ContainSubstring("DROP"))
+			Expect(res.Stdout()).ShouldNot(ContainSubstring("DROP"))
 		})
 
 		It("cilium monitor check --to", func() {
@@ -209,7 +224,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			res := vm.ExecInBackground(ctx, fmt.Sprintf(
-				"cilium monitor -v --to %s", endpoints[helpers.Httpd1]))
+				"cilium monitor -vv --to %s", endpoints[helpers.Httpd1]))
 
 			vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 			vm.ContainerExec(helpers.App2, helpers.Ping(helpers.Httpd1))
@@ -218,7 +233,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 				"%q is not in the output after timeout", filter)
 			Expect(res.CountLines()).Should(BeNumerically(">=", 3))
-			Expect(res.Output().String()).Should(ContainSubstring(filter))
+			Expect(res.Stdout()).Should(ContainSubstring(filter))
 		})
 
 		It("cilium monitor check --related-to", func() {
@@ -233,7 +248,7 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			res := vm.ExecInBackground(ctx, fmt.Sprintf(
-				"cilium monitor -v --related-to %s", endpoints[helpers.Httpd1]))
+				"cilium monitor -vv --related-to %s", endpoints[helpers.Httpd1]))
 
 			vm.WaitEndpointsReady()
 			vm.ContainerExec(helpers.App1, helpers.CurlFail("http://httpd1/public"))
@@ -242,10 +257,10 @@ var _ = Describe("RuntimeMonitorTest", func() {
 			Expect(res.WaitUntilMatch(filter)).To(BeNil(),
 				"%q is not in the output after timeout", filter)
 			Expect(res.CountLines()).Should(BeNumerically(">=", 3))
-			Expect(res.Output().String()).Should(ContainSubstring(filter))
+			Expect(res.Stdout()).Should(ContainSubstring(filter))
 		})
 
-		It("multiple monitors", func() {
+		It("delivers the same information to multiple monitors", func() {
 			monitorConfig()
 
 			areEndpointsReady := vm.WaitEndpointsReady()
@@ -267,24 +282,52 @@ var _ = Describe("RuntimeMonitorTest", func() {
 
 			Expect(monitorRes[0].CountLines()).Should(BeNumerically(">", 2))
 
-			//Due to the ssh connection, sometimes the result has one line more in
-			//any output. So we check at least 5 lines are in the all outputs.
-			for i := 0; i < 5; i++ {
-				//ln: return a random number in the array len upper than 5 (First 5 lines)
-				ln := rand.Intn((len(monitorRes[0].ByLines())-1)-5) + 5
-				str := monitorRes[0].ByLines()[ln]
-				Expect(monitorRes[1].Output().String()).Should(ContainSubstring(str))
-				Expect(monitorRes[2].Output().String()).Should(ContainSubstring(str))
+			// Some monitor instances may see more data than others due to timing. We
+			// want to find a run of lines that matches between all monitor
+			// instances, ignoring earlier or later lines that may have not been seen
+			// by an instance. We find the shortest sample and check that those lines
+			// occur in all monitor responses.
+			var (
+				// shortestResult is the smallest set of monitor output lines, after we
+				// trim leading init lines.
+				shortestResult string
+
+				// Output lines from each monitor, trimmed to ignore init messages.
+				// The order matches monitorRes.
+				trimmedResults []string
+			)
+
+			// Trim the result lines to ignore startup/shutdown messages like
+			//    "level=info msg="Initializing dissection cache..." subsys=monitor"
+			//    "Received an interrupt, disconnecting from monitor..."
+			// and note the shortest
+			for _, result := range monitorRes {
+				lines := result.ByLines()
+				trimmedResult := make([]string, 0, len(lines))
+				for _, line := range lines {
+					if strings.HasPrefix(line, " <- endpoint") {
+						trimmedResult = append(trimmedResult, line)
+					}
+				}
+				trimmedResults = append(trimmedResults, strings.Join(trimmedResult, "\n"))
+
+				if len(trimmedResult) < len(shortestResult) {
+					shortestResult = strings.Join(trimmedResult, "\n")
+				}
+			}
+
+			// The shortest output must occur in whole within the other outputs
+			for _, trimmedResult := range trimmedResults {
+				Expect(strings.Contains(trimmedResult, shortestResult)).Should(Equal(true),
+					"Inconsistent monitor output between 2 monitor instances during the same time period\nExpected:\n%s\nFound:\n%s\n", shortestResult, trimmedResult)
 			}
 		})
 
 		It("checks container ids match monitor output", func() {
-			res := vm.ExecCilium(fmt.Sprintf("config %s=true", MonitorDebug))
-			res.ExpectSuccess()
 			ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementAlways)
 
 			ctx, cancel := context.WithCancel(context.Background())
-			res = vm.ExecInBackground(ctx, "cilium monitor -v")
+			res := vm.ExecInBackground(ctx, "cilium monitor -vv")
 
 			vm.ContainerExec(helpers.App1, helpers.Ping(helpers.Httpd1))
 			vm.ContainerExec(helpers.Httpd1, helpers.Ping(helpers.App1))
@@ -306,10 +349,8 @@ var _ = Describe("RuntimeMonitorTest", func() {
 					switch fields[i] {
 					case "FROM":
 						fromID = fields[i+1]
-						break
 					case "id":
 						toID = fields[i+1]
-						break
 					}
 				}
 				if fromID == "" || toID == "" {

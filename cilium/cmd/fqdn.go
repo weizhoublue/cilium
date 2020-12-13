@@ -35,6 +35,14 @@ var fqdnCmd = &cobra.Command{
 	},
 }
 
+var fqdnNames = &cobra.Command{
+	Use:   "names",
+	Short: "show internal state Cilium has for DNS names / regexes",
+	Run: func(cmd *cobra.Command, args []string) {
+		listFQDNNames()
+	},
+}
+
 var fqdnCacheCmd = &cobra.Command{
 	Use:   "cache",
 	Short: "Manage fqdn proxy cache",
@@ -60,17 +68,20 @@ var fqdnListCacheCmd = &cobra.Command{
 }
 
 var fqdnCacheMatchPattern string
+var fqdnEndpointID string
 
 func init() {
 	fqdnCacheCmd.AddCommand(fqdnListCacheCmd)
 	fqdnCacheCmd.AddCommand(fqdnCleanCacheCmd)
 	fqdnCmd.AddCommand(fqdnCacheCmd)
+	fqdnCmd.AddCommand(fqdnNames)
 	rootCmd.AddCommand(fqdnCmd)
 
 	fqdnCleanCacheCmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation")
 	fqdnCleanCacheCmd.Flags().StringVarP(&fqdnCacheMatchPattern, "matchpattern", "p", "", "Delete cache entries with FQDNs that match matchpattern")
 
 	fqdnListCacheCmd.Flags().StringVarP(&fqdnCacheMatchPattern, "matchpattern", "p", "", "List cache entries with FQDN that match matchpattern")
+	fqdnListCacheCmd.Flags().StringVarP(&fqdnEndpointID, "endpoint", "e", "", "List cache entries for a specific endpoint id")
 	command.AddJSONOutput(fqdnListCacheCmd)
 }
 
@@ -97,24 +108,47 @@ func cleanFQDNCache() {
 }
 
 func listFQDNCache() {
-	params := policy.NewGetFqdnCacheParams()
-
-	if fqdnCacheMatchPattern != "" {
-		params.SetMatchpattern(&fqdnCacheMatchPattern)
-	}
-
 	var lookups []*models.DNSLookup = []*models.DNSLookup{}
 
-	result, err := client.Policy.GetFqdnCache(params)
-	if err != nil {
-		switch err := err.(type) {
-		case *policy.GetFqdnCacheNotFound:
-			// print out empty lookups slice
-		default:
-			Fatalf("Error: %s\n", err)
+	if fqdnEndpointID != "" {
+		params := policy.NewGetFqdnCacheIDParams()
+
+		if fqdnCacheMatchPattern != "" {
+			params.SetMatchpattern(&fqdnCacheMatchPattern)
+		}
+
+		if fqdnEndpointID != "" {
+			params.SetID(fqdnEndpointID)
+		}
+		result, err := client.Policy.GetFqdnCacheID(params)
+		if err != nil {
+			switch err := err.(type) {
+			case *policy.GetFqdnCacheIDNotFound:
+				// print out empty lookups slice
+			default:
+				Fatalf("Error: %s\n", err)
+			}
+		} else {
+			lookups = result.Payload
 		}
 	} else {
-		lookups = result.Payload
+		params := policy.NewGetFqdnCacheParams()
+
+		if fqdnCacheMatchPattern != "" {
+			params.SetMatchpattern(&fqdnCacheMatchPattern)
+		}
+
+		result, err := client.Policy.GetFqdnCache(params)
+		if err != nil {
+			switch err := err.(type) {
+			case *policy.GetFqdnCacheNotFound:
+				// print out empty lookups slice
+			default:
+				Fatalf("Error: %s\n", err)
+			}
+		} else {
+			lookups = result.Payload
+		}
 	}
 
 	if command.OutputJSON() {
@@ -125,14 +159,25 @@ func listFQDNCache() {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "Endpoint\tFQDN\tTTL\tExpirationTime\tIPs\t")
+	fmt.Fprintln(w, "Endpoint\tSource\tFQDN\tTTL\tExpirationTime\tIPs\t")
 	for _, lookup := range lookups {
-		fmt.Fprintf(w, "%d\t%s\t%d\t%s\t%s\t\n",
+		fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\t%s\t\n",
 			lookup.EndpointID,
+			lookup.Source,
 			lookup.Fqdn,
 			lookup.TTL,
 			lookup.ExpirationTime.String(),
 			strings.Join(lookup.Ips, ","))
 	}
 	w.Flush()
+}
+
+func listFQDNNames() {
+	result, err := client.Policy.GetFqdnNames(nil)
+	if err != nil {
+		Fatalf("Error: %s\n", err)
+	}
+	if err := command.PrintOutputWithType(result.Payload, "json"); err != nil {
+		Fatalf("Unable to print JSON output: %s\n", err)
+	}
 }

@@ -17,11 +17,12 @@
 package cache
 
 import (
+	"context"
 	"testing"
 
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/option"
+	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 
 	. "gopkg.in/check.v1"
 )
@@ -46,34 +47,27 @@ type IdentityCacheTestSuite struct{}
 
 var _ = Suite(&IdentityCacheTestSuite{})
 
-func (s *IdentityCacheTestSuite) SetUpTest(c *C) {
-	option.Config.K8sNamespace = "kube-system"
-}
-
 func (s *IdentityCacheTestSuite) TestLookupReservedIdentity(c *C) {
-	bak := option.Config.ClusterName
-	option.Config.ClusterName = "default"
-	defer func() {
-		option.Config.ClusterName = bak
-	}()
+	mgr := NewCachingIdentityAllocator(newDummyOwner())
+	<-mgr.InitIdentityAllocator(nil, nil)
 
 	hostID := identity.GetReservedID("host")
-	c.Assert(LookupIdentityByID(hostID), Not(IsNil))
+	c.Assert(mgr.LookupIdentityByID(context.TODO(), hostID), Not(IsNil))
 
-	id := LookupIdentity(labels.NewLabelsFromModel([]string{"reserved:host"}))
+	id := mgr.LookupIdentity(context.TODO(), labels.NewLabelsFromModel([]string{"reserved:host"}))
 	c.Assert(id, Not(IsNil))
 	c.Assert(id.ID, Equals, hostID)
 
 	worldID := identity.GetReservedID("world")
-	c.Assert(LookupIdentityByID(worldID), Not(IsNil))
+	c.Assert(mgr.LookupIdentityByID(context.TODO(), worldID), Not(IsNil))
 
-	id = LookupIdentity(labels.NewLabelsFromModel([]string{"reserved:world"}))
+	id = mgr.LookupIdentity(context.TODO(), labels.NewLabelsFromModel([]string{"reserved:world"}))
 	c.Assert(id, Not(IsNil))
 	c.Assert(id.ID, Equals, worldID)
 
-	identity.InitWellKnownIdentities()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 
-	id = LookupIdentity(kvstoreLabels)
+	id = mgr.LookupIdentity(context.TODO(), kvstoreLabels)
 	c.Assert(id, Not(IsNil))
 	c.Assert(id.ID, Equals, identity.ReservedCiliumKVStore)
 }
@@ -121,7 +115,11 @@ func (s *IdentityCacheTestSuite) TestLookupReservedIdentityByLabels(c *C) {
 					"id.foo":                   labels.ParseLabel("id.foo"),
 				},
 			},
-			want: nil,
+			want: identity.NewIdentity(identity.ReservedIdentityHost, labels.Labels{
+				labels.LabelSourceReserved: labels.ParseLabel("reserved:host"),
+				"id.foo":                   labels.ParseLabel("id.foo"),
+			},
+			),
 		},
 		{
 			name: "well-known-kvstore",
@@ -133,7 +131,7 @@ func (s *IdentityCacheTestSuite) TestLookupReservedIdentityByLabels(c *C) {
 	}
 
 	for _, tt := range tests {
-		got := LookupReservedIdentityByLabels(tt.args.lbls)
+		got := identity.LookupReservedIdentityByLabels(tt.args.lbls)
 		switch {
 		case got == nil && tt.want == nil:
 		case got == nil && tt.want != nil ||

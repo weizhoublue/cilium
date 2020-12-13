@@ -22,21 +22,142 @@ import (
 	"strings"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/metrics"
-
-	"github.com/sirupsen/logrus"
+	"github.com/cilium/cilium/pkg/cidr"
 )
 
-var (
-	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "loadbalancer")
+// SVCType is a type of a service.
+type SVCType string
 
-	updateMetric = metrics.ServicesCount.WithLabelValues("update")
-	deleteMetric = metrics.ServicesCount.WithLabelValues("delete")
-	addMetric    = metrics.ServicesCount.WithLabelValues("add")
+const (
+	SVCTypeNone          = SVCType("NONE")
+	SVCTypeHostPort      = SVCType("HostPort")
+	SVCTypeClusterIP     = SVCType("ClusterIP")
+	SVCTypeNodePort      = SVCType("NodePort")
+	SVCTypeExternalIPs   = SVCType("ExternalIPs")
+	SVCTypeLoadBalancer  = SVCType("LoadBalancer")
+	SVCTypeLocalRedirect = SVCType("LocalRedirect")
 )
+
+// SVCTrafficPolicy defines which backends are chosen
+type SVCTrafficPolicy string
+
+const (
+	SVCTrafficPolicyNone    = SVCTrafficPolicy("NONE")
+	SVCTrafficPolicyCluster = SVCTrafficPolicy("Cluster")
+	SVCTrafficPolicyLocal   = SVCTrafficPolicy("Local")
+)
+
+// ServiceFlags is the datapath representation of the service flags that can be
+// used (lb{4,6}_service.flags)
+type ServiceFlags uint16
+
+const (
+	serviceFlagNone            = 0
+	serviceFlagExternalIPs     = 1 << 0
+	serviceFlagNodePort        = 1 << 1
+	serviceFlagLocalScope      = 1 << 2
+	serviceFlagHostPort        = 1 << 3
+	serviceFlagSessionAffinity = 1 << 4
+	serviceFlagLoadBalancer    = 1 << 5
+	serviceFlagRoutable        = 1 << 6
+	serviceFlagSourceRange     = 1 << 7
+	serviceFlagLocalRedirect   = 1 << 8
+)
+
+type SvcFlagParam struct {
+	SvcType          SVCType
+	SvcLocal         bool
+	SessionAffinity  bool
+	IsRoutable       bool
+	CheckSourceRange bool
+}
+
+// NewSvcFlag creates service flag
+func NewSvcFlag(p *SvcFlagParam) ServiceFlags {
+	var flags ServiceFlags
+
+	switch p.SvcType {
+	case SVCTypeExternalIPs:
+		flags |= serviceFlagExternalIPs
+	case SVCTypeNodePort:
+		flags |= serviceFlagNodePort
+	case SVCTypeLoadBalancer:
+		flags |= serviceFlagLoadBalancer
+	case SVCTypeHostPort:
+		flags |= serviceFlagHostPort
+	case SVCTypeLocalRedirect:
+		flags |= serviceFlagLocalRedirect
+	}
+
+	if p.SvcLocal {
+		flags |= serviceFlagLocalScope
+	}
+	if p.SessionAffinity {
+		flags |= serviceFlagSessionAffinity
+	}
+	if p.IsRoutable {
+		flags |= serviceFlagRoutable
+	}
+	if p.CheckSourceRange {
+		flags |= serviceFlagSourceRange
+	}
+
+	return flags
+}
+
+// SVCType returns a service type from the flags
+func (s ServiceFlags) SVCType() SVCType {
+	switch {
+	case s&serviceFlagExternalIPs != 0:
+		return SVCTypeExternalIPs
+	case s&serviceFlagNodePort != 0:
+		return SVCTypeNodePort
+	case s&serviceFlagLoadBalancer != 0:
+		return SVCTypeLoadBalancer
+	case s&serviceFlagHostPort != 0:
+		return SVCTypeHostPort
+	case s&serviceFlagLocalRedirect != 0:
+		return SVCTypeLocalRedirect
+	default:
+		return SVCTypeClusterIP
+	}
+}
+
+// SVCTrafficPolicy returns a service traffic policy from the flags
+func (s ServiceFlags) SVCTrafficPolicy() SVCTrafficPolicy {
+	switch {
+	case s&serviceFlagLocalScope != 0:
+		return SVCTrafficPolicyLocal
+	default:
+		return SVCTrafficPolicyCluster
+	}
+}
+
+// String returns the string implementation of ServiceFlags.
+func (s ServiceFlags) String() string {
+	var str []string
+
+	str = append(str, string(s.SVCType()))
+	if s&serviceFlagLocalScope != 0 {
+		str = append(str, string(SVCTrafficPolicyLocal))
+	}
+	if s&serviceFlagSessionAffinity != 0 {
+		str = append(str, "sessionAffinity")
+	}
+	if s&serviceFlagRoutable == 0 {
+		str = append(str, "non-routable")
+	}
+	if s&serviceFlagSourceRange != 0 {
+		str = append(str, "check source-range")
+	}
+
+	return strings.Join(str, ", ")
+}
+
+// UInt8 returns the UInt16 representation of the ServiceFlags.
+func (s ServiceFlags) UInt16() uint16 {
+	return uint16(s)
+}
 
 const (
 	NONE = L4Type("NONE")
@@ -46,13 +167,20 @@ const (
 	UDP = L4Type("UDP")
 )
 
+const (
+	// ScopeExternal is the lookup scope for services from outside the node.
+	ScopeExternal = 0
+	// ScopeInternal is the lookup scope for services from inside the node.
+	ScopeInternal = 1
+)
+
 var (
 	// AllProtocols is the list of all supported L4 protocols
 	AllProtocols = []L4Type{TCP, UDP}
 )
 
 // L4Type name.
-type L4Type string
+type L4Type = string
 
 // FEPortName is the name of the frontend's port.
 type FEPortName string
@@ -66,49 +194,67 @@ type BackendID uint16
 // ID is the ID of L3n4Addr endpoint (either service or backend).
 type ID uint32
 
-// LBBackEnd represents load balancer backend.
-type LBBackEnd struct {
+// Backend represents load balancer backend.
+type Backend struct {
+	// ID of the backend
 	ID BackendID
+	// Node hosting this backend. This is used to determine backends local to
+	// a node.
+	NodeName string
 	L3n4Addr
-	Weight uint16
 }
 
-func (lbbe *LBBackEnd) String() string {
-	return fmt.Sprintf("%s, weight: %d", lbbe.L3n4Addr.String(), lbbe.Weight)
+func (b *Backend) String() string {
+	return b.L3n4Addr.String()
 }
 
-// LBSVC is essentially used for the REST API.
-type LBSVC struct {
-	Sha256 string
-	FE     L3n4AddrID
-	BES    []LBBackEnd
+// SVC is a structure for storing service details.
+type SVC struct {
+	Frontend                  L3n4AddrID       // SVC frontend addr and an allocated ID
+	Backends                  []Backend        // List of service backends
+	Type                      SVCType          // Service type
+	TrafficPolicy             SVCTrafficPolicy // Service traffic policy
+	SessionAffinity           bool
+	SessionAffinityTimeoutSec uint32
+	HealthCheckNodePort       uint16 // Service health check node port
+	Name                      string // Service name
+	Namespace                 string // Service namespace
+	LoadBalancerSourceRanges  []*cidr.CIDR
 }
 
-type backendPlacement struct {
-	pos int
-	id  BackendID
-}
+func (s *SVC) GetModel() *models.Service {
+	type backendPlacement struct {
+		pos int
+		id  BackendID
+	}
 
-func (s *LBSVC) GetModel() *models.Service {
 	if s == nil {
 		return nil
 	}
 
-	id := int64(s.FE.ID)
+	id := int64(s.Frontend.ID)
 	spec := &models.ServiceSpec{
 		ID:               id,
-		FrontendAddress:  s.FE.GetModel(),
-		BackendAddresses: make([]*models.BackendAddress, len(s.BES)),
+		FrontendAddress:  s.Frontend.GetModel(),
+		BackendAddresses: make([]*models.BackendAddress, len(s.Backends)),
+		Flags: &models.ServiceSpecFlags{
+			Type:                string(s.Type),
+			TrafficPolicy:       string(s.TrafficPolicy),
+			HealthCheckNodePort: s.HealthCheckNodePort,
+
+			Name:      s.Name,
+			Namespace: s.Namespace,
+		},
 	}
 
-	placements := make([]backendPlacement, len(s.BES))
-	for i, be := range s.BES {
+	placements := make([]backendPlacement, len(s.Backends))
+	for i, be := range s.Backends {
 		placements[i] = backendPlacement{pos: i, id: be.ID}
 	}
 	sort.Slice(placements,
 		func(i, j int) bool { return placements[i].id < placements[j].id })
 	for i, placement := range placements {
-		spec.BackendAddresses[i] = s.BES[placement.pos].GetBackendModel()
+		spec.BackendAddresses[i] = s.Backends[placement.pos].GetBackendModel()
 	}
 
 	return &models.Service{
@@ -119,58 +265,6 @@ func (s *LBSVC) GetModel() *models.Service {
 	}
 }
 
-// SVCMap is a map of the daemon's services. The key is the sha256sum of the LBSVC's FE
-// and the value the LBSVC.
-type SVCMap map[string]LBSVC
-
-// SVCMapID maps service IDs to service structures.
-type SVCMapID map[ServiceID]*LBSVC
-
-// RevNATMap is a map of the daemon's RevNATs.
-type RevNATMap map[ServiceID]L3n4Addr
-
-// LoadBalancer is the internal representation of the loadbalancer in the local cilium
-// daemon.
-type LoadBalancer struct {
-	BPFMapMU  lock.RWMutex
-	SVCMap    SVCMap
-	SVCMapID  SVCMapID
-	RevNATMap RevNATMap
-}
-
-// AddService adds a service to list of loadbalancers and returns true if created.
-func (lb *LoadBalancer) AddService(svc LBSVC) bool {
-	scopedLog := log.WithFields(logrus.Fields{
-		logfields.ServiceName: svc.FE.String(),
-		logfields.SHA:         svc.Sha256,
-	})
-
-	oldSvc, ok := lb.SVCMapID[ServiceID(svc.FE.ID)]
-	if ok {
-		// If service already existed, remove old entry from Cilium's map
-		scopedLog.Debug("service is already in lb.SVCMapID; deleting old entry and updating it with new entry")
-		delete(lb.SVCMap, oldSvc.Sha256)
-		updateMetric.Inc()
-	} else {
-		addMetric.Inc()
-	}
-	scopedLog.Debug("adding service to loadbalancer")
-	lb.SVCMap[svc.Sha256] = svc
-	lb.SVCMapID[ServiceID(svc.FE.ID)] = &svc
-	return !ok
-}
-
-// DeleteService deletes svc from lb's SVCMap and SVCMapID.
-func (lb *LoadBalancer) DeleteService(svc *LBSVC) {
-	log.WithFields(logrus.Fields{
-		logfields.ServiceName: svc.FE.String(),
-		logfields.SHA:         svc.Sha256,
-	}).Debug("deleting service from loadbalancer")
-	delete(lb.SVCMap, svc.Sha256)
-	delete(lb.SVCMapID, ServiceID(svc.FE.ID))
-	deleteMetric.Inc()
-}
-
 func NewL4Type(name string) (L4Type, error) {
 	switch strings.ToLower(name) {
 	case "tcp":
@@ -178,16 +272,7 @@ func NewL4Type(name string) (L4Type, error) {
 	case "udp":
 		return UDP, nil
 	default:
-		return "", fmt.Errorf("Unknown L4 protocol")
-	}
-}
-
-// NewLoadBalancer returns a LoadBalancer with all maps initialized.
-func NewLoadBalancer() *LoadBalancer {
-	return &LoadBalancer{
-		SVCMap:    SVCMap{},
-		SVCMapID:  SVCMapID{},
-		RevNATMap: RevNATMap{},
+		return "", fmt.Errorf("unknown L4 protocol")
 	}
 }
 
@@ -222,63 +307,33 @@ func (l *L4Addr) DeepCopy() *L4Addr {
 	}
 }
 
-// FEPort represents a frontend port with its ID and the L4Addr's inheritance.
-type FEPort struct {
-	*L4Addr
-	ID ServiceID
-}
-
-// NewFEPort creates a new FEPort with the ID set to 0.
-func NewFEPort(protocol L4Type, portNumber uint16) *FEPort {
-	return &FEPort{L4Addr: NewL4Addr(protocol, portNumber)}
-}
-
-// EqualsIgnoreID returns true if both L4Addr are considered equal without
-// comparing its ID.
-func (f *FEPort) EqualsIgnoreID(o *FEPort) bool {
-	switch {
-	case (f == nil) != (o == nil):
-		return false
-	case (f == nil) && (o == nil):
-		return true
-	}
-	return f.L4Addr.Equals(o.L4Addr)
-}
-
-// Equals returns true if both L4Addr are considered equal.
-func (f *FEPort) Equals(o *FEPort) bool {
-	switch {
-	case (f == nil) != (o == nil):
-		return false
-	case (f == nil) && (o == nil):
-		return true
-	}
-	return f.EqualsIgnoreID(o) && f.ID == o.ID
-}
-
-// L3n4Addr is used to store, as an unique L3+L4 address in the KVStore.
+// L3n4Addr is used to store, as an unique L3+L4 address in the KVStore. It also
+// includes the lookup scope for frontend addresses which is used in service
+// handling for externalTrafficPolicy=Local, that is, Scope{External,Internal}.
 type L3n4Addr struct {
 	IP net.IP
 	L4Addr
+	Scope uint8
 }
 
 // NewL3n4Addr creates a new L3n4Addr.
-func NewL3n4Addr(protocol L4Type, ip net.IP, portNumber uint16) *L3n4Addr {
+func NewL3n4Addr(protocol L4Type, ip net.IP, portNumber uint16, scope uint8) *L3n4Addr {
 	lbport := NewL4Addr(protocol, portNumber)
 
-	addr := L3n4Addr{IP: ip, L4Addr: *lbport}
-	log.WithField(logfields.IPAddr, addr).Debug("created new L3n4Addr")
+	addr := L3n4Addr{IP: ip, L4Addr: *lbport, Scope: scope}
 
 	return &addr
 }
 
 func NewL3n4AddrFromModel(base *models.FrontendAddress) (*L3n4Addr, error) {
+	var scope uint8
+
 	if base == nil {
 		return nil, nil
 	}
 
 	if base.IP == "" {
-		return nil, fmt.Errorf("Missing IP address")
+		return nil, fmt.Errorf("missing IP address")
 	}
 
 	proto := NONE
@@ -293,53 +348,56 @@ func NewL3n4AddrFromModel(base *models.FrontendAddress) (*L3n4Addr, error) {
 	l4addr := NewL4Addr(proto, base.Port)
 	ip := net.ParseIP(base.IP)
 	if ip == nil {
-		return nil, fmt.Errorf("Invalid IP address \"%s\"", base.IP)
+		return nil, fmt.Errorf("invalid IP address \"%s\"", base.IP)
 	}
 
-	return &L3n4Addr{IP: ip, L4Addr: *l4addr}, nil
+	if base.Scope == models.FrontendAddressScopeExternal {
+		scope = ScopeExternal
+	} else if base.Scope == models.FrontendAddressScopeInternal {
+		scope = ScopeInternal
+	} else {
+		return nil, fmt.Errorf("invalid scope \"%s\"", base.Scope)
+	}
+
+	return &L3n4Addr{IP: ip, L4Addr: *l4addr, Scope: scope}, nil
 }
 
-// NewLBBackEnd creates the LBBackEnd struct instance from given params.
-func NewLBBackEnd(id BackendID, protocol L4Type, ip net.IP, portNumber uint16, weight uint16) *LBBackEnd {
+// NewBackend creates the Backend struct instance from given params.
+func NewBackend(id BackendID, protocol L4Type, ip net.IP, portNumber uint16) *Backend {
 	lbport := NewL4Addr(protocol, portNumber)
-	lbbe := LBBackEnd{
+	b := Backend{
 		ID:       BackendID(id),
 		L3n4Addr: L3n4Addr{IP: ip, L4Addr: *lbport},
-		Weight:   weight,
 	}
-	log.WithField("backend", lbbe).Debug("created new LBBackend")
 
-	return &lbbe
+	return &b
 }
 
-func NewLBBackEndFromBackendModel(base *models.BackendAddress) (*LBBackEnd, error) {
+func NewBackendFromBackendModel(base *models.BackendAddress) (*Backend, error) {
 	if base.IP == nil {
-		return nil, fmt.Errorf("Missing IP address")
+		return nil, fmt.Errorf("missing IP address")
 	}
 
 	// FIXME: Should this be NONE ?
 	l4addr := NewL4Addr(NONE, base.Port)
 	ip := net.ParseIP(*base.IP)
 	if ip == nil {
-		return nil, fmt.Errorf("Invalid IP address \"%s\"", *base.IP)
+		return nil, fmt.Errorf("invalid IP address \"%s\"", *base.IP)
 	}
 
-	return &LBBackEnd{
-		L3n4Addr: L3n4Addr{IP: ip, L4Addr: *l4addr},
-		Weight:   base.Weight,
-	}, nil
+	return &Backend{NodeName: base.NodeName, L3n4Addr: L3n4Addr{IP: ip, L4Addr: *l4addr}}, nil
 }
 
 func NewL3n4AddrFromBackendModel(base *models.BackendAddress) (*L3n4Addr, error) {
 	if base.IP == nil {
-		return nil, fmt.Errorf("Missing IP address")
+		return nil, fmt.Errorf("missing IP address")
 	}
 
 	// FIXME: Should this be NONE ?
 	l4addr := NewL4Addr(NONE, base.Port)
 	ip := net.ParseIP(*base.IP)
 	if ip == nil {
-		return nil, fmt.Errorf("Invalid IP address \"%s\"", *base.IP)
+		return nil, fmt.Errorf("invalid IP address \"%s\"", *base.IP)
 	}
 	return &L3n4Addr{IP: ip, L4Addr: *l4addr}, nil
 }
@@ -349,41 +407,54 @@ func (a *L3n4Addr) GetModel() *models.FrontendAddress {
 		return nil
 	}
 
+	scope := models.FrontendAddressScopeExternal
+	if a.Scope == ScopeInternal {
+		scope = models.FrontendAddressScopeInternal
+	}
 	return &models.FrontendAddress{
-		IP:   a.IP.String(),
-		Port: a.Port,
+		IP:    a.IP.String(),
+		Port:  a.Port,
+		Scope: scope,
 	}
 }
 
-func (b *LBBackEnd) GetBackendModel() *models.BackendAddress {
+func (b *Backend) GetBackendModel() *models.BackendAddress {
 	if b == nil {
 		return nil
 	}
 
 	ip := b.IP.String()
 	return &models.BackendAddress{
-		IP:     &ip,
-		Port:   b.Port,
-		Weight: b.Weight,
+		IP:       &ip,
+		Port:     b.Port,
+		NodeName: b.NodeName,
 	}
 }
 
-// String returns the L3n4Addr in the "IPv4:Port" format for IPv4 and
-// "[IPv6]:Port" format for IPv6.
+// String returns the L3n4Addr in the "IPv4:Port[/Scope]" format for IPv4 and
+// "[IPv6]:Port[/Scope]" format for IPv6.
 func (a *L3n4Addr) String() string {
-	if a.IsIPv6() {
-		return fmt.Sprintf("[%s]:%d", a.IP.String(), a.Port)
+	var scope string
+	if a.Scope == ScopeInternal {
+		scope = "/i"
 	}
-	return fmt.Sprintf("%s:%d", a.IP.String(), a.Port)
+	if a.IsIPv6() {
+		return fmt.Sprintf("[%s]:%d%s", a.IP.String(), a.Port, scope)
+	}
+	return fmt.Sprintf("%s:%d%s", a.IP.String(), a.Port, scope)
 }
 
-// StringWithProtocol returns the L3n4Addr in the "IPv4:Port/Protocol" format
-// for IPv4 and "[IPv6]:Port/Protocol" format for IPv6.
+// StringWithProtocol returns the L3n4Addr in the "IPv4:Port/Protocol[/Scope]"
+// format for IPv4 and "[IPv6]:Port/Protocol[/Scope]" format for IPv6.
 func (a *L3n4Addr) StringWithProtocol() string {
-	if a.IsIPv6() {
-		return fmt.Sprintf("[%s]:%d/%s", a.IP.String(), a.Port, a.Protocol)
+	var scope string
+	if a.Scope == ScopeInternal {
+		scope = "/i"
 	}
-	return fmt.Sprintf("%s:%d/%s", a.IP.String(), a.Port, a.Protocol)
+	if a.IsIPv6() {
+		return fmt.Sprintf("[%s]:%d/%s%s", a.IP.String(), a.Port, a.Protocol, scope)
+	}
+	return fmt.Sprintf("%s:%d/%s%s", a.IP.String(), a.Port, a.Protocol, scope)
 }
 
 // StringID returns the L3n4Addr as string to be used for unique identification
@@ -400,11 +471,12 @@ func (a *L3n4Addr) DeepCopy() *L3n4Addr {
 	return &L3n4Addr{
 		IP:     copyIP,
 		L4Addr: *a.L4Addr.DeepCopy(),
+		Scope:  a.Scope,
 	}
 }
 
-// SHA256Sum calculates L3n4Addr's internal SHA256Sum.
-func (a L3n4Addr) SHA256Sum() string {
+// Hash calculates L3n4Addr's internal SHA256Sum.
+func (a L3n4Addr) Hash() string {
 	// FIXME: Remove Protocol's omission once we care about protocols.
 	protoBak := a.Protocol
 	a.Protocol = ""
@@ -429,18 +501,9 @@ type L3n4AddrID struct {
 }
 
 // NewL3n4AddrID creates a new L3n4AddrID.
-func NewL3n4AddrID(protocol L4Type, ip net.IP, portNumber uint16, id ID) *L3n4AddrID {
-	l3n4Addr := NewL3n4Addr(protocol, ip, portNumber)
+func NewL3n4AddrID(protocol L4Type, ip net.IP, portNumber uint16, scope uint8, id ID) *L3n4AddrID {
+	l3n4Addr := NewL3n4Addr(protocol, ip, portNumber, scope)
 	return &L3n4AddrID{L3n4Addr: *l3n4Addr, ID: id}
-}
-
-// DeepCopy returns a DeepCopy of the given L3n4AddrID.
-func (l *L3n4AddrID) DeepCopy() *L3n4AddrID {
-	return &L3n4AddrID{
-		L3n4Addr: *l.L3n4Addr.DeepCopy(),
-		ID:       l.ID,
-	}
-
 }
 
 // IsIPv6 returns true if the IP address in L3n4Addr's L3n4AddrID is IPv6 or not.
@@ -448,52 +511,27 @@ func (l *L3n4AddrID) IsIPv6() bool {
 	return l.L3n4Addr.IsIPv6()
 }
 
-// AddFEnBE adds the given 'fe' and 'be' to the SVCMap. If 'fe' exists and beIndex is 0,
-// the new 'be' will be appended to the list of existing backends. If beIndex is bigger
-// than the size of existing backends slice, it will be created a new array with size of
-// beIndex and the new 'be' will be inserted on index beIndex-1 of that new array. All
-// remaining be elements will be kept on the same index and, in case the new array is
-// larger than the number of backends, some elements will be empty.
-func (svcs SVCMap) AddFEnBE(fe *L3n4AddrID, be *LBBackEnd, beIndex int) *LBSVC {
-	log.WithFields(logrus.Fields{
-		"frontend":     fe,
-		"backend":      be,
-		"backendIndex": beIndex,
-	}).Debug("adding frontend and backend to SVCMap")
-	sha := fe.SHA256Sum()
-
-	var lbsvc LBSVC
-	lbsvc, ok := svcs[sha]
-	if !ok {
-		var bes []LBBackEnd
-		if beIndex == 0 {
-			bes = make([]LBBackEnd, 1)
-			bes[0] = *be
-		} else {
-			bes = make([]LBBackEnd, beIndex)
-			bes[beIndex-1] = *be
-		}
-		lbsvc = LBSVC{
-			FE:  *fe,
-			BES: bes,
-		}
-	} else {
-		var bes []LBBackEnd
-		if len(lbsvc.BES) < beIndex {
-			bes = make([]LBBackEnd, beIndex)
-			for i, lbsvcBE := range lbsvc.BES {
-				bes[i] = lbsvcBE
-			}
-			lbsvc.BES = bes
-		}
-		if beIndex == 0 {
-			lbsvc.BES = append(lbsvc.BES, *be)
-		} else {
-			lbsvc.BES[beIndex-1] = *be
-		}
+// Equals checks equality of both given addresses.
+func (l *L3n4AddrID) Equals(o *L3n4AddrID) bool {
+	switch {
+	case (l == nil) != (o == nil):
+		return false
+	case (l == nil) && (o == nil):
+		return true
 	}
 
-	lbsvc.Sha256 = sha
-	svcs[sha] = lbsvc
-	return &lbsvc
+	if l.ID != o.ID {
+		return false
+	}
+	if l.Scope != o.Scope {
+		return false
+	}
+	if !l.IP.Equal(o.IP) {
+		return false
+	}
+	if !l.L4Addr.Equals(&o.L4Addr) {
+		return false
+	}
+
+	return true
 }

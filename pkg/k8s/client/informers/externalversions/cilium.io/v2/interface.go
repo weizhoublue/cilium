@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,10 +22,20 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// CiliumClusterwideNetworkPolicies returns a CiliumClusterwideNetworkPolicyInformer.
+	CiliumClusterwideNetworkPolicies() CiliumClusterwideNetworkPolicyInformer
 	// CiliumEndpoints returns a CiliumEndpointInformer.
 	CiliumEndpoints() CiliumEndpointInformer
+	// CiliumExternalWorkloads returns a CiliumExternalWorkloadInformer.
+	CiliumExternalWorkloads() CiliumExternalWorkloadInformer
+	// CiliumIdentities returns a CiliumIdentityInformer.
+	CiliumIdentities() CiliumIdentityInformer
+	// CiliumLocalRedirectPolicies returns a CiliumLocalRedirectPolicyInformer.
+	CiliumLocalRedirectPolicies() CiliumLocalRedirectPolicyInformer
 	// CiliumNetworkPolicies returns a CiliumNetworkPolicyInformer.
 	CiliumNetworkPolicies() CiliumNetworkPolicyInformer
+	// CiliumNodes returns a CiliumNodeInformer.
+	CiliumNodes() CiliumNodeInformer
 }
 
 type version struct {
@@ -39,12 +49,37 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
+// CiliumClusterwideNetworkPolicies returns a CiliumClusterwideNetworkPolicyInformer.
+func (v *version) CiliumClusterwideNetworkPolicies() CiliumClusterwideNetworkPolicyInformer {
+	return &ciliumClusterwideNetworkPolicyInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
 // CiliumEndpoints returns a CiliumEndpointInformer.
 func (v *version) CiliumEndpoints() CiliumEndpointInformer {
 	return &ciliumEndpointInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
+// CiliumExternalWorkloads returns a CiliumExternalWorkloadInformer.
+func (v *version) CiliumExternalWorkloads() CiliumExternalWorkloadInformer {
+	return &ciliumExternalWorkloadInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// CiliumIdentities returns a CiliumIdentityInformer.
+func (v *version) CiliumIdentities() CiliumIdentityInformer {
+	return &ciliumIdentityInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// CiliumLocalRedirectPolicies returns a CiliumLocalRedirectPolicyInformer.
+func (v *version) CiliumLocalRedirectPolicies() CiliumLocalRedirectPolicyInformer {
+	return &ciliumLocalRedirectPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
 // CiliumNetworkPolicies returns a CiliumNetworkPolicyInformer.
 func (v *version) CiliumNetworkPolicies() CiliumNetworkPolicyInformer {
 	return &ciliumNetworkPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// CiliumNodes returns a CiliumNodeInformer.
+func (v *version) CiliumNodes() CiliumNodeInformer {
+	return &ciliumNodeInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

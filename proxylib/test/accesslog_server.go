@@ -21,12 +21,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/cilium/proxy/go/cilium/api"
+
 	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 type AccessLogServer struct {
@@ -92,7 +93,7 @@ func StartAccessLogServer(accessLogName string, bufSize int) *AccessLogServer {
 		log.Fatalf("Failed to change mode of access log listen socket at %s: %v", accessLogPath, err)
 	}
 
-	log.Info("Starting Access Log Server")
+	log.Debug("Starting Access Log Server")
 	go func() {
 		for {
 			// Each Envoy listener opens a new connection over the Unix domain socket.
@@ -108,7 +109,7 @@ func StartAccessLogServer(accessLogName string, bufSize int) *AccessLogServer {
 				log.WithError(err).Warn("Failed to accept access log connection")
 				continue
 			}
-			log.Info("Accepted access log connection")
+			log.Debug("Accepted access log connection")
 
 			server.conns = append(server.conns, uc)
 			// Serve this access log socket in a goroutine, so we can serve multiple
@@ -129,7 +130,7 @@ func isEOF(err error) bool {
 
 func (s *AccessLogServer) accessLogger(conn *net.UnixConn) {
 	defer func() {
-		log.Info("Closing access log connection")
+		log.Debug("Closing access log connection")
 		conn.Close()
 	}()
 
@@ -142,7 +143,7 @@ func (s *AccessLogServer) accessLogger(conn *net.UnixConn) {
 			}
 			break
 		}
-		if flags&syscall.MSG_TRUNC != 0 {
+		if flags&unix.MSG_TRUNC != 0 {
 			log.Warning("Discarded truncated access log message")
 			continue
 		}
@@ -153,7 +154,7 @@ func (s *AccessLogServer) accessLogger(conn *net.UnixConn) {
 			continue
 		}
 
-		log.Infof("Access log message: %s", pblog.String())
+		log.Debugf("Access log message: %s", pblog.String())
 		s.Logs <- pblog
 	}
 }

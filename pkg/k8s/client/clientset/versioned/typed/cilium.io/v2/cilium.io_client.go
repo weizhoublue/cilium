@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,14 +19,18 @@ package v2
 import (
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/scheme"
-	serializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	rest "k8s.io/client-go/rest"
 )
 
 type CiliumV2Interface interface {
 	RESTClient() rest.Interface
+	CiliumClusterwideNetworkPoliciesGetter
 	CiliumEndpointsGetter
+	CiliumExternalWorkloadsGetter
+	CiliumIdentitiesGetter
+	CiliumLocalRedirectPoliciesGetter
 	CiliumNetworkPoliciesGetter
+	CiliumNodesGetter
 }
 
 // CiliumV2Client is used to interact with features provided by the cilium.io group.
@@ -34,12 +38,32 @@ type CiliumV2Client struct {
 	restClient rest.Interface
 }
 
+func (c *CiliumV2Client) CiliumClusterwideNetworkPolicies() CiliumClusterwideNetworkPolicyInterface {
+	return newCiliumClusterwideNetworkPolicies(c)
+}
+
 func (c *CiliumV2Client) CiliumEndpoints(namespace string) CiliumEndpointInterface {
 	return newCiliumEndpoints(c, namespace)
 }
 
+func (c *CiliumV2Client) CiliumExternalWorkloads() CiliumExternalWorkloadInterface {
+	return newCiliumExternalWorkloads(c)
+}
+
+func (c *CiliumV2Client) CiliumIdentities() CiliumIdentityInterface {
+	return newCiliumIdentities(c)
+}
+
+func (c *CiliumV2Client) CiliumLocalRedirectPolicies(namespace string) CiliumLocalRedirectPolicyInterface {
+	return newCiliumLocalRedirectPolicies(c, namespace)
+}
+
 func (c *CiliumV2Client) CiliumNetworkPolicies(namespace string) CiliumNetworkPolicyInterface {
 	return newCiliumNetworkPolicies(c, namespace)
+}
+
+func (c *CiliumV2Client) CiliumNodes() CiliumNodeInterface {
+	return newCiliumNodes(c)
 }
 
 // NewForConfig creates a new CiliumV2Client for the given config.
@@ -74,7 +98,7 @@ func setConfigDefaults(config *rest.Config) error {
 	gv := v2.SchemeGroupVersion
 	config.GroupVersion = &gv
 	config.APIPath = "/apis"
-	config.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: scheme.Codecs}
+	config.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
 
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()

@@ -1,4 +1,4 @@
-// Copyright 2017 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package ip
 
 import (
+	"math/big"
 	"math/rand"
 	"net"
 	"sort"
@@ -37,18 +38,21 @@ func Test(t *testing.T) {
 }
 
 func (s *IPTestSuite) TestCountIPs(c *C) {
-	tests := map[string]int{
-		"192.168.0.1/32": 1,
-		"192.168.0.1/31": 1,
-		"192.168.0.1/30": 3,
-		"192.168.0.1/24": 255,
-		"192.168.0.1/16": 65535,
-		"::1/128":        1,
-		"::1/120":        255,
+	tests := map[string]*big.Int{
+		"192.168.0.1/32": big.NewInt(1),
+		"192.168.0.1/31": big.NewInt(1),
+		"192.168.0.1/30": big.NewInt(3),
+		"192.168.0.1/24": big.NewInt(255),
+		"192.168.0.1/16": big.NewInt(65535),
+		"::1/128":        big.NewInt(1),
+		"::1/120":        big.NewInt(255),
+		"fd02:1::/32":    big.NewInt(0).Sub(big.NewInt(2).Exp(big.NewInt(2), big.NewInt(96), nil), big.NewInt(1)),
 	}
 	for cidr, nIPs := range tests {
-		count := CountIPsInCIDR(cidr)
-		c.Assert(count, Equals, nIPs)
+		_, ipnet, err := net.ParseCIDR(cidr)
+		c.Assert(err, IsNil)
+		count := CountIPsInCIDR(ipnet)
+		c.Assert(count, checker.DeepEquals, nIPs)
 	}
 }
 
@@ -691,5 +695,42 @@ func (s *IPTestSuite) BenchmarkKeepUniqueIPs(c *C) {
 		c.StartTimer()
 
 		KeepUniqueIPs(ips)
+	}
+}
+
+func (s *IPTestSuite) TestIsIPv4(c *C) {
+	type args struct {
+		ip net.IP
+	}
+	tests := []struct {
+		name string
+		args args
+		want bool
+	}{
+		{
+			name: "test-1",
+			args: args{
+				ip: nil,
+			},
+			want: false,
+		},
+		{
+			name: "test-2",
+			args: args{
+				ip: net.ParseIP("1.1.1.1"),
+			},
+			want: true,
+		},
+		{
+			name: "test-3",
+			args: args{
+				ip: net.ParseIP("fd00::1"),
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		got := IsIPv4(tt.args.ip)
+		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
 	}
 }

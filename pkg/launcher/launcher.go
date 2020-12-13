@@ -66,21 +66,6 @@ func (launcher *Launcher) Run() error {
 	return nil
 }
 
-// Restart stops the launcher which will trigger a rerun.
-func (launcher *Launcher) Restart(args []string) {
-	launcher.Mutex.Lock()
-	defer launcher.Mutex.Unlock()
-	launcher.args = args
-
-	if launcher.process == nil {
-		return
-	}
-	if err := launcher.process.Kill(); err != nil {
-		log.WithError(err).WithField("pid", launcher.process.Pid).Error("process.Kill()")
-	}
-	launcher.process = nil
-}
-
 // SetTarget sets the Launcher target.
 func (launcher *Launcher) SetTarget(target string) {
 	launcher.Mutex.Lock()

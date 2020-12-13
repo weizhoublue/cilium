@@ -19,6 +19,9 @@ package bpf
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"unsafe"
 
@@ -67,7 +70,10 @@ var (
 )
 
 func runTests(m *testing.M) (int, error) {
-	CheckOrMountFS("")
+	CheckOrMountFS("", false)
+	if err := ConfigureResourceLimits(); err != nil {
+		return 1, fmt.Errorf("Failed to configure rlimit")
+	}
 
 	_, err := testMap.OpenOrCreate()
 	if err != nil {
@@ -351,6 +357,158 @@ func (s *BPFPrivilegedTestSuite) TestDump(c *C) {
 	err = noSuchMap.DumpWithCallbackIfExists(customCb)
 	c.Assert(err, IsNil)
 	c.Assert(len(dump2), Equals, 0)
+
+	// Validate that if the key is zero, it shows up in dump output.
+	keyZero := &TestKey{Key: 0}
+	valueZero := &TestValue{Value: 0}
+	err = testMap.Update(keyZero, valueZero)
+	c.Assert(err, IsNil)
+
+	dump4 := map[string][]string{}
+	customCb = func(key MapKey, value MapValue) {
+		dump4[key.String()] = append(dump4[key.String()], "custom-"+value.String())
+	}
+	ds := NewDumpStats(testMap)
+	err = testMap.DumpReliablyWithCallback(customCb, ds)
+	c.Assert(err, IsNil)
+	c.Assert(dump4, checker.DeepEquals, map[string][]string{
+		"key=0":   {"custom-value=0"},
+		"key=105": {"custom-value=205"},
+		"key=106": {"custom-value=206"},
+	})
+
+	dump5 := map[string][]string{}
+	err = testMap.Dump(dump5)
+	c.Assert(err, IsNil)
+	c.Assert(dump5, checker.DeepEquals, map[string][]string{
+		"key=0":   {"value=0"},
+		"key=105": {"value=205"},
+		"key=106": {"value=206"},
+	})
+}
+
+func (s *BPFPrivilegedTestSuite) TestDumpReliablyWithCallback(c *C) {
+	maxEntries := uint32(256)
+	m := NewMap("cilium_dump_test",
+		MapTypeHash,
+		&TestKey{},
+		int(unsafe.Sizeof(TestKey{})),
+		&TestValue{},
+		int(unsafe.Sizeof(TestValue{})),
+		int(maxEntries),
+		BPF_F_NO_PREALLOC,
+		0,
+		ConvertKeyValue,
+	).WithCache()
+	_, err := m.OpenOrCreate()
+	c.Assert(err, IsNil)
+	defer func() {
+		path, _ := m.Path()
+		os.Remove(path)
+	}()
+	defer m.Close()
+
+	for i := uint32(4); i < maxEntries; i++ {
+		err := m.Update(&TestKey{Key: i}, &TestValue{Value: i + 100})
+		c.Check(err, IsNil) // we want to run the deferred calls
+	}
+	// start a goroutine that continuously updates the map
+	started := make(chan struct{}, 1)
+	done := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		started <- struct{}{}
+		for {
+			for i := uint32(0); i < 4; i++ {
+				if i < 3 {
+					err := m.Update(&TestKey{Key: i}, &TestValue{Value: i + 100})
+					// avoid assert to ensure we call wg.Done
+					c.Check(err, IsNil)
+				}
+				if i > 0 {
+					err := m.Delete(&TestKey{Key: i - 1})
+					// avoid assert to ensure we call wg.Done
+					c.Check(err, IsNil)
+				}
+			}
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
+	}()
+	<-started // wait until the routine has started to start the actual tests
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		expect := map[string]string{}
+		for i := uint32(4); i < maxEntries; i++ {
+			expect[fmt.Sprintf("key=%d", i)] = fmt.Sprintf("custom-value=%d", i+100)
+		}
+		for i := 0; i < 100; i++ {
+			dump := map[string]string{}
+			customCb := func(key MapKey, value MapValue) {
+				k, err := strconv.ParseUint(strings.TrimPrefix(key.String(), "key="), 10, 32)
+				c.Check(err, IsNil)
+				if uint32(k) >= 4 {
+					dump[key.String()] = "custom-" + value.String()
+				}
+			}
+			ds := NewDumpStats(m)
+			if i == 0 {
+				// artificially trigger MaxLookupError as max lookup is based
+				// on ds.MaxEntries
+				ds.MaxEntries = 1
+			}
+			if err := m.DumpReliablyWithCallback(customCb, ds); err != nil {
+				// avoid Assert to ensure the done signal is sent
+				c.Check(err, Equals, ErrMaxLookup)
+			} else {
+				// avoid Assert to ensure the done signal is sent
+				c.Check(dump, checker.DeepEquals, expect)
+			}
+		}
+		done <- struct{}{}
+	}()
+	wg.Wait()
+}
+
+func (s *BPFPrivilegedTestSuite) TestDeleteAll(c *C) {
+	key1 := &TestKey{Key: 105}
+	value1 := &TestValue{Value: 205}
+	key2 := &TestKey{Key: 106}
+	value2 := &TestValue{Value: 206}
+
+	err := testMap.Update(key1, value1)
+	c.Assert(err, IsNil)
+	err = testMap.Update(key2, value1)
+	c.Assert(err, IsNil)
+	err = testMap.Update(key2, value2)
+	c.Assert(err, IsNil)
+
+	keyZero := &TestKey{Key: 0}
+	valueZero := &TestValue{Value: 0}
+	err = testMap.Update(keyZero, valueZero)
+	c.Assert(err, IsNil)
+
+	dump1 := map[string][]string{}
+	err = testMap.Dump(dump1)
+	c.Assert(err, IsNil)
+	c.Assert(dump1, checker.DeepEquals, map[string][]string{
+		"key=0":   {"value=0"},
+		"key=105": {"value=205"},
+		"key=106": {"value=206"},
+	})
+
+	err = testMap.DeleteAll()
+	c.Assert(err, IsNil)
+
+	dump2 := map[string][]string{}
+	err = testMap.Dump(dump2)
+	c.Assert(err, IsNil)
 }
 
 func (s *BPFPrivilegedTestSuite) TestGetModel(c *C) {
@@ -429,4 +587,42 @@ func (s *BPFPrivilegedTestSuite) TestUnpin(c *C) {
 	exist, err = unpinMap.exist()
 	c.Assert(err, IsNil)
 	c.Assert(exist, Equals, false)
+
+	err = UnpinMapIfExists("cilium_test_unpin")
+	c.Assert(err, IsNil)
+	_, err = unpinMap.OpenOrCreate()
+	c.Assert(err, IsNil)
+	err = UnpinMapIfExists("cilium_test_unpin")
+	c.Assert(err, IsNil)
+	exist, err = unpinMap.exist()
+	c.Assert(err, IsNil)
+	c.Assert(exist, Equals, false)
+}
+
+func (s *BPFPrivilegedTestSuite) TestCreateUnpinned(c *C) {
+	m := NewMap("cilium_test_create_unpinned",
+		MapTypeHash,
+		&TestKey{},
+		int(unsafe.Sizeof(TestKey{})),
+		&TestValue{},
+		int(unsafe.Sizeof(TestValue{})),
+		maxEntries,
+		BPF_F_NO_PREALLOC,
+		0,
+		ConvertKeyValue).WithCache()
+	err := m.CreateUnpinned()
+	c.Assert(err, IsNil)
+	exist, err := m.exist()
+	c.Assert(err, IsNil)
+	c.Assert(exist, Equals, false)
+
+	key1 := &TestKey{Key: 105}
+	value1 := &TestValue{Value: 205}
+	err = m.Update(key1, value1)
+	c.Assert(err, IsNil)
+
+	var value2 TestValue
+	err = LookupElement(m.fd, unsafe.Pointer(key1), unsafe.Pointer(&value2))
+	c.Assert(err, IsNil)
+	c.Assert(*value1, Equals, value2)
 }

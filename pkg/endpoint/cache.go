@@ -17,11 +17,9 @@ package endpoint
 import (
 	"fmt"
 
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
-	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/option"
 
 	"github.com/sirupsen/logrus"
@@ -35,10 +33,6 @@ type epInfoCache struct {
 	// revision is used by the endpoint regeneration code to determine
 	// whether this cache is out-of-date wrt the underlying endpoint.
 	revision uint64
-
-	// For lxcmap.EndpointFrontend
-	keys  []*lxcmap.EndpointKey
-	value *lxcmap.EndpointInfo
 
 	// For datapath.loader.endpoint
 	epdir  string
@@ -56,8 +50,11 @@ type epInfoCache struct {
 	requireEgressProg                      bool
 	requireRouting                         bool
 	requireEndpointRoute                   bool
+	policyVerdictLogFilter                 uint32
 	cidr4PrefixLengths, cidr6PrefixLengths []int
 	options                                *option.IntOptions
+	lxcMAC                                 mac.MAC
+	ifIndex                                int
 
 	// endpoint is used to get the endpoint's logger.
 	//
@@ -74,36 +71,38 @@ func (e *Endpoint) createEpInfoCache(epdir string) *epInfoCache {
 
 	ep := &epInfoCache{
 		revision: e.nextPolicyRevision,
-		keys:     e.GetBPFKeys(),
 
-		epdir:  epdir,
-		id:     e.GetID(),
-		ifName: e.IfName,
-		ipvlan: e.HasIpvlanDataPath(),
-
-		identity:              e.GetIdentity(),
-		mac:                   e.GetNodeMAC(),
-		ipv4:                  e.IPv4Address(),
-		ipv6:                  e.IPv6Address(),
-		conntrackLocal:        e.ConntrackLocalLocked(),
-		requireARPPassthrough: e.RequireARPPassthrough(),
-		requireEgressProg:     e.RequireEgressProg(),
-		requireRouting:        e.RequireRouting(),
-		requireEndpointRoute:  e.RequireEndpointRoute(),
-		cidr4PrefixLengths:    cidr4,
-		cidr6PrefixLengths:    cidr6,
-		options:               e.Options.DeepCopy(),
+		epdir:                  epdir,
+		id:                     e.GetID(),
+		ifName:                 e.ifName,
+		ipvlan:                 e.HasIpvlanDataPath(),
+		identity:               e.getIdentity(),
+		mac:                    e.GetNodeMAC(),
+		ipv4:                   e.IPv4Address(),
+		ipv6:                   e.IPv6Address(),
+		conntrackLocal:         e.ConntrackLocalLocked(),
+		requireARPPassthrough:  e.RequireARPPassthrough(),
+		requireEgressProg:      e.RequireEgressProg(),
+		requireRouting:         e.RequireRouting(),
+		requireEndpointRoute:   e.RequireEndpointRoute(),
+		policyVerdictLogFilter: e.GetPolicyVerdictLogFilter(),
+		cidr4PrefixLengths:     cidr4,
+		cidr6PrefixLengths:     cidr6,
+		options:                e.Options.DeepCopy(),
+		lxcMAC:                 e.mac,
+		ifIndex:                e.ifIndex,
 
 		endpoint: e,
 	}
-
-	var err error
-	ep.value, err = e.GetBPFValue()
-	if err != nil {
-		log.WithField(logfields.EndpointID, e.ID).WithError(err).Error("getBPFValue failed")
-		return nil
-	}
 	return ep
+}
+
+func (ep *epInfoCache) GetIfIndex() int {
+	return ep.ifIndex
+}
+
+func (ep *epInfoCache) LXCMac() mac.MAC {
+	return ep.lxcMAC
 }
 
 // InterfaceName returns the name of the link-layer interface used for
@@ -132,6 +131,11 @@ func (ep *epInfoCache) GetIdentity() identity.NumericIdentity {
 	return ep.identity
 }
 
+// GetIdentityLocked returns the security identity of the endpoint.
+func (ep *epInfoCache) GetIdentityLocked() identity.NumericIdentity {
+	return ep.identity
+}
+
 // Logger returns the logger for the endpoint that is being cached.
 func (ep *epInfoCache) Logger(subsystem string) *logrus.Entry {
 	return ep.endpoint.Logger(subsystem)
@@ -156,19 +160,6 @@ func (ep *epInfoCache) IPv6Address() addressing.CiliumIPv6 {
 func (ep *epInfoCache) StateDir() string    { return ep.epdir }
 func (ep *epInfoCache) GetNodeMAC() mac.MAC { return ep.mac }
 
-// GetBPFKeys returns all keys which should represent this endpoint in the BPF
-// endpoints map
-func (ep *epInfoCache) GetBPFKeys() []*lxcmap.EndpointKey {
-	return ep.keys
-}
-
-// GetBPFValue returns the value which should represent this endpoint in the
-// BPF endpoints map
-// Must only be called if init() succeeded.
-func (ep *epInfoCache) GetBPFValue() (*lxcmap.EndpointInfo, error) {
-	return ep.value, nil
-}
-
 func (ep *epInfoCache) ConntrackLocalLocked() bool {
 	return ep.conntrackLocal
 }
@@ -187,7 +178,7 @@ func (ep *epInfoCache) RequireARPPassthrough() bool {
 	return ep.requireARPPassthrough
 }
 
-// RequireEgressProg returns true if the endpoint requires bpf_lxc with esction
+// RequireEgressProg returns true if the endpoint requires bpf_lxc with section
 // "to-container" to be attached at egress on the host facing veth pair
 func (ep *epInfoCache) RequireEgressProg() bool {
 	return ep.requireEgressProg
@@ -202,4 +193,12 @@ func (ep *epInfoCache) RequireRouting() bool {
 // RequireEndpointRoute returns if the endpoint wants a per endpoint route
 func (ep *epInfoCache) RequireEndpointRoute() bool {
 	return ep.requireEndpointRoute
+}
+
+func (ep *epInfoCache) GetPolicyVerdictLogFilter() uint32 {
+	return ep.policyVerdictLogFilter
+}
+
+func (ep *epInfoCache) IsHost() bool {
+	return ep.endpoint.IsHost()
 }

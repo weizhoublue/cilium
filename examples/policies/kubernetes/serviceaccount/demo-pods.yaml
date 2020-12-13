@@ -13,11 +13,14 @@ apiVersion: v1
 metadata:
   name: vader
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: leia-deployment
 spec:
+  selector:
+    matchLabels:
+      name: leia
   replicas: 1
   template:
     metadata:
@@ -27,7 +30,7 @@ spec:
       serviceAccountName: leia
       containers:
       - name: leia-container
-        image: docker.io/cilium/json-mock
+        image: docker.io/cilium/json-mock:1.2
 ---
 apiVersion: v1
 kind: Service
@@ -48,7 +51,7 @@ spec:
   serviceAccountName: luke
   containers:
   - name: luke-container
-    image: docker.io/cilium/json-mock
+    image: docker.io/cilium/json-mock:1.2
 ---
 apiVersion: v1
 kind: Pod
@@ -58,4 +61,4 @@ spec:
   serviceAccountName: vader
   containers:
   - name: vader-container
-    image: docker.io/cilium/json-mock
+    image: docker.io/cilium/json-mock:1.2

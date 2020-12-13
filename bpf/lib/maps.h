@@ -1,28 +1,14 @@
-/*
- *  Copyright (C) 2016-2018 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 #ifndef __LIB_MAPS_H_
 #define __LIB_MAPS_H_
 
 #include "common.h"
 #include "ipv6.h"
+#include "ids.h"
 
-#define CILIUM_MAP_POLICY	1
-#define CILIUM_MAP_CALLS	2
+#include "bpf/compiler.h"
 
 struct bpf_elf_map __section_maps ENDPOINTS_MAP = {
 	.type		= BPF_MAP_TYPE_HASH,
@@ -42,6 +28,7 @@ struct bpf_elf_map __section_maps METRICS_MAP = {
 	.flags		= CONDITIONAL_PREALLOC,
 };
 
+#ifndef SKIP_POLICY_MAP
 /* Global map to jump into policy enforcement of receiving endpoint */
 struct bpf_elf_map __section_maps POLICY_CALL_MAP = {
 	.type		= BPF_MAP_TYPE_PROG_ARRAY,
@@ -51,6 +38,18 @@ struct bpf_elf_map __section_maps POLICY_CALL_MAP = {
 	.pinning	= PIN_GLOBAL_NS,
 	.max_elem	= POLICY_PROG_MAP_SIZE,
 };
+#endif /* SKIP_POLICY_MAP */
+
+#ifdef ENABLE_BANDWIDTH_MANAGER
+struct bpf_elf_map __section_maps THROTTLE_MAP = {
+	.type		= BPF_MAP_TYPE_HASH,
+	.size_key	= sizeof(struct edt_id),
+	.size_value	= sizeof(struct edt_info),
+	.pinning	= PIN_GLOBAL_NS,
+	.max_elem	= THROTTLE_MAP_SIZE,
+	.flags		= BPF_F_NO_PREALLOC,
+};
+#endif /* ENABLE_BANDWIDTH_MANAGER */
 
 /* Map to link endpoint id to per endpoint cilium_policy map */
 #ifdef SOCKMAP
@@ -72,16 +71,6 @@ struct bpf_elf_map __section_maps POLICY_MAP = {
 	.pinning	= PIN_GLOBAL_NS,
 	.max_elem	= POLICY_MAP_SIZE,
 	.flags		= CONDITIONAL_PREALLOC,
-};
-#endif
-
-#ifdef CONFIG_MAP
-struct bpf_elf_map __section_maps CONFIG_MAP = {
-	.type		= BPF_MAP_TYPE_ARRAY,
-	.size_key	= sizeof(__u32),
-	.size_value	= sizeof(struct ep_config),
-	.pinning	= PIN_GLOBAL_NS,
-	.max_elem	= 1,
 };
 #endif
 
@@ -110,22 +99,23 @@ struct bpf_elf_map __section_maps TUNNEL_MAP = {
 
 #endif
 
-#ifdef HAVE_LPM_MAP_TYPE
+#ifdef HAVE_LPM_TRIE_MAP_TYPE
 #define LPM_MAP_TYPE BPF_MAP_TYPE_LPM_TRIE
 #else
 #define LPM_MAP_TYPE BPF_MAP_TYPE_HASH
 #endif
 
-#ifndef HAVE_LPM_MAP_TYPE
+#ifndef HAVE_LPM_TRIE_MAP_TYPE
 /* Define a function with the following NAME which iterates through PREFIXES
  * (a list of integers ordered from high to low representing prefix length),
  * performing a lookup in MAP using LOOKUP_FN to find a provided IP of type
- * IPTYPE. */
+ * IPTYPE.
+ */
 #define LPM_LOOKUP_FN(NAME, IPTYPE, PREFIXES, MAP, LOOKUP_FN)		\
 static __always_inline int __##NAME(IPTYPE addr)			\
 {									\
 	int prefixes[] = { PREFIXES };					\
-	const int size = (sizeof(prefixes) / sizeof(prefixes[0]));	\
+	const int size = ARRAY_SIZE(prefixes);				\
 	int i;								\
 									\
 _Pragma("unroll")							\
@@ -135,7 +125,7 @@ _Pragma("unroll")							\
 									\
 	return 0;							\
 }
-#endif /* HAVE_LPM_MAP_TYPE */
+#endif /* HAVE_LPM_TRIE_MAP_TYPE */
 
 #ifndef SKIP_UNDEF_LPM_LOOKUP_FN
 #undef LPM_LOOKUP_FN
@@ -155,7 +145,7 @@ struct ipcache_key {
 		};
 		union v6addr	ip6;
 	};
-} __attribute__((packed));
+} __packed;
 
 /* Global IP -> Identity map for applying egress label-based policy */
 struct bpf_elf_map __section_maps IPCACHE_MAP = {
@@ -176,9 +166,10 @@ struct bpf_elf_map __section_maps ENCRYPT_MAP = {
 };
 
 #ifndef SKIP_CALLS_MAP
-static __always_inline void ep_tail_call(struct __sk_buff *skb, uint32_t index)
+static __always_inline void ep_tail_call(struct __ctx_buff *ctx,
+					 const __u32 index)
 {
-	tail_call(skb, &CALLS_MAP, index);
+	tail_call_static(ctx, &CALLS_MAP, index);
 }
 #endif /* SKIP_CALLS_MAP */
 #endif

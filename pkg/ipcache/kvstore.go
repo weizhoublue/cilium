@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,10 @@ import (
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/policy"
+	"github.com/cilium/cilium/pkg/source"
+	"github.com/cilium/cilium/pkg/u8proto"
 
 	"github.com/sirupsen/logrus"
 )
@@ -47,9 +52,9 @@ var (
 	// computed. It is determined by the orchestration system / runtime.
 	AddressSpace = DefaultAddressSpace
 
-	// globalMap wraps the kvstore and provides reference-tracking for keys
-	// that are upserted or released from the kvstore.
-	globalMap *kvReferenceCounter
+	// globalMap wraps the kvstore and provides a cache of all entries
+	// which are owned by a local user
+	globalMap = newKVReferenceCounter(kvstoreImplementation{})
 
 	setupIPIdentityWatcher sync.Once
 )
@@ -59,7 +64,7 @@ var (
 type store interface {
 	// update will insert the {key, value} tuple into the underlying
 	// kvstore.
-	upsert(ctx context.Context, key string, value []byte, lease bool) error
+	upsert(ctx context.Context, key string, value string, lease bool) error
 
 	// delete will remove the key from the underlying kvstore.
 	release(ctx context.Context, key string) error
@@ -70,32 +75,21 @@ type kvstoreImplementation struct{}
 
 // upsert places the mapping of {key, value} into the kvstore, optionally with
 // a lease.
-func (k kvstoreImplementation) upsert(ctx context.Context, key string, value []byte, lease bool) error {
-	_, err := kvstore.UpdateIfDifferent(ctx, key, value, lease)
+func (k kvstoreImplementation) upsert(ctx context.Context, key string, value string, lease bool) error {
+	_, err := kvstore.Client().UpdateIfDifferent(ctx, key, []byte(value), lease)
 	return err
 }
 
 // release removes the specified key from the kvstore.
 func (k kvstoreImplementation) release(ctx context.Context, key string) error {
-	return kvstore.Delete(key)
+	return kvstore.Client().Delete(ctx, key)
 }
 
 // kvReferenceCounter provides a thin wrapper around the kvstore which adds
-// reference tracking for all entries being updated. When the first key is
-// updated, it adds a reference to the kvstore and tracks the reference
-// internally. Subsequent updates also update the kvstore, and add a reference.
-// Deletes from the kvReferenceCounter are only propagated to the kvstore when
-// the final reference is released.
-//
-// This has some small overlap with the pkg/kvstore/allocator but this is only
-// a map from key to reference count rather than also tracking values.
+// reference tracking for all entries which are used by a local user.
 type kvReferenceCounter struct {
 	lock.Mutex
 	store
-
-	// keys is a map from key to reference count for locally-referenced
-	// keys in the global kvstore.
-	keys map[string]uint64
 
 	// marshaledIPIDPair is map indexed by the key that contains the
 	// marshaled IPIdentityPair
@@ -107,74 +101,37 @@ type kvReferenceCounter struct {
 func newKVReferenceCounter(s store) *kvReferenceCounter {
 	return &kvReferenceCounter{
 		store:              s,
-		keys:               map[string]uint64{},
 		marshaledIPIDPairs: map[string][]byte{},
 	}
 }
 
-// upsert attempts to insert the specified {key, ipIDPair} into the kvstore. If
-// the key has previously been upserted, increments a reference on the key.
-// Always updates the underlying store with this {key, ipIDPair} tuple.
-// Only adds a reference to the key if the upsert is successful.
-func (r *kvReferenceCounter) upsert(ctx context.Context, ipKey string, ipIDPair identity.IPIdentityPair) error {
-	marshaledIPIDPair, err := json.Marshal(ipIDPair)
-	if err != nil {
-		return err
-	}
-
-	log.WithFields(logrus.Fields{
-		logfields.IPAddr:       ipIDPair.IP,
-		logfields.IPMask:       ipIDPair.Mask,
-		logfields.Identity:     ipIDPair.ID,
-		logfields.Modification: Upsert,
-	}).Debug("upserting CIDR->ID mapping to kvstore")
-
-	r.Lock()
-	defer r.Unlock()
-	refcnt := r.keys[ipKey] // 0 if not found
-	refcnt++
-	err = r.store.upsert(ctx, ipKey, marshaledIPIDPair, true)
-	if err == nil {
-		r.keys[ipKey] = refcnt
-		r.marshaledIPIDPairs[ipKey] = marshaledIPIDPair
-	}
-	return err
-}
-
-// release removes a reference to the specified key. If the number of
-// references reaches 0, the key is removed from the underlying kvstore.
-func (r *kvReferenceCounter) release(ctx context.Context, key string) (err error) {
-	r.Lock()
-	defer r.Unlock()
-
-	refcnt, ok := r.keys[key] // 0 if not found
-	// avoid underflow and report bug
-	if !ok || refcnt == 0 {
-		log.WithField("key", key).Error("BUG: attempt to release ipcache entry while refcnt == 0")
-		return nil
-	}
-
-	refcnt--
-	if refcnt == 0 {
-		delete(r.keys, key)
-		delete(r.marshaledIPIDPairs, key)
-		err = r.store.release(ctx, key)
-	} else {
-		r.keys[key] = refcnt
-	}
-	return err
-}
-
 // UpsertIPToKVStore updates / inserts the provided IP->Identity mapping into the
 // kvstore, which will subsequently trigger an event in NewIPIdentityWatcher().
-func UpsertIPToKVStore(ctx context.Context, IP, hostIP net.IP, ID identity.NumericIdentity, key uint8, metadata string) error {
+func UpsertIPToKVStore(ctx context.Context, IP, hostIP net.IP, ID identity.NumericIdentity, key uint8,
+	metadata, k8sNamespace, k8sPodName string, npm policy.NamedPortMap) error {
+	// Sort named ports into a slice
+	namedPorts := make([]identity.NamedPort, 0, len(npm))
+	for name, value := range npm {
+		namedPorts = append(namedPorts, identity.NamedPort{
+			Name:     name,
+			Port:     value.Port,
+			Protocol: u8proto.U8proto(value.Proto).String(),
+		})
+	}
+	sort.Slice(namedPorts, func(i, j int) bool {
+		return namedPorts[i].Name < namedPorts[j].Name
+	})
+
 	ipKey := path.Join(IPIdentitiesPath, AddressSpace, IP.String())
 	ipIDPair := identity.IPIdentityPair{
-		IP:       IP,
-		ID:       ID,
-		Metadata: metadata,
-		HostIP:   hostIP,
-		Key:      key,
+		IP:           IP,
+		ID:           ID,
+		Metadata:     metadata,
+		HostIP:       hostIP,
+		Key:          key,
+		K8sNamespace: k8sNamespace,
+		K8sPodName:   k8sPodName,
+		NamedPorts:   namedPorts,
 	}
 
 	marshaledIPIDPair, err := json.Marshal(ipIDPair)
@@ -187,9 +144,15 @@ func UpsertIPToKVStore(ctx context.Context, IP, hostIP net.IP, ID identity.Numer
 		logfields.Identity:     ipIDPair.ID,
 		logfields.Key:          ipIDPair.Key,
 		logfields.Modification: Upsert,
-	}).Debug("upserting IP->ID mapping to kvstore")
+	}).Debug("Upserting IP->ID mapping to kvstore")
 
-	return globalMap.store.upsert(ctx, ipKey, marshaledIPIDPair, true)
+	err = globalMap.store.upsert(ctx, ipKey, string(marshaledIPIDPair), true)
+	if err == nil {
+		globalMap.Lock()
+		globalMap.marshaledIPIDPairs[ipKey] = marshaledIPIDPair
+		globalMap.Unlock()
+	}
+	return err
 }
 
 // keyToIPNet returns the IPNet describing the key, whether it is a host, and
@@ -197,7 +160,7 @@ func UpsertIPToKVStore(ctx context.Context, IP, hostIP net.IP, ID identity.Numer
 func keyToIPNet(key string) (parsedPrefix *net.IPNet, host bool, err error) {
 	requiredPrefix := fmt.Sprintf("%s/", path.Join(IPIdentitiesPath, AddressSpace))
 	if !strings.HasPrefix(key, requiredPrefix) {
-		err = fmt.Errorf("Found invalid key %s outside of prefix %s", key, IPIdentitiesPath)
+		err = fmt.Errorf("found invalid key %s outside of prefix %s", key, IPIdentitiesPath)
 		return
 	}
 
@@ -231,6 +194,9 @@ func keyToIPNet(key string) (parsedPrefix *net.IPNet, host bool, err error) {
 // NewIPIdentityWatcher().
 func DeleteIPFromKVStore(ctx context.Context, ip string) error {
 	ipKey := path.Join(IPIdentitiesPath, AddressSpace, ip)
+	globalMap.Lock()
+	delete(globalMap.marshaledIPIDPairs, ipKey)
+	globalMap.Unlock()
 	return globalMap.store.release(ctx, ipKey)
 }
 
@@ -259,9 +225,11 @@ func NewIPIdentityWatcher(backend kvstore.BackendOperations) *IPIdentityWatcher 
 // received from the kvstore, All IPIdentityMappingListener are notified. The
 // function returns when IPIdentityWatcher.Close() is called. The watcher will
 // automatically restart as required.
-func (iw *IPIdentityWatcher) Watch() {
+func (iw *IPIdentityWatcher) Watch(ctx context.Context) {
+
+	var scopedLog *logrus.Entry
 restart:
-	watcher := iw.backend.ListAndWatch("endpointIPWatcher", IPIdentitiesPath, 512)
+	watcher := iw.backend.ListAndWatch(ctx, "endpointIPWatcher", IPIdentitiesPath, 512)
 
 	for {
 		select {
@@ -273,8 +241,10 @@ restart:
 				goto restart
 			}
 
-			scopedLog := log.WithFields(logrus.Fields{"kvstore-event": event.Typ.String(), "key": event.Key})
-			scopedLog.Debug("Received event")
+			if option.Config.Debug {
+				scopedLog = log.WithFields(logrus.Fields{"kvstore-event": event.Typ.String(), "key": event.Key})
+				scopedLog.Debug("Received event")
+			}
 
 			// Synchronize local caching of endpoint IP to ipIDPair mapping with
 			// operation key-value store has informed us about.
@@ -307,7 +277,8 @@ restart:
 				var ipIDPair identity.IPIdentityPair
 				err := json.Unmarshal(event.Value, &ipIDPair)
 				if err != nil {
-					scopedLog.WithError(err).Errorf("Not adding entry to ip cache; error unmarshaling data from key-value store")
+					log.WithFields(logrus.Fields{"kvstore-event": event.Typ.String(), "key": event.Key}).
+						WithError(err).Error("Not adding entry to ip cache; error unmarshaling data from key-value store")
 					continue
 				}
 				ip := ipIDPair.PrefixString()
@@ -315,10 +286,25 @@ restart:
 					scopedLog.Debug("Ignoring entry with nil IP")
 					continue
 				}
+				var k8sMeta *K8sMetadata
+				if ipIDPair.K8sNamespace != "" || ipIDPair.K8sPodName != "" || len(ipIDPair.NamedPorts) > 0 {
+					k8sMeta = &K8sMetadata{
+						Namespace:  ipIDPair.K8sNamespace,
+						PodName:    ipIDPair.K8sPodName,
+						NamedPorts: make(policy.NamedPortMap, len(ipIDPair.NamedPorts)),
+					}
+					for _, np := range ipIDPair.NamedPorts {
+						err = k8sMeta.NamedPorts.AddPort(np.Name, int(np.Port), np.Protocol)
+						if err != nil {
+							log.WithFields(logrus.Fields{"kvstore-event": event.Typ.String(), "key": event.Key}).
+								WithError(err).Error("Parsing named port failed")
+						}
+					}
+				}
 
-				IPIdentityCache.Upsert(ipIDPair.PrefixString(), ipIDPair.HostIP, ipIDPair.Key, Identity{
+				IPIdentityCache.Upsert(ip, ipIDPair.HostIP, ipIDPair.Key, k8sMeta, Identity{
 					ID:     ipIDPair.ID,
-					Source: FromKVStore,
+					Source: source.KVStore,
 				})
 
 			case kvstore.EventTypeDelete:
@@ -326,7 +312,8 @@ restart:
 				// need to convert kvstore key to IP.
 				ipnet, isHost, err := keyToIPNet(event.Key)
 				if err != nil {
-					scopedLog.WithError(err).Error("Error parsing IP from key")
+					log.WithFields(logrus.Fields{"kvstore-event": event.Typ.String(), "key": event.Key}).
+						WithError(err).Error("Error parsing IP from key")
 					continue
 				}
 				var ip string
@@ -339,13 +326,10 @@ restart:
 
 				if m, ok := globalMap.marshaledIPIDPairs[event.Key]; ok {
 					log.WithField("ip", ip).Warning("Received kvstore delete notification for alive ipcache entry")
-					err := globalMap.store.upsert(context.TODO(), event.Key, m, true)
+					err := globalMap.store.upsert(ctx, event.Key, string(m), true)
 					if err != nil {
 						log.WithError(err).WithField("ip", ip).Warning("Unable to re-create alive ipcache entry")
 					}
-					globalMap.Unlock()
-				} else if _, ok := globalMap.keys[path.Join(IPIdentitiesPath, AddressSpace, ip)]; ok {
-					log.WithField("ip", ip).Warning("Received kvstore delete notification with mismatching key but alive IP. Ignoring")
 					globalMap.Unlock()
 				} else {
 					globalMap.Unlock()
@@ -353,10 +337,13 @@ restart:
 					// The key no longer exists in the
 					// local cache, it is safe to remove
 					// from the datapath ipcache.
-					IPIdentityCache.Delete(ip, FromKVStore)
+					IPIdentityCache.Delete(ip, source.KVStore)
 				}
 			}
-
+		case <-ctx.Done():
+			// Stop this identity watcher, we have been signaled to shut down
+			// via context. This will result in iw.stop being closed.
+			iw.Close()
 		case <-iw.stop:
 			// identity watcher was stopped
 			watcher.Stop()
@@ -378,25 +365,24 @@ func (iw *IPIdentityWatcher) waitForInitialSync() {
 
 var (
 	watcher     *IPIdentityWatcher
-	initialized = make(chan struct{}, 0)
+	initialized = make(chan struct{})
 )
 
 // InitIPIdentityWatcher initializes the watcher for ip-identity mapping events
 // in the key-value store.
 func InitIPIdentityWatcher() {
 	setupIPIdentityWatcher.Do(func() {
-		globalMap = newKVReferenceCounter(kvstoreImplementation{})
 		go func() {
 			log.Info("Starting IP identity watcher")
 			watcher = NewIPIdentityWatcher(kvstore.Client())
 			close(initialized)
-			watcher.Watch()
+			watcher.Watch(context.TODO())
 		}()
 	})
 }
 
-// WaitForInitialSync waits until the ipcache has been synchronized from the kvstore
-func WaitForInitialSync() {
+// WaitForKVStoreSync waits until the ipcache has been synchronized from the kvstore
+func WaitForKVStoreSync() {
 	<-initialized
 	watcher.waitForInitialSync()
 }

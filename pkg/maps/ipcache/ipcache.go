@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,15 +15,16 @@
 package ipcache
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sync"
 	"unsafe"
 
-	"github.com/cilium/cilium/common/types"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/types"
 
 	"golang.org/x/sys/unix"
 )
@@ -43,7 +44,7 @@ const (
 	// BPF code generation to exceed the verifier instruction limit.
 	// It applies to Linux versions that lack support for LPM, ie < v4.11.
 	//
-	// This is based upon the defines in bpf/lxc_config.h, which in turn
+	// This is based upon the defines in bpf/ep_config.h, which in turn
 	// are derived by building the bpf/ directory and running the script
 	// test/bpf/verifier-test.sh, then adjusting the number of unique
 	// prefix lengths until the script passes.
@@ -89,7 +90,7 @@ func (k Key) String() string {
 		ipStr := k.IP.String()
 		return fmt.Sprintf("%s/%d", ipStr, prefixLen)
 	}
-	return fmt.Sprintf("<unknown>")
+	return "<unknown>"
 }
 
 // getPrefixLen determines the length that should be set inside the Key so that
@@ -161,7 +162,7 @@ func NewMap(name string) *Map {
 	return &Map{
 		Map: *bpf.NewMap(
 			name,
-			bpf.BPF_MAP_TYPE_LPM_TRIE,
+			bpf.MapTypeLPMTrie,
 			&Key{},
 			int(unsafe.Sizeof(Key{})),
 			&RemoteEndpointInfo{},
@@ -181,39 +182,34 @@ func NewMap(name string) *Map {
 // If "overwrite" is true, then if delete is not supported the entry's value
 // will be overwritten with zeroes to signify that it's an invalid entry.
 func (m *Map) delete(k bpf.MapKey, overwrite bool) (bool, error) {
-	// Older kernels do not support deletion of LPM map entries so zero out
-	// the entry instead of attempting a deletion
-	err, errno := m.DeleteWithErrno(k)
-	if errno == unix.ENOSYS {
+	err := m.Delete(k)
+	var errno unix.Errno
+	if ok := errors.As(err, &errno); ok && errno == unix.ENOSYS {
 		if overwrite {
+			// Older kernels do not support deletion of LPM map entries so zero out
+			// the entry instead of attempting a deletion
 			return false, m.Update(k, &RemoteEndpointInfo{})
 		}
 		return false, nil
 	}
-
 	return true, err
 }
 
-// Delete removes a key from the ipcache BPF map
-func (m *Map) Delete(k bpf.MapKey) error {
+// DeleteWithOverwrite removes a key from the ipcache BPF map.
+// If delete is not supported, the entry's value will be overwritten with
+// zeroes to signify that it's an invalid entry.
+func (m *Map) DeleteWithOverwrite(k bpf.MapKey) error {
 	_, err := m.delete(k, true)
 	return err
 }
 
 // GetMaxPrefixLengths determines how many unique prefix lengths are supported
 // simultaneously based on the underlying BPF map type in use.
-func (m *Map) GetMaxPrefixLengths(ipv6 bool) (count int) {
-	if IPCache.MapType == bpf.BPF_MAP_TYPE_LPM_TRIE {
-		if ipv6 {
-			return net.IPv6len*8 + 1
-		} else {
-			return net.IPv4len*8 + 1
-		}
+func (m *Map) GetMaxPrefixLengths() (ipv6, ipv4 int) {
+	if BackedByLPM() {
+		return net.IPv6len*8 + 1, net.IPv4len*8 + 1
 	}
-	if ipv6 {
-		return maxPrefixLengths6
-	}
-	return maxPrefixLengths4
+	return maxPrefixLengths6, maxPrefixLengths4
 }
 
 func (m *Map) supportsDelete() bool {
@@ -222,6 +218,16 @@ func (m *Map) supportsDelete() bool {
 		invalidEntry := &Key{}
 		m.deleteSupport, _ = m.delete(invalidEntry, false)
 		log.Debugf("Detected IPCache delete operation support: %t", m.deleteSupport)
+
+		// In addition to delete support, ability to dump the map is
+		// also required in order to run the garbage collector which
+		// will iterate over the map and delete entries.
+		if m.deleteSupport {
+			err := m.Dump(map[string][]string{})
+			m.deleteSupport = err == nil
+			log.Debugf("Detected IPCache dump operation support: %t", m.deleteSupport)
+		}
+
 		if !m.deleteSupport {
 			log.Infof("Periodic IPCache map swap will occur due to lack of kernel support for LPM delete operation. Upgrade to Linux 4.15 or higher to avoid this.")
 		}
@@ -238,7 +244,7 @@ func SupportsDelete() bool {
 // BackedByLPM returns true if the IPCache is backed by a proper LPM
 // implementation (provided by Linux kernels 4.11 or later), false otherwise.
 func BackedByLPM() bool {
-	return IPCache.MapType == bpf.BPF_MAP_TYPE_LPM_TRIE
+	return IPCache.MapType == bpf.MapTypeLPMTrie
 }
 
 var (

@@ -20,54 +20,94 @@ import (
 	"net"
 	"os"
 	"path"
+	"reflect"
+	"sync"
 
+	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/elf"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/callsmap"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
-var (
-	Subsystem = "datapath-loader"
-	log       = logging.DefaultLogger.WithField(logfields.LogSubsys, Subsystem)
-)
-
 const (
+	Subsystem = "datapath-loader"
+
 	symbolFromEndpoint = "from-container"
 	symbolToEndpoint   = "to-container"
+
+	symbolFromHostNetdevEp = "from-netdev"
+	symbolToHostNetdevEp   = "to-netdev"
+	symbolFromHostEp       = "from-host"
+	symbolToHostEp         = "to-host"
 
 	dirIngress = "ingress"
 	dirEgress  = "egress"
 )
 
-// endpoint provides access to endpoint information that is necessary to
-// compile and load the datapath.
-type endpoint interface {
-	datapath.EndpointConfiguration
-	InterfaceName() string
-	Logger(subsystem string) *logrus.Entry
-	StateDir() string
-	MapPath() string
+const (
+	SecctxFromIpcacheDisabled = iota + 1
+	SecctxFromIpcacheEnabled
+)
+
+var log = logging.DefaultLogger.WithField(logfields.LogSubsys, Subsystem)
+
+// Loader is a wrapper structure around operations related to compiling,
+// loading, and reloading datapath programs.
+type Loader struct {
+	once sync.Once
+
+	// templateCache is the cache of pre-compiled datapaths.
+	templateCache *objectCache
+
+	canDisableDwarfRelocations bool
 }
 
-func upsertEndpointRoute(ep endpoint, ip net.IPNet) error {
+// NewLoader returns a new loader.
+func NewLoader(canDisableDwarfRelocations bool) *Loader {
+	return &Loader{
+		canDisableDwarfRelocations: canDisableDwarfRelocations,
+	}
+}
+
+// Init initializes the datapath cache with base program hashes derived from
+// the LocalNodeConfiguration.
+func (l *Loader) init(dp datapath.ConfigWriter, nodeCfg *datapath.LocalNodeConfiguration) {
+	l.once.Do(func() {
+		l.templateCache = NewObjectCache(dp, nodeCfg)
+		ignorePrefixes := ignoredELFPrefixes
+		if !option.Config.EnableIPv4 {
+			ignorePrefixes = append(ignorePrefixes, "LXC_IPV4")
+		}
+		elf.IgnoreSymbolPrefixes(ignorePrefixes)
+	})
+	l.templateCache.Update(nodeCfg)
+}
+
+func upsertEndpointRoute(ep datapath.Endpoint, ip net.IPNet) error {
 	endpointRoute := route.Route{
 		Prefix: ip,
 		Device: ep.InterfaceName(),
 		Scope:  netlink.SCOPE_LINK,
 	}
 
-	_, err := route.Upsert(endpointRoute, nil)
+	_, err := route.Upsert(endpointRoute)
 	return err
 }
 
-func removeEndpointRoute(ep endpoint, ip net.IPNet) error {
+func removeEndpointRoute(ep datapath.Endpoint, ip net.IPNet) error {
 	return route.Delete(route.Route{
 		Prefix: ip,
 		Device: ep.InterfaceName(),
@@ -75,10 +115,200 @@ func removeEndpointRoute(ep endpoint, ip net.IPNet) error {
 	})
 }
 
-func reloadDatapath(ctx context.Context, ep endpoint, dirs *directoryInfo) error {
+// We need this function when patching an object file for which symbols were
+// already substituted. During the first symbol substitutions, string symbols
+// were replaced such that:
+//   template_string -> string_for_endpoint
+// Since we only want to replace one int symbol, we can nullify string
+// substitutions with:
+//   string_for_endpoint -> string_for_endpoint
+// We cannot simply pass an empty map as the agent would complain that some
+// symbol had no corresponding values.
+func nullifyStringSubstitutions(strings map[string]string) map[string]string {
+	nullStrings := make(map[string]string)
+	for _, v := range strings {
+		nullStrings[v] = v
+	}
+	return nullStrings
+}
+
+// Since we attach the host endpoint datapath to two different interfaces, we
+// need two different NODE_MAC values. patchHostNetdevDatapath creates a new
+// object file for the native device, from the object file for the host device
+// (cilium_host).
+// Since the two object files should only differ by the values of their
+// NODE_MAC symbols, we can avoid a full compilation.
+func patchHostNetdevDatapath(ep datapath.Endpoint, objPath, dstPath, ifName string,
+	nodePortIPv4Addrs, nodePortIPv6Addrs, bpfMasqIPv4Addrs map[string]net.IP) error {
+	hostObj, err := elf.Open(objPath)
+	if err != nil {
+		return err
+	}
+	defer hostObj.Close()
+
+	opts, strings := ELFSubstitutions(ep)
+
+	// The NODE_MAC value is specific to each attachment interface.
+	mac, err := link.GetHardwareAddr(ifName)
+	if err != nil {
+		return err
+	}
+	opts["NODE_MAC_1"] = sliceToBe32(mac[0:4])
+	opts["NODE_MAC_2"] = uint32(sliceToBe16(mac[4:6]))
+
+	ifIndex, err := link.GetIfIndex(ifName)
+	if err != nil {
+		return err
+	}
+
+	if !option.Config.EnableHostLegacyRouting ||
+		option.Config.DatapathMode == datapathOption.DatapathModeIpvlan {
+		opts["SECCTX_FROM_IPCACHE"] = uint32(SecctxFromIpcacheEnabled)
+	} else {
+		opts["SECCTX_FROM_IPCACHE"] = uint32(SecctxFromIpcacheDisabled)
+	}
+
+	if option.Config.EnableNodePort && nodePortIPv4Addrs != nil && nodePortIPv6Addrs != nil {
+		opts["NATIVE_DEV_IFINDEX"] = ifIndex
+		if option.Config.EnableIPv4 {
+			ipv4 := nodePortIPv4Addrs[ifName]
+			opts["IPV4_NODEPORT"] = byteorder.HostSliceToNetwork(ipv4, reflect.Uint32).(uint32)
+		}
+		if option.Config.EnableIPv6 {
+			nodePortIPv6 := nodePortIPv6Addrs[ifName]
+			opts["IPV6_NODEPORT_1"] = sliceToBe32(nodePortIPv6[0:4])
+			opts["IPV6_NODEPORT_2"] = sliceToBe32(nodePortIPv6[4:8])
+			opts["IPV6_NODEPORT_3"] = sliceToBe32(nodePortIPv6[8:12])
+			opts["IPV6_NODEPORT_4"] = sliceToBe32(nodePortIPv6[12:16])
+		}
+	}
+	if option.Config.Masquerade && option.Config.EnableBPFMasquerade && bpfMasqIPv4Addrs != nil {
+		if option.Config.EnableIPv4 {
+			ipv4 := bpfMasqIPv4Addrs[ifName]
+			opts["IPV4_MASQUERADE"] = byteorder.HostSliceToNetwork(ipv4, reflect.Uint32).(uint32)
+		}
+	}
+
+	// Among string substitutions, only the calls map name is specific to each
+	// attachment interface.
+	strings = nullifyStringSubstitutions(strings)
+	callsMapHostDevice := bpf.LocalMapName(callsmap.HostMapName, uint16(ep.GetID()))
+	strings[callsMapHostDevice] = bpf.LocalMapName(callsmap.NetdevMapName, uint16(ifIndex))
+
+	return hostObj.Write(dstPath, opts, strings)
+}
+
+// reloadHostDatapath loads bpf_host programs attached to the host device
+// (usually cilium_host) and the native devices if any. To that end, it
+// uses a single object file, pointed to by objPath, compiled for the host
+// device and patches it with values for native devices if needed.
+// Symbols in objPath have already been substituted with the appropriate values
+// for the host device. Thus, when packing the object file again for the native
+// devices, we don't need to substitute most values (see
+// nullifyStringSubstitutions above).
+// reloadHostDatapath skips native devices that do not exist just before
+// loading. If loading+attaching fails later on however, reloadHostDatapath
+// will return with an error. Failing to load or to attach the host device
+// always results in reloadHostDatapath returning with an error.
+func (l *Loader) reloadHostDatapath(ctx context.Context, ep datapath.Endpoint, objPath string) error {
+	nbInterfaces := len(option.Config.Devices) + 2
+	symbols := make([]string, 2, nbInterfaces)
+	directions := make([]string, 2, nbInterfaces)
+	objPaths := make([]string, 2, nbInterfaces)
+	interfaceNames := make([]string, 2, nbInterfaces)
+	symbols[0], symbols[1] = symbolToHostEp, symbolFromHostEp
+	directions[0], directions[1] = dirIngress, dirEgress
+	objPaths[0], objPaths[1] = objPath, objPath
+	interfaceNames[0], interfaceNames[1] = ep.InterfaceName(), ep.InterfaceName()
+
+	if datapathHasMultipleMasterDevices() {
+		if _, err := netlink.LinkByName(defaults.SecondHostDevice); err != nil {
+			log.WithError(err).WithField("device", defaults.SecondHostDevice).Error("Link does not exist")
+			return err
+		} else {
+			interfaceNames = append(interfaceNames, defaults.SecondHostDevice)
+			symbols = append(symbols, symbolToHostEp)
+			directions = append(directions, dirIngress)
+			secondDevObjPath := path.Join(ep.StateDir(), hostEndpointPrefix+"_"+defaults.SecondHostDevice+".o")
+			if err := patchHostNetdevDatapath(ep, objPath, secondDevObjPath, defaults.SecondHostDevice, nil, nil, nil); err != nil {
+				return err
+			}
+			objPaths = append(objPaths, secondDevObjPath)
+		}
+	}
+
+	nodePortIPv4Addrs := node.GetNodePortIPv4AddrsWithDevices()
+	nodePortIPv6Addrs := node.GetNodePortIPv6AddrsWithDevices()
+	bpfMasqIPv4Addrs := node.GetMasqIPv4AddrsWithDevices()
+
+	for _, device := range option.Config.Devices {
+		if _, err := netlink.LinkByName(device); err != nil {
+			log.WithError(err).WithField("device", device).Warn("Link does not exist")
+			continue
+		}
+
+		netdevObjPath := path.Join(ep.StateDir(), hostEndpointNetdevPrefix+device+".o")
+		if err := patchHostNetdevDatapath(ep, objPath, netdevObjPath, device,
+			nodePortIPv4Addrs, nodePortIPv6Addrs, bpfMasqIPv4Addrs); err != nil {
+			return err
+		}
+		objPaths = append(objPaths, netdevObjPath)
+
+		interfaceNames = append(interfaceNames, device)
+		symbols = append(symbols, symbolFromHostNetdevEp)
+		directions = append(directions, dirIngress)
+		if option.Config.EnableNodePort || option.Config.EnableHostFirewall {
+			interfaceNames = append(interfaceNames, device)
+			symbols = append(symbols, symbolToHostNetdevEp)
+			directions = append(directions, dirEgress)
+			objPaths = append(objPaths, netdevObjPath)
+		} else {
+			// Remove any previously attached device from egress path if BPF
+			// NodePort and host firewall are disabled.
+			err := RemoveTCFilters(device, netlink.HANDLE_MIN_EGRESS)
+			if err != nil {
+				log.WithField("device", device).Error(err)
+			}
+		}
+	}
+
+	for i, interfaceName := range interfaceNames {
+		symbol := symbols[i]
+		if err := l.replaceDatapath(ctx, interfaceName, objPaths[i], symbol, directions[i]); err != nil {
+			scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
+				logfields.Path: objPath,
+				logfields.Veth: interfaceName,
+			})
+			// Don't log an error here if the context was canceled or timed out;
+			// this log message should only represent failures with respect to
+			// loading the program.
+			if ctx.Err() == nil {
+				scopedLog.WithError(err).Warningf("JoinEP: Failed to load program for host endpoint (%s)", symbol)
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
+func datapathHasMultipleMasterDevices() bool {
+	// In Flannel's case or when using ipvlan, HOST_DEV2 is equal to HOST_DEV1
+	// in init.sh and we have a single master device.
+	return option.Config.DatapathMode != datapathOption.DatapathModeIpvlan &&
+		!option.Config.IsFlannelMasterDeviceSet()
+}
+
+func (l *Loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs *directoryInfo) error {
 	// Replace the current program
 	objPath := path.Join(dirs.Output, endpointObj)
-	if ep.HasIpvlanDataPath() {
+
+	if ep.IsHost() {
+		objPath = path.Join(dirs.Output, hostEndpointObj)
+		if err := l.reloadHostDatapath(ctx, ep, objPath); err != nil {
+			return err
+		}
+	} else if ep.HasIpvlanDataPath() {
 		if err := graftDatapath(ctx, ep.MapPath(), objPath, symbolFromEndpoint); err != nil {
 			scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
 				logfields.Path: objPath,
@@ -92,7 +322,7 @@ func reloadDatapath(ctx context.Context, ep endpoint, dirs *directoryInfo) error
 			return err
 		}
 	} else {
-		if err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress); err != nil {
+		if err := l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint, dirIngress); err != nil {
 			scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
 				logfields.Path: objPath,
 				logfields.Veth: ep.InterfaceName(),
@@ -107,7 +337,7 @@ func reloadDatapath(ctx context.Context, ep endpoint, dirs *directoryInfo) error
 		}
 
 		if ep.RequireEgressProg() {
-			if err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolToEndpoint, dirEgress); err != nil {
+			if err := l.replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolToEndpoint, dirEgress); err != nil {
 				scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
 					logfields.Path: objPath,
 					logfields.Veth: ep.InterfaceName(),
@@ -136,18 +366,17 @@ func reloadDatapath(ctx context.Context, ep endpoint, dirs *directoryInfo) error
 	return nil
 }
 
-func compileAndLoad(ctx context.Context, ep endpoint, dirs *directoryInfo, stats *SpanStat) error {
-	debug := option.Config.BPFCompilationDebug
-	stats.bpfCompilation.Start()
-	err := compileDatapath(ctx, dirs, debug, ep.Logger(Subsystem))
-	stats.bpfCompilation.End(err == nil)
+func (l *Loader) compileAndLoad(ctx context.Context, ep datapath.Endpoint, dirs *directoryInfo, stats *metrics.SpanStat) error {
+	stats.BpfCompilation.Start()
+	err := compileDatapath(ctx, dirs, ep.IsHost(), ep.Logger(Subsystem))
+	stats.BpfCompilation.End(err == nil)
 	if err != nil {
 		return err
 	}
 
-	stats.bpfLoadProg.Start()
-	err = reloadDatapath(ctx, ep, dirs)
-	stats.bpfLoadProg.End(err == nil)
+	stats.BpfLoadProg.Start()
+	err = l.reloadDatapath(ctx, ep, dirs)
+	stats.BpfLoadProg.End(err == nil)
 	return err
 }
 
@@ -155,7 +384,7 @@ func compileAndLoad(ctx context.Context, ep endpoint, dirs *directoryInfo, stats
 // and loads it onto the interface associated with the endpoint.
 //
 // Expects the caller to have created the directory at the path ep.StateDir().
-func CompileAndLoad(ctx context.Context, ep endpoint, stats *SpanStat) error {
+func (l *Loader) CompileAndLoad(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) error {
 	if ep == nil {
 		log.Fatalf("LoadBPF() doesn't support non-endpoint load")
 	}
@@ -166,7 +395,7 @@ func CompileAndLoad(ctx context.Context, ep endpoint, stats *SpanStat) error {
 		State:   ep.StateDir(),
 		Output:  ep.StateDir(),
 	}
-	return compileAndLoad(ctx, ep, &dirs, stats)
+	return l.compileAndLoad(ctx, ep, &dirs, stats)
 }
 
 // CompileOrLoad loads the BPF datapath programs for the specified endpoint.
@@ -182,8 +411,8 @@ func CompileAndLoad(ctx context.Context, ep endpoint, stats *SpanStat) error {
 // CompileOrLoad with the same configuration parameters. When the first
 // goroutine completes compilation of the template, all other CompileOrLoad
 // invocations will be released.
-func CompileOrLoad(ctx context.Context, ep endpoint, stats *SpanStat) error {
-	templatePath, _, err := templateCache.fetchOrCompile(ctx, ep, stats)
+func (l *Loader) CompileOrLoad(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) error {
+	templatePath, _, err := l.templateCache.fetchOrCompile(ctx, ep, stats)
 	if err != nil {
 		return err
 	}
@@ -218,33 +447,38 @@ func CompileOrLoad(ctx context.Context, ep endpoint, stats *SpanStat) error {
 		}
 	}
 
-	stats.bpfWriteELF.Start()
-	dstPath := path.Join(ep.StateDir(), endpointObj)
+	stats.BpfWriteELF.Start()
+	epObj := endpointObj
+	if ep.IsHost() {
+		epObj = hostEndpointObj
+	}
+	dstPath := path.Join(ep.StateDir(), epObj)
 	opts, strings := ELFSubstitutions(ep)
 	if err = template.Write(dstPath, opts, strings); err != nil {
-		stats.bpfWriteELF.End(err == nil)
+		stats.BpfWriteELF.End(err == nil)
 		return err
 	}
-	stats.bpfWriteELF.End(err == nil)
+	stats.BpfWriteELF.End(err == nil)
 
-	return ReloadDatapath(ctx, ep, stats)
+	return l.ReloadDatapath(ctx, ep, stats)
 }
 
-func ReloadDatapath(ctx context.Context, ep endpoint, stats *SpanStat) (err error) {
+// ReloadDatapath reloads the BPF datapath pgorams for the specified endpoint.
+func (l *Loader) ReloadDatapath(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) (err error) {
 	dirs := directoryInfo{
 		Library: option.Config.BpfDir,
 		Runtime: option.Config.StateDir,
 		State:   ep.StateDir(),
 		Output:  ep.StateDir(),
 	}
-	stats.bpfLoadProg.Start()
-	err = reloadDatapath(ctx, ep, &dirs)
-	stats.bpfLoadProg.End(err == nil)
+	stats.BpfLoadProg.Start()
+	err = l.reloadDatapath(ctx, ep, &dirs)
+	stats.BpfLoadProg.End(err == nil)
 	return err
 }
 
 // Unload removes the datapath specific program aspects
-func Unload(ep endpoint) {
+func (l *Loader) Unload(ep datapath.Endpoint) {
 	if ep.RequireEndpointRoute() {
 		if ip := ep.IPv4Address(); ip.IsSet() {
 			removeEndpointRoute(ep, *ip.IPNet(32))
@@ -254,4 +488,15 @@ func Unload(ep endpoint) {
 			removeEndpointRoute(ep, *ip.IPNet(128))
 		}
 	}
+}
+
+// EndpointHash hashes the specified endpoint configuration with the current
+// datapath hash cache and returns the hash as string.
+func (l *Loader) EndpointHash(cfg datapath.EndpointConfiguration) (string, error) {
+	return l.templateCache.baseHash.sumEndpoint(l.templateCache, cfg, true)
+}
+
+// CallsMapPath gets the BPF Calls Map for the endpoint with the specified ID.
+func (l *Loader) CallsMapPath(id uint16) string {
+	return bpf.LocalMapPath(callsmap.MapName, id)
 }

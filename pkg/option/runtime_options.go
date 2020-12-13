@@ -16,6 +16,8 @@ package option
 
 import (
 	"errors"
+
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 )
 
 const (
@@ -25,8 +27,11 @@ const (
 	Conntrack           = "Conntrack"
 	Debug               = "Debug"
 	DebugLB             = "DebugLB"
+	DebugPolicy         = "DebugPolicy"
 	DropNotify          = "DropNotification"
 	TraceNotify         = "TraceNotification"
+	PolicyVerdictNotify = "PolicyVerdictNotification"
+	PolicyAuditMode     = "PolicyAuditMode"
 	MonitorAggregation  = "MonitorAggregationLevel"
 	NAT46               = "NAT46"
 	AlwaysEnforce       = "always"
@@ -68,6 +73,11 @@ var (
 		Description: "Enable debugging trace statements for load balancer",
 	}
 
+	specDebugPolicy = Option{
+		Define:      "POLICY_DEBUG",
+		Description: "Enable debugging trace statements for policy enforcement",
+	}
+
 	specDropNotify = Option{
 		Define:      "DROP_NOTIFY",
 		Description: "Enable drop notifications",
@@ -76,6 +86,16 @@ var (
 	specTraceNotify = Option{
 		Define:      "TRACE_NOTIFY",
 		Description: "Enable trace notifications",
+	}
+
+	specPolicyVerdictNotify = Option{
+		Define:      "POLICY_VERDICT_NOTIFY",
+		Description: "Enable policy verdict notifications",
+	}
+
+	specPolicyAuditMode = Option{
+		Define:      "POLICY_AUDIT_MODE",
+		Description: "Enable audit mode for policies",
 	}
 
 	specMonitorAggregation = Option{
@@ -102,7 +122,7 @@ var (
 				if !Config.EnableIPv6 {
 					return ErrNAT46ReqIPv6
 				}
-				if Config.DatapathMode == DatapathModeIpvlan {
+				if Config.DatapathMode == datapathOption.DatapathModeIpvlan {
 					return ErrNAT46ReqVeth
 				}
 			}

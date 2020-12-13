@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2018-2019 Authors of Cilium
-#include <linux/bpf.h>
-#include <string.h>
 
-#define LB_RR_MAX_SEQ
+#include <bpf/ctx/skb.h>
+#include <bpf/api.h>
+
 #include "lib/utils.h"
 #include "lib/common.h"
 #include "lib/eth.h"
@@ -26,7 +26,8 @@ struct bpf_elf_map __section_maps CALLS_MAP = {
 	.max_elem	= CALLS_MAP_ID,
 };
 
-__section_tail(CALLS_MAP_ID, 0) int tail_lxc_prog(struct __sk_buff *skb) {
+__section_tail(CALLS_MAP_ID, 0)
+int tail_lxc_prog(struct __sk_buff *skb) {
 	return TC_ACT_OK;
 }
 

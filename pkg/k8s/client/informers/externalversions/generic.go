@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -51,10 +51,20 @@ func (f *genericInformer) Lister() cache.GenericLister {
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
 	switch resource {
 	// Group=cilium.io, Version=v2
+	case v2.SchemeGroupVersion.WithResource("ciliumclusterwidenetworkpolicies"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Cilium().V2().CiliumClusterwideNetworkPolicies().Informer()}, nil
 	case v2.SchemeGroupVersion.WithResource("ciliumendpoints"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Cilium().V2().CiliumEndpoints().Informer()}, nil
+	case v2.SchemeGroupVersion.WithResource("ciliumexternalworkloads"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Cilium().V2().CiliumExternalWorkloads().Informer()}, nil
+	case v2.SchemeGroupVersion.WithResource("ciliumidentities"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Cilium().V2().CiliumIdentities().Informer()}, nil
+	case v2.SchemeGroupVersion.WithResource("ciliumlocalredirectpolicies"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Cilium().V2().CiliumLocalRedirectPolicies().Informer()}, nil
 	case v2.SchemeGroupVersion.WithResource("ciliumnetworkpolicies"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Cilium().V2().CiliumNetworkPolicies().Informer()}, nil
+	case v2.SchemeGroupVersion.WithResource("ciliumnodes"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Cilium().V2().CiliumNodes().Informer()}, nil
 
 	}
 

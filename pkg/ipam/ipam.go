@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,14 +17,13 @@ package ipam
 import (
 	"net"
 
+	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/datapath"
-	"github.com/cilium/cilium/pkg/defaults"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
 	"github.com/sirupsen/logrus"
-	"github.com/vishvananda/netlink"
-	"k8s.io/kubernetes/pkg/registry/core/service/ipallocator"
 )
 
 var (
@@ -42,26 +41,93 @@ const (
 	IPv4 Family = "ipv4"
 )
 
-// Configuration is the configuration of an IP address manager
-type Configuration struct {
-	EnableIPv4 bool
-	EnableIPv6 bool
+// DeriveFamily derives the address family of an IP
+func DeriveFamily(ip net.IP) Family {
+	if ip.To4() == nil {
+		return IPv6
+	}
+	return IPv4
+}
+
+// Configuration is the configuration passed into the IPAM subsystem
+type Configuration interface {
+	// IPv4Enabled must return true when IPv4 is enabled
+	IPv4Enabled() bool
+
+	// IPv6 must return true when IPv6 is enabled
+	IPv6Enabled() bool
+
+	// IPAMMode returns the IPAM mode
+	IPAMMode() string
+
+	// HealthCheckingEnabled must return true when health-checking is
+	// enabled
+	HealthCheckingEnabled() bool
+
+	// SetIPv4NativeRoutingCIDR is called by the IPAM module to announce
+	// the native IPv4 routing CIDR if it exists
+	SetIPv4NativeRoutingCIDR(cidr *cidr.CIDR)
+
+	// IPv4NativeRoutingCIDR is called by the IPAM module retrieve
+	// the native IPv4 routing CIDR if it exists
+	IPv4NativeRoutingCIDR() *cidr.CIDR
+}
+
+// Owner is the interface the owner of an IPAM allocator has to implement
+type Owner interface {
+	// UpdateCiliumNodeResource is called to create/update the CiliumNode
+	// resource. The function must block until the custom resource has been
+	// created.
+	UpdateCiliumNodeResource()
+}
+
+type K8sEventRegister interface {
+	// K8sEventReceived is called to do metrics accounting for received
+	// Kubernetes events
+	K8sEventReceived(scope string, action string, valid, equal bool)
+
+	// K8sEventProcessed is called to do metrics accounting for each processed
+	// Kubernetes event
+	K8sEventProcessed(scope string, action string, status bool)
 }
 
 // NewIPAM returns a new IP address manager
-func NewIPAM(nodeAddressing datapath.NodeAddressing, c Configuration) *IPAM {
+func NewIPAM(nodeAddressing datapath.NodeAddressing, c Configuration, owner Owner, k8sEventReg K8sEventRegister) *IPAM {
 	ipam := &IPAM{
-		nodeAddressing: nodeAddressing,
-		config:         c,
-		owner:          map[string]string{},
+		nodeAddressing:   nodeAddressing,
+		config:           c,
+		owner:            map[string]string{},
+		expirationTimers: map[string]string{},
+		blacklist: IPBlacklist{
+			ips: map[string]string{},
+		},
 	}
 
-	if c.EnableIPv6 {
-		ipam.IPv6Allocator = ipallocator.NewCIDRRange(nodeAddressing.IPv6().AllocationCIDR().IPNet)
-	}
+	switch c.IPAMMode() {
+	case ipamOption.IPAMKubernetes, ipamOption.IPAMClusterPool:
+		log.WithFields(logrus.Fields{
+			logfields.V4Prefix: nodeAddressing.IPv4().AllocationCIDR(),
+			logfields.V6Prefix: nodeAddressing.IPv6().AllocationCIDR(),
+		}).Infof("Initializing %s IPAM", c.IPAMMode())
 
-	if c.EnableIPv4 {
-		ipam.IPv4Allocator = ipallocator.NewCIDRRange(nodeAddressing.IPv4().AllocationCIDR().IPNet)
+		if c.IPv6Enabled() {
+			ipam.IPv6Allocator = newHostScopeAllocator(nodeAddressing.IPv6().AllocationCIDR().IPNet)
+		}
+
+		if c.IPv4Enabled() {
+			ipam.IPv4Allocator = newHostScopeAllocator(nodeAddressing.IPv4().AllocationCIDR().IPNet)
+		}
+	case ipamOption.IPAMCRD, ipamOption.IPAMENI, ipamOption.IPAMAzure:
+		log.Info("Initializing CRD-based IPAM")
+		if c.IPv6Enabled() {
+			ipam.IPv6Allocator = newCRDAllocator(IPv6, c, owner, k8sEventReg)
+		}
+
+		if c.IPv4Enabled() {
+			ipam.IPv4Allocator = newCRDAllocator(IPv4, c, owner, k8sEventReg)
+		}
+	default:
+		log.Fatalf("Unknown IPAM backend %s", c.IPAMMode())
 	}
 
 	return ipam
@@ -76,60 +142,11 @@ func nextIP(ip net.IP) {
 	}
 }
 
-func (ipam *IPAM) reserveLocalRoutes() {
-	log.Debug("Checking local routes for conflicts...")
-
-	link, err := netlink.LinkByName(defaults.HostDevice)
-	if err != nil || link == nil {
-		log.WithError(err).Warnf("Unable to find net_device %s", defaults.HostDevice)
-		return
-	}
-
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
-	if err != nil {
-		log.WithError(err).Warn("Unable to retrieve local routes")
-		return
-	}
-
-	allocRange := ipam.nodeAddressing.IPv4().AllocationCIDR()
-
-	for _, r := range routes {
-		// ignore routes which point to defaults.HostDevice
-		if r.LinkIndex == link.Attrs().Index {
-			log.WithField("route", r).Debugf("Ignoring route: points to %s", defaults.HostDevice)
-			continue
-		}
-
-		if r.Dst == nil {
-			log.WithField("route", r).Debug("Ignoring route: no destination address")
-			continue
-		}
-
-		// ignore black hole route
-		if r.Src == nil && r.Gw == nil {
-			log.WithField("route", r).Debugf("Ignoring route: black hole")
-			continue
-		}
-
-		log.WithField("route", logfields.Repr(r)).Debug("Considering route")
-
-		if allocRange.Contains(r.Dst.IP) {
-			log.WithFields(logrus.Fields{
-				"route":            r.Dst,
-				logfields.V4Prefix: allocRange,
-			}).Info("Marking local route as no-alloc in node allocation prefix")
-
-			for ip := r.Dst.IP.Mask(r.Dst.Mask); r.Dst.Contains(ip); nextIP(ip) {
-				ipam.AllocateIP(ip, r.Dst.String())
-			}
-		}
-	}
-}
-
-// ReserveLocalRoutes walks through local routes/subnets and reserves them in
-// the allocator pool in case of overlap
-func (ipam *IPAM) ReserveLocalRoutes() {
-	if ipam.IPv4Allocator != nil {
-		ipam.reserveLocalRoutes()
-	}
+// BlacklistIP ensures that a certain IP is never allocated. It is preferred to
+// use BlacklistIP() instead of allocating the IP as the allocation block can
+// change and suddenly cover the IP to be blacklisted.
+func (ipam *IPAM) BlacklistIP(ip net.IP, owner string) {
+	ipam.allocatorMutex.Lock()
+	ipam.blacklist.ips[ip.String()] = owner
+	ipam.allocatorMutex.Unlock()
 }

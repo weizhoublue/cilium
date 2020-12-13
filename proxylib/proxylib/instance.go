@@ -20,8 +20,8 @@ import (
 
 	"github.com/cilium/cilium/pkg/lock"
 
-	"github.com/cilium/proxy/go/cilium/api"
-	envoy_api_v2 "github.com/cilium/proxy/go/envoy/api/v2"
+	cilium "github.com/cilium/proxy/go/cilium/api"
+	envoy_service_disacovery "github.com/cilium/proxy/go/envoy/service/discovery/v3"
 	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
 )
@@ -38,7 +38,7 @@ type AccessLogger interface {
 }
 
 type PolicyUpdater interface {
-	PolicyUpdate(resp *envoy_api_v2.DiscoveryResponse) error
+	PolicyUpdate(resp *envoy_service_disacovery.DiscoveryResponse) error
 }
 
 type Instance struct {
@@ -65,7 +65,7 @@ func NewInstance(nodeID string, accessLogger AccessLogger) *Instance {
 	instanceId++
 
 	if nodeID == "" {
-		nodeID = fmt.Sprintf("host~127.0.0.1~libcilium-%d~localdomain", instanceId)
+		nodeID = fmt.Sprintf("host~127.0.0.2~libcilium-%d~localdomain", instanceId)
 	}
 
 	// TODO: Sidecar instance id needs to be different.
@@ -99,7 +99,7 @@ func OpenInstance(nodeID string, xdsPath string, newPolicyClient func(path, node
 		}
 		if (nodeID == "" || old.nodeID == nodeID) && xdsPath == oldXdsPath && accessLogPath == oldAccessLogPath {
 			old.openCount++
-			log.Infof("Opened existing library instance %d, open count: %d", id, old.openCount)
+			log.Debugf("Opened existing library instance %d, open count: %d", id, old.openCount)
 			return id
 		}
 	}
@@ -110,7 +110,7 @@ func OpenInstance(nodeID string, xdsPath string, newPolicyClient func(path, node
 
 	instances[instanceId] = ins
 
-	log.Infof("Opened new library instance %d", instanceId)
+	log.Debugf("Opened new library instance %d", instanceId)
 
 	return instanceId
 }
@@ -130,7 +130,7 @@ func CloseInstance(id uint64) uint64 {
 	if ins, ok := instances[id]; ok {
 		ins.openCount--
 		count = ins.openCount
-		if count <= 0 {
+		if count == 0 {
 			if ins.policyClient != nil {
 				ins.policyClient.Close()
 			}
@@ -139,9 +139,9 @@ func CloseInstance(id uint64) uint64 {
 			}
 			delete(instances, id)
 		}
-		log.Infof("CloseInstance(%d): Remaining open count: %d", id, count)
+		log.Debugf("CloseInstance(%d): Remaining open count: %d", id, count)
 	} else {
-		log.Infof("CloseInstance(%d): Not found (closed already?)", id)
+		log.Debugf("CloseInstance(%d): Not found (closed already?)", id)
 	}
 	return count
 }
@@ -165,7 +165,7 @@ func (ins *Instance) PolicyMatches(endpointPolicyName string, ingress bool, port
 }
 
 // Update the PolicyMap from a protobuf. PolicyMap is only ever changed if the whole update is successful.
-func (ins *Instance) PolicyUpdate(resp *envoy_api_v2.DiscoveryResponse) (err error) {
+func (ins *Instance) PolicyUpdate(resp *envoy_service_disacovery.DiscoveryResponse) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			var ok bool

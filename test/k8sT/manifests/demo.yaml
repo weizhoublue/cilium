@@ -14,15 +14,24 @@ metadata:
   name: app1-service
 spec:
   ports:
-  - port: 80
+  - name: http
+    port: 80
+    protocol: TCP
+  - name: tftp
+    port: 69
+    protocol: UDP
   selector:
     id: app1
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: app1
 spec:
+  selector:
+    matchLabels:
+      id: app1
+      zgroup: testapp
   replicas: 2
   template:
     metadata:
@@ -34,7 +43,7 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: web
-        image: docker.io/cilium/demo-httpd:latest
+        image: docker.io/cilium/demo-httpd:1.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
@@ -42,14 +51,25 @@ spec:
           httpGet:
             path: /
             port: 80
+      - name: udp
+        image: docker.io/cilium/echoserver-udp:v2020.01.30
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 69
+          protocol: UDP
       nodeSelector:
-        "kubernetes.io/hostname": k8s1
+        "cilium.io/ci-node": k8s1
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: app2
 spec:
+  selector:
+    matchLabels:
+      id: app2
+      zgroup: testapp
+      appSecond: "true"
   replicas: 1
   template:
     metadata:
@@ -62,19 +82,25 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: app-frontend
-        image: docker.io/cilium/demo-client:latest
+        image: docker.io/cilium/demo-client:1.0
         imagePullPolicy: IfNotPresent
         command: [ "sleep" ]
         args:
           - "1000h"
+      # k8sT/Services.go:"Checks service on same node" requires the pod to be
+      # scheduled on the same node as app1
       nodeSelector:
-        "kubernetes.io/hostname": k8s1
+        "cilium.io/ci-node": k8s1
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: app3
 spec:
+  selector:
+    matchLabels:
+      id: app3
+      zgroup: testapp
   replicas: 1
   template:
     metadata:
@@ -85,7 +111,7 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: app-frontend
-        image: docker.io/cilium/demo-client:latest
+        image: docker.io/cilium/demo-client:1.0
         imagePullPolicy: IfNotPresent
         command: [ "sleep" ]
         args:
@@ -93,4 +119,4 @@ spec:
         ports:
         - containerPort: 80
       nodeSelector:
-        "kubernetes.io/hostname": k8s1
+        "cilium.io/ci-node": k8s1

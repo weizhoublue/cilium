@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,37 +19,42 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/client"
+	"github.com/cilium/cilium/pkg/datapath/connector"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/endpoint/connector"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/netns"
-	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/uuid"
+	"github.com/cilium/cilium/pkg/sysctl"
 	"github.com/cilium/cilium/pkg/version"
 	chainingapi "github.com/cilium/cilium/plugins/cilium-cni/chaining/api"
+	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/awscni"
+	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/azure"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/flannel"
+	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/generic-veth"
 	_ "github.com/cilium/cilium/plugins/cilium-cni/chaining/portmap"
 	"github.com/cilium/cilium/plugins/cilium-cni/types"
+	"github.com/cilium/ebpf"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	cniTypes "github.com/containernetworking/cni/pkg/types"
 	cniTypesVer "github.com/containernetworking/cni/pkg/types/current"
 	cniVersion "github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/ns"
+	gops "github.com/google/gops/agent"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -58,7 +63,6 @@ var (
 )
 
 func init() {
-	logging.SetLogLevel(logrus.DebugLevel)
 	runtime.LockOSThread()
 }
 
@@ -112,11 +116,6 @@ func releaseIP(client *client.Client, ip string) {
 	}
 }
 
-func releaseIPs(client *client.Client, addr *models.AddressPair) {
-	releaseIP(client, addr.IPV6)
-	releaseIP(client, addr.IPV4)
-}
-
 func addIPConfigToLink(ip addressing.CiliumIP, routes []route.Route, link netlink.Link, ifName string) error {
 	log.WithFields(logrus.Fields{
 		logfields.IPAddr:    ip,
@@ -125,6 +124,9 @@ func addIPConfigToLink(ip addressing.CiliumIP, routes []route.Route, link netlin
 	}).Debug("Configuring link")
 
 	addr := &netlink.Addr{IPNet: ip.EndpointPrefix()}
+	if ip.IsIPv6() {
+		addr.Flags = unix.IFA_F_NODAD
+	}
 	if err := netlink.AddrAdd(link, addr); err != nil {
 		return fmt.Errorf("failed to add addr to %q: %v", ifName, err)
 	}
@@ -259,24 +261,52 @@ func prepareIP(ipAddr string, isIPv6 bool, state *CmdState, mtu int) (*cniTypesV
 	}, rt, nil
 }
 
+func setupLogging(n *types.NetConf) error {
+	f := n.LogFormat
+	if f == "" {
+		f = string(logging.DefaultLogFormat)
+	}
+	logOptions := logging.LogOptions{
+		logging.FormatOpt: f,
+	}
+	return logging.SetupLogging([]string{}, logOptions, "cilium-cni", n.EnableDebug)
+}
+
 func cmdAdd(args *skel.CmdArgs) (err error) {
 	var (
 		ipConfig *cniTypesVer.IPConfig
 		routes   []*cniTypes.Route
 		ipam     *models.IPAMResponse
 		n        *types.NetConf
-		cniVer   string
 		c        *client.Client
 		netNs    ns.NetNS
 	)
 
-	logger := log.WithField("eventUUID", uuid.NewUUID())
-	logger.WithField("args", args).Debug("Processing CNI ADD request")
-
-	n, cniVer, err = types.LoadNetConf(args.StdinData)
+	n, err = types.LoadNetConf(args.StdinData)
 	if err != nil {
 		err = fmt.Errorf("unable to parse CNI configuration \"%s\": %s", args.StdinData, err)
 		return
+	}
+
+	if innerErr := setupLogging(n); innerErr != nil {
+		err = fmt.Errorf("unable to setup logging: %w", innerErr)
+		return
+	}
+
+	logger := log.WithField("eventUUID", uuid.New())
+
+	if n.EnableDebug {
+		if err := gops.Listen(gops.Options{}); err != nil {
+			log.WithError(err).Warn("Unable to start gops")
+		} else {
+			defer gops.Close()
+		}
+	}
+	logger.Debugf("Processing CNI ADD request %#v", args)
+
+	logger.Debugf("CNI NetConf: %#v", n)
+	if n.PrevResult != nil {
+		logger.Debugf("CNI Previous result: %#v", n.PrevResult)
 	}
 
 	cniArgs := types.ArgsSpec{}
@@ -284,24 +314,24 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		err = fmt.Errorf("unable to extract CNI arguments: %s", err)
 		return
 	}
+	logger.Debugf("CNI Args: %#v", cniArgs)
 
 	c, err = client.NewDefaultClientWithTimeout(defaults.ClientConnectTimeout)
 	if err != nil {
-		err = fmt.Errorf("unable to connect to Cilium daemon: %s", err)
+		err = fmt.Errorf("unable to connect to Cilium daemon: %s", client.Hint(err))
 		return
 	}
 
-	if len(n.NetConf.RawPrevResult) != 0 {
+	if len(n.NetConf.RawPrevResult) != 0 && n.Name != chainingapi.DefaultConfigName {
 		if chainAction := chainingapi.Lookup(n.Name); chainAction != nil {
 			var (
 				res *cniTypesVer.Result
 				ctx = chainingapi.PluginContext{
-					Logger:     logger,
-					Args:       args,
-					CniArgs:    cniArgs,
-					NetConf:    n,
-					CniVersion: cniVer,
-					Client:     c,
+					Logger:  logger,
+					Args:    args,
+					CniArgs: cniArgs,
+					NetConf: n,
+					Client:  c,
 				}
 			)
 
@@ -310,7 +340,9 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 				if err != nil {
 					return
 				}
-				return cniTypes.PrintResult(res, cniVer)
+				logger.Debugf("Returning result %#v", res)
+				err = cniTypes.PrintResult(res, n.CNIVersion)
+				return
 			}
 		} else {
 			logger.Warnf("Unknown CNI chaining configuration name '%s'", n.Name)
@@ -358,7 +390,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	}
 
 	switch conf.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		var (
 			veth      *netlink.Veth
 			peer      *netlink.Link
@@ -371,7 +403,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		}
 		defer func() {
 			if err != nil {
-				if err2 := netlink.LinkDel(veth); err != nil {
+				if err2 := netlink.LinkDel(veth); err2 != nil {
 					logger.WithError(err2).WithField(logfields.Veth, veth.Name).Warn("failed to clean up and delete veth")
 				}
 			}
@@ -387,12 +419,12 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 			err = fmt.Errorf("unable to set up veth on container side: %s", err)
 			return
 		}
-	case option.DatapathModeIpvlan:
+	case datapathOption.DatapathModeIpvlan:
 		ipvlanConf := *conf.IpvlanConfiguration
 		index := int(ipvlanConf.MasterDeviceIndex)
 
-		var mapFD int
-		mapFD, err = connector.CreateAndSetupIpvlanSlave(
+		var m *ebpf.Map
+		m, err = connector.CreateAndSetupIpvlanSlave(
 			ep.ContainerID, args.IfName, netNs,
 			int(conf.DeviceMTU), index, ipvlanConf.OperationMode, ep,
 		)
@@ -400,11 +432,11 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 			err = fmt.Errorf("unable to setup ipvlan datapath: %s", err)
 			return
 		}
-		defer unix.Close(mapFD)
+		defer m.Close()
 	}
 
 	podName := string(cniArgs.K8S_POD_NAMESPACE) + "/" + string(cniArgs.K8S_POD_NAME)
-	ipam, err = c.IPAMAllocate("", podName)
+	ipam, err = c.IPAMAllocate("", podName, true)
 	if err != nil {
 		err = fmt.Errorf("unable to allocate IP via local cilium agent: %s", err)
 		return
@@ -443,6 +475,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 
 	if ipv6IsEnabled(ipam) {
 		ep.Addressing.IPV6 = ipam.Address.IPV6
+		ep.Addressing.IPV6ExpirationUUID = ipam.IPV6.ExpirationUUID
 
 		ipConfig, routes, err = prepareIP(ep.Addressing.IPV6, true, &state, int(conf.RouteMTU))
 		if err != nil {
@@ -455,6 +488,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 
 	if ipv4IsEnabled(ipam) {
 		ep.Addressing.IPV4 = ipam.Address.IPV4
+		ep.Addressing.IPV4ExpirationUUID = ipam.IPV4.ExpirationUUID
 
 		ipConfig, routes, err = prepareIP(ep.Addressing.IPV4, false, &state, int(conf.RouteMTU))
 		if err != nil {
@@ -465,12 +499,21 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 		res.Routes = append(res.Routes, routes...)
 	}
 
+	switch conf.IpamMode {
+	case ipamOption.IPAMENI, ipamOption.IPAMAzure:
+		err = interfaceAdd(ipConfig, ipam.IPV4, conf)
+		if err != nil {
+			err = fmt.Errorf("unable to setup interface datapath: %s", err)
+			return
+		}
+	}
+
 	var macAddrStr string
 	if err = netNs.Do(func(_ ns.NetNS) error {
-		allInterfacesPath := filepath.Join("/proc", "sys", "net", "ipv6", "conf", "all", "disable_ipv6")
-		err = connector.WriteSysConfig(allInterfacesPath, "0\n")
-		if err != nil {
-			logger.WithError(err).Warn("unable to enable ipv6 on all interfaces")
+		if ipv6IsEnabled(ipam) {
+			if err := sysctl.Disable("net.ipv6.conf.all.disable_ipv6"); err != nil {
+				logger.WithError(err).Warn("unable to enable ipv6 on all interfaces")
+			}
 		}
 		macAddrStr, err = configureIface(ipam, args.IfName, &state)
 		return err
@@ -482,8 +525,13 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	res.Interfaces = append(res.Interfaces, &cniTypesVer.Interface{
 		Name:    args.IfName,
 		Mac:     macAddrStr,
-		Sandbox: "/proc/" + args.Netns + "/ns/net",
+		Sandbox: args.Netns,
 	})
+
+	// Add to the result the Interface as index of Interfaces
+	for i := range res.Interfaces {
+		res.IPs[i].Interface = cniTypesVer.Int(i)
+	}
 
 	// Specify that endpoint must be regenerated synchronously. See GH-4409.
 	ep.SyncBuildEndpoint = true
@@ -496,19 +544,70 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 
 	logger.WithFields(logrus.Fields{
 		logfields.ContainerID: ep.ContainerID}).Debug("Endpoint successfully created")
-	return cniTypes.PrintResult(res, cniVer)
+	return cniTypes.PrintResult(res, n.CNIVersion)
 }
 
+// cmdDel is invoked on CNI DEL
+//
+// Note: ENI specific attributes do not need to be released as the ENIs and ENI
+// IPs can be reused and are not released until the node terminates.
 func cmdDel(args *skel.CmdArgs) error {
 	// Note about when to return errors: kubelet will retry the deletion
 	// for a long time. Therefore, only return an error for errors which
 	// are guaranteed to be recoverable.
-	log.WithField("args", args).Debug("Processing CNI DEL request")
+	n, err := types.LoadNetConf(args.StdinData)
+	if err != nil {
+		err = fmt.Errorf("unable to parse CNI configuration \"%s\": %s", args.StdinData, err)
+		return err
+	}
+
+	if err := setupLogging(n); err != nil {
+		return fmt.Errorf("unable to setup logging: %w", err)
+	}
+
+	logger := log.WithField("eventUUID", uuid.New())
+
+	if n.EnableDebug {
+		if err := gops.Listen(gops.Options{}); err != nil {
+			log.WithError(err).Warn("Unable to start gops")
+		} else {
+			defer gops.Close()
+		}
+	}
+	logger.Debugf("Processing CNI DEL request %#v", args)
+
+	logger.Debugf("CNI NetConf: %#v", n)
+
+	cniArgs := types.ArgsSpec{}
+	if err = cniTypes.LoadArgs(args.Args, &cniArgs); err != nil {
+		return fmt.Errorf("unable to extract CNI arguments: %s", err)
+	}
+	logger.Debugf("CNI Args: %#v", cniArgs)
 
 	c, err := client.NewDefaultClientWithTimeout(defaults.ClientConnectTimeout)
 	if err != nil {
 		// this error can be recovered from
-		return fmt.Errorf("unable to connect to Cilium daemon: %s", err)
+		return fmt.Errorf("unable to connect to Cilium daemon: %s", client.Hint(err))
+	}
+
+	if n.Name != chainingapi.DefaultConfigName {
+		if chainAction := chainingapi.Lookup(n.Name); chainAction != nil {
+			var (
+				ctx = chainingapi.PluginContext{
+					Logger:  logger,
+					Args:    args,
+					CniArgs: cniArgs,
+					NetConf: n,
+					Client:  c,
+				}
+			)
+
+			if chainAction.ImplementsDelete() {
+				return chainAction.Delete(context.TODO(), ctx)
+			}
+		} else {
+			logger.Warnf("Unknown CNI chaining configuration name '%s'", n.Name)
+		}
 	}
 
 	id := endpointid.NewID(endpointid.ContainerIdPrefix, args.ContainerID)
@@ -519,15 +618,7 @@ func cmdDel(args *skel.CmdArgs) error {
 		// DeleteEndpointIDErrors: Errors encountered while deleting,
 		//                         the endpoint is always deleted though, no
 		//                         need to retry
-		// ClientError: Various reasons, type will be ClientError and
-		//              Recoverable() will return true if error can be
-		//              retried
 		log.WithError(err).Warning("Errors encountered while deleting endpoint")
-		if clientError, ok := err.(client.ClientError); ok {
-			if clientError.Recoverable() {
-				return err
-			}
-		}
 	}
 
 	netNs, err := ns.GetNS(args.Netns)

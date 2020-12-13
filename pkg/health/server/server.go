@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Authors of Cilium
+// Copyright 2017-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,29 +18,19 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cilium/cilium/api/v1/client/daemon"
 	healthModels "github.com/cilium/cilium/api/v1/health/models"
 	healthApi "github.com/cilium/cilium/api/v1/health/server"
 	"github.com/cilium/cilium/api/v1/health/server/restapi"
+	"github.com/cilium/cilium/api/v1/models"
 	ciliumPkg "github.com/cilium/cilium/pkg/client"
 	"github.com/cilium/cilium/pkg/health/defaults"
+	"github.com/cilium/cilium/pkg/health/probe/responder"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
 	"github.com/go-openapi/loads"
-	"github.com/jessevdk/go-flags"
-)
-
-// AdminOption is an option for determining over which protocols the APIs are
-// exposed.
-type AdminOption string
-
-const (
-	// AdminOptionAny exposes every API over both Unix and HTTP sockets.
-	AdminOptionAny AdminOption = "any"
-
-	// AdminOptionUnix restricts most APIs to hosting over Unix sockets.
-	AdminOptionUnix AdminOption = "unix"
 )
 
 var (
@@ -51,19 +41,11 @@ var (
 	PortToPaths = map[int]string{
 		defaults.HTTPPathPort: "Via L3",
 	}
-
-	// AdminOptions is the slice of all valid AdminOption values.
-	AdminOptions = []AdminOption{
-		AdminOptionAny,
-		AdminOptionUnix,
-	}
 )
 
 // Config stores the configuration data for a cilium-health server.
 type Config struct {
 	Debug         bool
-	Passive       bool
-	Admin         AdminOption
 	CiliumURI     string
 	ProbeInterval time.Duration
 	ProbeDeadline time.Duration
@@ -82,8 +64,12 @@ type Server struct {
 	healthApi.Server  // Server to provide cilium-health API
 	*ciliumPkg.Client // Client to "GET /healthz" on cilium daemon
 	Config
+	// clientID is the client ID returned by the cilium-agent that should
+	// be used when making frequent requests. The server will return
+	// a diff of the nodes added and removed based on this clientID.
+	clientID int64
 
-	tcpServers []*healthApi.Server // Servers for external pings
+	tcpServers []*responder.Server // Servers for external pings
 	startTime  time.Time
 
 	// The lock protects against read and write access to the IP->Node map,
@@ -99,35 +85,74 @@ func (s *Server) DumpUptime() string {
 	return time.Since(s.startTime).String()
 }
 
-// getNodes fetches the latest set of nodes in the cluster from the Cilium
-// daemon, and updates the Server's 'nodes' map.
-func (s *Server) getNodes() (nodeMap, error) {
+// getNodes fetches the nodes added and removed from the last time the server
+// made a request to the daemon.
+func (s *Server) getNodes() (nodeMap, nodeMap, error) {
 	scopedLog := log
 	if s.CiliumURI != "" {
 		scopedLog = log.WithField("URI", s.CiliumURI)
 	}
-	scopedLog.Debug("Sending request for /healthz ...")
+	scopedLog.Debug("Sending request for /cluster/nodes ...")
 
-	resp, err := s.Daemon.GetHealthz(nil)
+	clusterNodesParam := daemon.NewGetClusterNodesParams()
+	s.RWMutex.RLock()
+	cID := s.clientID
+	s.RWMutex.RUnlock()
+	clusterNodesParam.SetClientID(&cID)
+	resp, err := s.Daemon.GetClusterNodes(clusterNodesParam)
 	if err != nil {
-		return nil, fmt.Errorf("unable to get agent health: %s", err)
+		return nil, nil, fmt.Errorf("unable to get nodes' cluster: %s", err)
 	}
-	log.Debug("Got cilium /healthz")
+	log.Debug("Got cilium /cluster/nodes")
 
-	if resp == nil || resp.Payload == nil || resp.Payload.Cluster == nil {
+	if resp == nil || resp.Payload == nil {
+		return nil, nil, fmt.Errorf("received nil health response")
+	}
+
+	s.RWMutex.Lock()
+	s.clientID = resp.Payload.ClientID
+
+	if resp.Payload.Self != "" {
+		s.localStatus = &healthModels.SelfStatus{
+			Name: resp.Payload.Self,
+		}
+	}
+	s.RWMutex.Unlock()
+
+	nodesAdded := nodeElementSliceToNodeMap(resp.Payload.NodesAdded)
+	nodesRemoved := nodeElementSliceToNodeMap(resp.Payload.NodesRemoved)
+
+	return nodesAdded, nodesRemoved, nil
+}
+
+// getAllNodes fetches all nodes the daemon is aware of.
+func (s *Server) getAllNodes() (nodeMap, error) {
+	scopedLog := log
+	if s.CiliumURI != "" {
+		scopedLog = log.WithField("URI", s.CiliumURI)
+	}
+	scopedLog.Debug("Sending request for /cluster/nodes ...")
+
+	resp, err := s.Daemon.GetClusterNodes(nil)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get nodes' cluster: %s", err)
+	}
+	log.Debug("Got cilium /cluster/nodes")
+
+	if resp == nil || resp.Payload == nil {
 		return nil, fmt.Errorf("received nil health response")
 	}
 
-	if resp.Payload.Cluster.Self != "" {
-		s.RWMutex.Lock()
-		s.localStatus = &healthModels.SelfStatus{
-			Name: resp.Payload.Cluster.Self,
-		}
-		s.RWMutex.Unlock()
-	}
+	nodesAdded := nodeElementSliceToNodeMap(resp.Payload.NodesAdded)
 
+	return nodesAdded, nil
+}
+
+// nodeElementSliceToNodeMap returns a slice of models.NodeElement into a
+// nodeMap.
+func nodeElementSliceToNodeMap(nodeElements []*models.NodeElement) nodeMap {
 	nodes := make(nodeMap)
-	for _, n := range resp.Payload.Cluster.Nodes {
+	for _, n := range nodeElements {
 		if n.PrimaryAddress != nil {
 			if n.PrimaryAddress.IPV4 != nil {
 				nodes[ipString(n.PrimaryAddress.IPV4.IP)] = NewHealthNode(n)
@@ -148,7 +173,7 @@ func (s *Server) getNodes() (nodeMap, error) {
 			}
 		}
 	}
-	return nodes, nil
+	return nodes
 }
 
 // updateCluster makes the specified health report visible to the API.
@@ -188,7 +213,7 @@ func (s *Server) GetStatusResponse() *healthModels.HealthStatusResponse {
 // runs a synchronous probe across the cluster, updates the connectivity cache
 // and returns the results.
 func (s *Server) FetchStatusResponse() (*healthModels.HealthStatusResponse, error) {
-	nodes, err := s.getNodes()
+	nodes, err := s.getAllNodes()
 	if err != nil {
 		return nil, err
 	}
@@ -204,23 +229,27 @@ func (s *Server) FetchStatusResponse() (*healthModels.HealthStatusResponse, erro
 	return s.GetStatusResponse(), nil
 }
 
-// Run services that are not considered 'Passive': Actively probing other
-// hosts and endpoints over ICMP and HTTP, and hosting a local Unix socket.
+// Run services that are actively probing other hosts and endpoints over
+// ICMP and HTTP, and hosting the health admin API on a local Unix socket.
 // Blocks indefinitely, or returns any errors that occur hosting the Unix
 // socket API server.
 func (s *Server) runActiveServices() error {
 	// Run it once at the start so we get some initial status
 	s.FetchStatusResponse()
 
-	nodes, _ := s.getNodes()
-	prober := newProber(s, nodes)
+	// We can safely ignore nodesRemoved since it's the first time we are
+	// fetching the nodes from the server.
+	nodesAdded, _, _ := s.getNodes()
+	prober := newProber(s, nodesAdded)
 	prober.MaxRTT = s.ProbeInterval
 	prober.OnIdle = func() {
 		// Fetch results and update set of nodes to probe every
 		// ProbeInterval
 		s.updateCluster(prober.getResults())
-		if nodes, err := s.getNodes(); err == nil {
-			prober.setNodes(nodes)
+		if nodesAdded, nodesRemoved, err := s.getNodes(); err != nil {
+			log.WithError(err).Error("unable to get cluster nodes")
+		} else {
+			prober.setNodes(nodesAdded, nodesRemoved)
 		}
 	}
 	prober.RunLoop()
@@ -231,8 +260,6 @@ func (s *Server) runActiveServices() error {
 
 // Serve spins up the following goroutines:
 // * TCP API Server: Responders to the health API "/hello" message, one per path
-//
-// Also, if "Passive" is not set in s.Config:
 // * Prober: Periodically run pings across the cluster at a configured interval
 //   and update the server's connectivity status cache.
 // * Unix API Server: Handle all health API requests over a unix socket.
@@ -248,11 +275,9 @@ func (s *Server) Serve() (err error) {
 		}()
 	}
 
-	if !s.Config.Passive {
-		go func() {
-			errors <- s.runActiveServices()
-		}()
-	}
+	go func() {
+		errors <- s.runActiveServices()
+	}()
 
 	// Block for the first error, then return.
 	err = <-errors
@@ -264,48 +289,24 @@ func (s *Server) Shutdown() {
 	for i := range s.tcpServers {
 		s.tcpServers[i].Shutdown()
 	}
-	if !s.Config.Passive {
-		s.Server.Shutdown()
-	}
+	s.Server.Shutdown()
 }
 
-func enableAPI(opt AdminOption, tcpPort int) bool {
-	switch opt {
-	case AdminOptionAny:
-		return true
-	case AdminOptionUnix:
-		return tcpPort == 0
-	default:
-		return false
-	}
-}
-
-// newServer instantiates a new instance of the API that serves the health
-// API on the specified port. If tcpPort is 0, then a unix socket is opened
-// which serves the entire API. If a tcpPort is specified, then it returns
-// a server which only answers get requests for the root URL "/".
-func (s *Server) newServer(spec *loads.Document, tcpPort int) *healthApi.Server {
-	api := restapi.NewCiliumHealthAPI(spec)
+// newServer instantiates a new instance of the health API server on the
+// defaults unix socket.
+func (s *Server) newServer(spec *loads.Document) *healthApi.Server {
+	api := restapi.NewCiliumHealthAPIAPI(spec)
 	api.Logger = log.Printf
 
-	// /hello
-	api.GetHelloHandler = NewGetHelloHandler(s)
-
-	if enableAPI(s.Config.Admin, tcpPort) {
-		api.GetHealthzHandler = NewGetHealthzHandler(s)
-		api.ConnectivityGetStatusHandler = NewGetStatusHandler(s)
-		api.ConnectivityPutStatusProbeHandler = NewPutStatusProbeHandler(s)
-	}
+	// Admin API
+	api.GetHealthzHandler = NewGetHealthzHandler(s)
+	api.ConnectivityGetStatusHandler = NewGetStatusHandler(s)
+	api.ConnectivityPutStatusProbeHandler = NewPutStatusProbeHandler(s)
 
 	srv := healthApi.NewServer(api)
-	if tcpPort == 0 {
-		srv.EnabledListeners = []string{"unix"}
-		srv.SocketPath = flags.Filename(defaults.SockPath)
-	} else {
-		srv.EnabledListeners = []string{"http"}
-		srv.Port = tcpPort
-		srv.Host = "" // FIXME: Allow binding to specific IPs
-	}
+	srv.EnabledListeners = []string{"unix"}
+	srv.SocketPath = defaults.SockPath
+
 	srv.ConfigureAPI()
 
 	return srv
@@ -316,7 +317,7 @@ func NewServer(config Config) (*Server, error) {
 	server := &Server{
 		startTime:    time.Now(),
 		Config:       config,
-		tcpServers:   []*healthApi.Server{},
+		tcpServers:   []*responder.Server{},
 		connectivity: &healthReport{},
 	}
 
@@ -325,17 +326,16 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 
-	if !config.Passive {
-		cl, err := ciliumPkg.NewClient(config.CiliumURI)
-		if err != nil {
-			return nil, err
-		}
-
-		server.Client = cl
-		server.Server = *server.newServer(swaggerSpec, 0)
+	cl, err := ciliumPkg.NewClient(config.CiliumURI)
+	if err != nil {
+		return nil, err
 	}
+
+	server.Client = cl
+	server.Server = *server.newServer(swaggerSpec)
+
 	for port := range PortToPaths {
-		srv := server.newServer(swaggerSpec, port)
+		srv := responder.NewServer(port)
 		server.tcpServers = append(server.tcpServers, srv)
 	}
 

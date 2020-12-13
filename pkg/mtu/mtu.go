@@ -14,6 +14,8 @@
 
 package mtu
 
+import "net"
+
 const (
 	// MaxMTU is the highest MTU that can be used for devices and routes
 	// handled by Cilium. It will typically be used to configure inbound
@@ -77,10 +79,16 @@ type Configuration struct {
 	// Similar to StandardMTU, this is a singleton for the process.
 	tunnelMTU int
 
-	// encryptMTU is the MTU used for configuratin a encryption route
-	// without tunneling. If tunneling is enabled the tunnelMTU is used
-	// which will include additional encryption overhead if needed.
-	encryptMTU int
+	// preEncrypMTU is the MTU used for configurations of a encryption route.
+	// If tunneling is enabled the tunnelMTU is used which will include
+	// additional encryption overhead if needed.
+	preEncryptMTU int
+
+	// postEncryptMTU is the MTU used for configurations of a encryption
+	// route _after_ encryption tags have been addded. These will be used
+	// in the encryption routing table. The MTU accounts for the tunnel
+	// overhead, if any, but assumes packets are already encrypted.
+	postEncryptMTU int
 
 	encapEnabled   bool
 	encryptEnabled bool
@@ -90,13 +98,17 @@ type Configuration struct {
 // specified, otherwise it will be automatically detected. if encapEnabled is
 // true, the MTU is adjusted to account for encapsulation overhead for all
 // routes involved in node to node communication.
-func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, mtu int) Configuration {
+func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, mtu int, mtuDetectIP net.IP) Configuration {
 	encryptOverhead := 0
 
 	if mtu == 0 {
 		var err error
 
-		mtu, err = autoDetect()
+		if mtuDetectIP != nil {
+			mtu, err = getMTUFromIf(mtuDetectIP)
+		} else {
+			mtu, err = autoDetect()
+		}
 		if err != nil {
 			log.WithError(err).Warning("Unable to automatically detect MTU")
 			mtu = EthernetMTU
@@ -105,14 +117,15 @@ func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, m
 
 	if encryptEnabled {
 		// Add the difference between the default and the actual key sizes here
-		// to account for users specifing non-default auth key lengths.
+		// to account for users specifying non-default auth key lengths.
 		encryptOverhead = EncryptionIPsecOverhead + (authKeySize - EncryptionDefaultAuthKeyLength)
 	}
 
 	conf := Configuration{
 		standardMTU:    mtu,
 		tunnelMTU:      mtu - (TunnelOverhead + encryptOverhead),
-		encryptMTU:     mtu - encryptOverhead,
+		postEncryptMTU: mtu - TunnelOverhead,
+		preEncryptMTU:  mtu - encryptOverhead,
 		encapEnabled:   encapEnabled,
 		encryptEnabled: encryptEnabled,
 	}
@@ -124,6 +137,20 @@ func NewConfiguration(authKeySize int, encryptEnabled bool, encapEnabled bool, m
 	return conf
 }
 
+// GetRoutePostEncryptMTU return the MTU to be used on the encryption routing
+// table. This is the MTU without encryption overhead and in the tunnel
+// case accounts for the tunnel overhead.
+func (c *Configuration) GetRoutePostEncryptMTU() int {
+	if c.encapEnabled {
+		if c.postEncryptMTU == 0 {
+			return EthernetMTU - TunnelOverhead
+		}
+		return c.postEncryptMTU
+
+	}
+	return c.GetDeviceMTU()
+}
+
 // GetRouteMTU returns the MTU to be used on the network. When running in
 // tunneling mode and/or with encryption enabled, this will have tunnel and
 // encryption overhead accounted for.
@@ -133,10 +160,10 @@ func (c *Configuration) GetRouteMTU() int {
 	}
 
 	if c.encryptEnabled && !c.encapEnabled {
-		if c.encryptMTU == 0 {
+		if c.preEncryptMTU == 0 {
 			return EthernetMTU - EncryptionIPsecOverhead
 		}
-		return c.encryptMTU
+		return c.preEncryptMTU
 	}
 
 	if c.tunnelMTU == 0 {

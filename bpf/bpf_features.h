@@ -1,10 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
 #ifndef BPF_FEATURES_H_
 #define BPF_FEATURES_H_
 
-#define HAVE_SKB_CHANGE_TAIL
-
-#define HAVE_MAP_VAL_ADJ
-
-#define HAVE_MARK_MAP_VALS
+#define HAVE_PROG_TYPE_HELPER(prog_type, helper)	\
+	BPF__PROG_TYPE_ ## prog_type ## __HELPER_ ## helper
+#define BPF__PROG_TYPE_sched_cls__HELPER_bpf_skb_change_tail 1
 
 #endif /* BPF_FEATURES_H_ */

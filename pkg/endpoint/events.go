@@ -15,12 +15,21 @@
 package endpoint
 
 import (
+	"strconv"
+
+	"github.com/cilium/cilium/pkg/bandwidth"
+	"github.com/cilium/cilium/pkg/datapath/iptables"
 	"github.com/cilium/cilium/pkg/eventqueue"
+	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/bwmap"
+	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/policy"
+
+	"github.com/sirupsen/logrus"
 )
 
 // EndpointRegenerationEvent contains all fields necessary to regenerate an endpoint.
 type EndpointRegenerationEvent struct {
-	owner        Owner
 	regenContext *regenerationContext
 	ep           *Endpoint
 }
@@ -28,24 +37,23 @@ type EndpointRegenerationEvent struct {
 // Handle handles the regeneration event for the endpoint.
 func (ev *EndpointRegenerationEvent) Handle(res chan interface{}) {
 	e := ev.ep
-	owner := ev.owner
 	regenContext := ev.regenContext
 
-	err := e.RLockAlive()
+	err := e.rlockAlive()
 	if err != nil {
-		e.LogDisconnectedMutexAction(err, "before regeneration")
+		e.logDisconnectedMutexAction(err, "before regeneration")
 		res <- &EndpointRegenerationResult{
 			err: err,
 		}
 
 		return
 	}
-	e.RUnlock()
+	e.runlock()
 
 	// We should only queue the request after we use all the endpoint's
 	// lock/unlock. Otherwise this can get a deadlock if the endpoint is
 	// being deleted at the same time. More info PR-1777.
-	doneFunc, err := owner.QueueEndpointBuild(regenContext.parentContext, uint64(e.ID))
+	doneFunc, err := e.owner.QueueEndpointBuild(regenContext.parentContext, uint64(e.ID))
 	if err != nil {
 		e.getLogger().WithError(err).Warning("unable to queue endpoint build")
 	} else if doneFunc != nil {
@@ -53,10 +61,10 @@ func (ev *EndpointRegenerationEvent) Handle(res chan interface{}) {
 
 		regenContext.DoneFunc = doneFunc
 
-		err = ev.ep.regenerate(ev.owner, ev.regenContext)
+		err = ev.ep.regenerate(ev.regenContext)
 
 		doneFunc()
-		e.notifyEndpointRegeneration(owner, err)
+		e.notifyEndpointRegeneration(err)
 	} else {
 		// If another build has been queued for the endpoint, that means that
 		// that build will be able to take care of all of the work needed to
@@ -102,6 +110,216 @@ func (ev *EndpointRevisionBumpEvent) Handle(res chan interface{}) {
 // succeeded, or if the event has been cancelled.
 func (e *Endpoint) PolicyRevisionBumpEvent(rev uint64) {
 	epBumpEvent := eventqueue.NewEvent(&EndpointRevisionBumpEvent{Rev: rev, ep: e})
-	// Don't care about policy revision event results - it is best effort.
-	_ = e.EventQueue.Enqueue(epBumpEvent)
+	// Don't check policy revision event results - it is best effort.
+	_, err := e.eventQueue.Enqueue(epBumpEvent)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			logfields.PolicyRevision: rev,
+			logfields.EndpointID:     e.ID,
+		}).Errorf("enqueue of EndpointRevisionBumpEvent failed: %s", err)
+	}
+}
+
+/// EndpointNoTrackEvent contains all fields necessary to update the NOTRACK rules.
+type EndpointNoTrackEvent struct {
+	ep     *Endpoint
+	annoCB AnnotationsResolverCB
+}
+
+// Handle handles the NOTRACK rule update.
+func (ev *EndpointNoTrackEvent) Handle(res chan interface{}) {
+	var port uint16
+
+	e := ev.ep
+
+	// If this endpoint is going away, nothing to do.
+	if err := e.lockAlive(); err != nil {
+		res <- &EndpointRegenerationResult{
+			err: nil,
+		}
+		return
+	}
+
+	defer e.unlock()
+
+	portStr, err := ev.annoCB(e.K8sNamespace, e.K8sPodName)
+	if err != nil {
+		res <- &EndpointRegenerationResult{
+			err: err,
+		}
+		return
+	}
+
+	if portStr == "" {
+		port = 0
+	} else {
+		// Validate annotation before we do any actual alteration to the endpoint.
+		p64, err := strconv.ParseUint(portStr, 10, 16)
+		// Port should be within [1-65535].
+		if err != nil || p64 == 0 {
+			res <- &EndpointRegenerationResult{
+				err: err,
+			}
+			return
+		}
+		port = uint16(p64)
+	}
+
+	if port != e.noTrackPort {
+		log.Debug("Updating NOTRACK rules")
+		if e.IPv4.IsSet() {
+			if port > 0 {
+				err = iptables.InstallNoTrackRules(e.IPv4.String(), port, false)
+				log.Warnf("Error installing iptable NOTRACK rules %s", err)
+			}
+			if e.noTrackPort > 0 {
+				err = iptables.RemoveNoTrackRules(e.IPv4.String(), e.noTrackPort, false)
+				log.Warnf("Error removing iptable NOTRACK rules %s", err)
+			}
+		}
+		if e.IPv6.IsSet() {
+			if port > 0 {
+				iptables.InstallNoTrackRules(e.IPv6.String(), port, true)
+				log.Warnf("Error installing iptable NOTRACK rules %s", err)
+			}
+			if e.noTrackPort > 0 {
+				err = iptables.RemoveNoTrackRules(e.IPv6.String(), e.noTrackPort, true)
+				log.Warnf("Error removing iptable NOTRACK rules %s", err)
+			}
+		}
+		e.noTrackPort = port
+	}
+
+	res <- &EndpointRegenerationResult{
+		err: nil,
+	}
+	return
+}
+
+// EndpointPolicyVisibilityEvent contains all fields necessary to update the
+// visibility policy.
+type EndpointPolicyVisibilityEvent struct {
+	ep     *Endpoint
+	annoCB AnnotationsResolverCB
+}
+
+// Handle handles the policy visibility update.
+func (ev *EndpointPolicyVisibilityEvent) Handle(res chan interface{}) {
+	e := ev.ep
+
+	if err := e.lockAlive(); err != nil {
+		// If the endpoint is being deleted, we don't need to update its
+		// visibility policy.
+		res <- &EndpointRegenerationResult{
+			err: nil,
+		}
+		return
+	}
+
+	defer func() {
+		// Ensure that policy computation is performed so that endpoint
+		// desiredPolicy and realizedPolicy pointers are different. This state
+		// is needed to update endpoint policy maps with the policy map state
+		// generated from the visibility policy. This can, and should be more
+		// elegant in the future.
+		e.forcePolicyComputation()
+		e.unlock()
+	}()
+
+	var (
+		nvp *policy.VisibilityPolicy
+		err error
+	)
+
+	proxyVisibility, err := ev.annoCB(e.K8sNamespace, e.K8sPodName)
+	if err != nil {
+		res <- &EndpointRegenerationResult{
+			err: err,
+		}
+		return
+	}
+	if proxyVisibility != "" {
+		e.getLogger().Debug("creating visibility policy")
+		nvp, err = policy.NewVisibilityPolicy(proxyVisibility)
+		if err != nil {
+			e.getLogger().WithError(err).Warning("unable to parse annotations into visibility policy; disabling visibility policy for endpoint")
+			e.visibilityPolicy = &policy.VisibilityPolicy{
+				Ingress: make(policy.DirectionalVisibilityPolicy),
+				Egress:  make(policy.DirectionalVisibilityPolicy),
+				Error:   err,
+			}
+			res <- &EndpointRegenerationResult{
+				err: nil,
+			}
+			return
+		}
+	}
+
+	e.visibilityPolicy = nvp
+	res <- &EndpointRegenerationResult{
+		err: nil,
+	}
+	return
+}
+
+// EndpointPolicyBandwidthEvent contains all fields necessary to update
+// the Pod's bandwidth policy.
+type EndpointPolicyBandwidthEvent struct {
+	ep     *Endpoint
+	annoCB AnnotationsResolverCB
+}
+
+// Handle handles the policy bandwidth update.
+func (ev *EndpointPolicyBandwidthEvent) Handle(res chan interface{}) {
+	var bps uint64
+
+	e := ev.ep
+	if err := e.lockAlive(); err != nil {
+		// If the endpoint is being deleted, we don't need to
+		// update its bandwidth policy.
+		res <- &EndpointRegenerationResult{
+			err: nil,
+		}
+		return
+	}
+	defer func() {
+		e.unlock()
+	}()
+
+	bandwidthEgress, err := ev.annoCB(e.K8sNamespace, e.K8sPodName)
+	if err != nil || !option.Config.EnableBandwidthManager {
+		res <- &EndpointRegenerationResult{
+			err: err,
+		}
+		return
+	}
+	if bandwidthEgress != "" {
+		bps, err = bandwidth.GetBytesPerSec(bandwidthEgress)
+		if err == nil {
+			err = bwmap.Update(e.ID, bps)
+		}
+	} else {
+		err = bwmap.Delete(e.ID)
+	}
+	if err != nil {
+		res <- &EndpointRegenerationResult{
+			err: err,
+		}
+		return
+	}
+
+	bpsOld := "inf"
+	bpsNew := "inf"
+	if e.bps != 0 {
+		bpsOld = strconv.FormatUint(e.bps, 10)
+	}
+	if bps != 0 {
+		bpsNew = strconv.FormatUint(bps, 10)
+	}
+	e.getLogger().Debugf("Updating %s from %s to %s bytes/sec", bandwidth.EgressBandwidth,
+		bpsOld, bpsNew)
+	e.bps = bps
+	res <- &EndpointRegenerationResult{
+		err: nil,
+	}
 }

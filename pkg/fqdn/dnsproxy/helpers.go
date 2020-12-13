@@ -15,34 +15,22 @@
 package dnsproxy
 
 import (
-	"strings"
+	"fmt"
+	"net"
 
 	"github.com/miekg/dns"
 )
 
-// prepareNameMatch ensures that a name is an anchored regexp and that names
-// with only "." (aka not a regexp) escape the "." so it does not match any
-// character. DNS expects lowercase lookups (ignoring the highest ascii bit)
-// and we mimic this by lowercasing the name here, and lookups later.
-// Note: The trailing "." in a FQDN is assumed, and isn't added here.
-func prepareNameMatch(name string) string {
-	name = strings.ToLower(name) // lowercase it
-
-	// anchor it
-	out := make([]string, 0, 3)
-	if !strings.HasPrefix(name, "^") {
-		out = append(out, "^")
-	}
-	out = append(out, name)
-	if !strings.HasSuffix(name, "$") {
-		out = append(out, "$")
-	}
-	return strings.Join(out, "")
-}
-
 // lookupTargetDNSServer finds the intended DNS target server for a specific
 // request (passed in via ServeDNS). The IP:port combination is
 // returned.
-func lookupTargetDNSServer(w dns.ResponseWriter) (server string, err error) {
-	return w.LocalAddr().String(), nil
+func lookupTargetDNSServer(w dns.ResponseWriter) (serverIP net.IP, serverPort uint16, addrStr string, err error) {
+	switch addr := (w.LocalAddr()).(type) {
+	case *net.UDPAddr:
+		return addr.IP, uint16(addr.Port), addr.String(), nil
+	case *net.TCPAddr:
+		return addr.IP, uint16(addr.Port), addr.String(), nil
+	default:
+		return nil, 0, addr.String(), fmt.Errorf("Cannot extract address information for type %T: %+v", addr, addr)
+	}
 }

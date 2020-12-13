@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 ***********************************************
 Locking down external access using AWS metadata
@@ -33,7 +33,7 @@ AWS Access keys and IAM role
 ------------------------------
 
 To create a new access token the `following guide can be used
-<https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html#cli-quick-configuration>`_.
+<https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html#cli-quick-configuration>`_.
 These keys need to have certain permissions set:
 
 .. code-block:: javascript

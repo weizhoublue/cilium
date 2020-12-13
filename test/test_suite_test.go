@@ -26,8 +26,8 @@ import (
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/test/config"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
-	ginkgoext "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
+	"github.com/cilium/cilium/test/logger"
 	gops "github.com/google/gops/agent"
 	"github.com/onsi/ginkgo"
 	ginkgoconfig "github.com/onsi/ginkgo/config"
@@ -39,26 +39,22 @@ import (
 var (
 	log             = logging.DefaultLogger
 	DefaultSettings = map[string]string{
-		"K8S_VERSION": "1.14",
+		"K8S_VERSION": "1.20",
 	}
 	k8sNodesEnv         = "K8S_NODES"
 	commandsLogFileName = "cmds.log"
 )
 
 func init() {
-
 	// Open socket for using gops to get stacktraces in case the tests deadlock.
-	if err := gops.Listen(gops.Options{}); err != nil {
-		errorString := fmt.Sprintf("unable to start gops: %s", err)
-		fmt.Println(errorString)
-		os.Exit(-1)
+	if err := gops.Listen(gops.Options{ShutdownCleanup: true}); err != nil {
+		fmt.Fprintf(os.Stderr, "unable to start gops: %s", err)
+		os.Exit(1)
 	}
 
 	for k, v := range DefaultSettings {
 		getOrSetEnvVar(k, v)
 	}
-	config.CiliumTestConfig.ParseFlags()
-
 	os.RemoveAll(helpers.TestResultsPath)
 
 	format.UseStringerRepresentation = true
@@ -66,12 +62,12 @@ func init() {
 
 func configLogsOutput() {
 	log.SetLevel(logrus.DebugLevel)
-	log.Out = &config.TestLogWriter
-	logrus.SetFormatter(&config.Formatter)
-	log.Formatter = &config.Formatter
-	log.Hooks.Add(&config.LogHook{})
+	log.Out = &logger.TestLogWriter
+	logrus.SetFormatter(&logger.Formatter)
+	log.Formatter = &logger.Formatter
+	log.Hooks.Add(&logger.LogHook{})
 
-	ginkgoext.GinkgoWriter = NewWriter(log.Out)
+	GinkgoWriter = NewWriter(log.Out)
 }
 
 func ShowCommands() {
@@ -79,13 +75,25 @@ func ShowCommands() {
 		return
 	}
 
-	helpers.SSHMetaLogs = ginkgoext.NewWriter(os.Stdout)
+	helpers.SSHMetaLogs = NewWriter(os.Stdout)
 }
 
 func TestTest(t *testing.T) {
 	if config.CiliumTestConfig.TestScope != "" {
 		helpers.UserDefinedScope = config.CiliumTestConfig.TestScope
 		fmt.Printf("User specified the scope:  %q\n", config.CiliumTestConfig.TestScope)
+	}
+	if integration := helpers.GetCurrentIntegration(); integration != "" {
+		fmt.Printf("Using CNI_INTEGRATION=%q\n", integration)
+
+		switch integration {
+		case helpers.CIIntegrationMicrok8s:
+			fallthrough
+		case helpers.CIIntegrationMinikube:
+			fmt.Printf("Disabling multinode testing")
+			config.CiliumTestConfig.Multinode = false
+		default:
+		}
 	}
 
 	configLogsOutput()
@@ -96,14 +104,14 @@ func TestTest(t *testing.T) {
 	} else {
 		RegisterFailHandler(Fail)
 	}
-	junitReporter := ginkgoext.NewJUnitReporter(fmt.Sprintf(
+	junitReporter := NewJUnitReporter(fmt.Sprintf(
 		"%s.xml", helpers.GetScopeWithVersion()))
 	RunSpecsWithDefaultAndCustomReporters(
 		t, fmt.Sprintf("Suite-%s", helpers.GetScopeWithVersion()),
 		[]ginkgo.Reporter{junitReporter})
 }
 
-func goReportVagrantStatus() chan bool {
+func goReportSetupStatus() chan bool {
 	if ginkgoconfig.DefaultReporterConfig.Verbose ||
 		ginkgoconfig.DefaultReporterConfig.Succinct {
 		// Dev told us they want more/less information than default. Skip.
@@ -127,7 +135,7 @@ func goReportVagrantStatus() chan bool {
 			default:
 				out = string(rune(int('◜') + iter%4))
 			}
-			fmt.Printf("\rSpinning up vagrant VMs... %s", out)
+			fmt.Printf("\rSetting up test suite... %s", out)
 			if done {
 				return
 			}
@@ -146,11 +154,21 @@ func reportCreateVMFailure(vm string, err error) {
 
         =======================================================================
         `, vm, err)
-	ginkgoext.GinkgoPrint(failmsg)
+	GinkgoPrint(failmsg)
 	Fail(failmsg)
 }
 
 var _ = BeforeAll(func() {
+	helpers.Init()
+	By("Starting tests: command line parameters: %+v environment variables: %v", config.CiliumTestConfig, os.Environ())
+	go func() {
+		defer GinkgoRecover()
+		time.Sleep(config.CiliumTestConfig.Timeout)
+		msg := fmt.Sprintf("Test suite timed out after %s", config.CiliumTestConfig.Timeout)
+		By(msg)
+		Fail(msg)
+	}()
+
 	var err error
 
 	logger := log.WithFields(logrus.Fields{"testName": "BeforeAll"})
@@ -165,7 +183,7 @@ var _ = BeforeAll(func() {
 	case helpers.CIIntegrationFlannel:
 		switch helpers.GetCurrentK8SEnv() {
 		case "1.8":
-			log.Infof("Cilium in %q mode is not supported in Kubernets 1.8 due CNI < 0.6.0", helpers.CIIntegrationFlannel)
+			log.Infof("Cilium in %q mode is not supported in Kubernetes 1.8 due CNI < 0.6.0", helpers.CIIntegrationFlannel)
 			os.Exit(0)
 			return
 		}
@@ -177,14 +195,12 @@ var _ = BeforeAll(func() {
 		return
 	}
 
-	if progressChan := goReportVagrantStatus(); progressChan != nil {
+	if progressChan := goReportSetupStatus(); progressChan != nil {
 		defer func() { progressChan <- err == nil }()
 	}
 
 	switch scope {
 	case helpers.Runtime:
-		var err error
-
 		// Boot / provision VMs if specified by configuration.
 		if config.CiliumTestConfig.Reprovision {
 			err = helpers.CreateVM(helpers.Runtime)
@@ -218,23 +234,30 @@ var _ = BeforeAll(func() {
 
 		// Boot / provision VMs if specified by configuration.
 		if config.CiliumTestConfig.Reprovision {
+			var nodesInt int
+			nodes := os.Getenv(k8sNodesEnv)
+			if nodes != "" {
+				nodesInt, err = strconv.Atoi(nodes)
+				if err != nil {
+					Fail(fmt.Sprintf("%s value is not a number %q", k8sNodesEnv, nodes))
+				}
+			}
+
 			err = helpers.CreateVM(helpers.K8s1VMName())
 			if err != nil {
 				reportCreateVMFailure(helpers.K8s1VMName(), err)
 			}
 
-			err = helpers.CreateVM(helpers.K8s2VMName())
-			if err != nil {
-				reportCreateVMFailure(helpers.K8s2VMName(), err)
+			if nodesInt != 1 {
+				err = helpers.CreateVM(helpers.K8s2VMName())
+				if err != nil {
+					reportCreateVMFailure(helpers.K8s2VMName(), err)
+				}
 			}
 
 			// For Nightly test we need to have more than two kubernetes nodes. If
 			// the env variable K8S_NODES is present, more nodes will be created.
-			if nodes := os.Getenv(k8sNodesEnv); nodes != "" {
-				nodesInt, err := strconv.Atoi(nodes)
-				if err != nil {
-					Fail(fmt.Sprintf("%s value is not a number %q", k8sNodesEnv, nodes))
-				}
+			if nodesInt > 2 {
 				for i := 3; i <= nodesInt; i++ {
 					vmName := fmt.Sprintf("%s%d-%s", helpers.K8s, i, helpers.GetCurrentK8SEnv())
 					err = helpers.CreateVM(vmName)
@@ -245,15 +268,16 @@ var _ = BeforeAll(func() {
 			}
 		}
 		kubectl := helpers.CreateKubectl(helpers.K8s1VMName(), logger)
+		kubectl.PrepareCluster()
 
-		kubectl.Apply(helpers.GetFilePath("../examples/kubernetes/addons/prometheus/prometheus.yaml"))
+		// Cleanup all cilium components if there are any leftovers from previous
+		// run, like when running tests locally.
+		kubectl.CleanupCiliumComponents()
 
-		// deploy Cilium etcd operator
-		kubectl.DeployETCDOperator()
+		kubectl.ApplyDefault(kubectl.GetFilePath("../examples/kubernetes/addons/prometheus/monitoring-example.yaml"))
 
 		go kubectl.PprofReport()
 	}
-	return
 })
 
 var _ = AfterSuite(func() {
@@ -271,7 +295,6 @@ var _ = AfterSuite(func() {
 		helpers.DestroyVM(helpers.K8s1VMName())
 		helpers.DestroyVM(helpers.K8s2VMName())
 	}
-	return
 })
 
 func getOrSetEnvVar(key, value string) {
@@ -287,10 +310,10 @@ var _ = AfterEach(func() {
 	defer helpers.CheckLogs.Reset()
 	GinkgoPrint("<Checks>\n%s\n</Checks>\n", helpers.CheckLogs.Buffer.String())
 
-	defer config.TestLogWriterReset()
-	err := helpers.CreateLogFile(config.TestLogFileName, config.TestLogWriter.Bytes())
+	defer logger.TestLogWriterReset()
+	err := helpers.CreateLogFile(logger.TestLogFileName, logger.TestLogWriter.Bytes())
 	if err != nil {
-		log.WithError(err).Errorf("cannot create log file '%s'", config.TestLogFileName)
+		log.WithError(err).Errorf("cannot create log file '%s'", logger.TestLogFileName)
 		return
 	}
 
@@ -305,7 +328,7 @@ var _ = AfterEach(func() {
 	if ginkgo.CurrentGinkgoTestDescription().Failed && helpers.IsRunningOnJenkins() {
 		// ReportDirectory is already created. No check the error
 		path, _ := helpers.CreateReportDirectory()
-		zipFileName := fmt.Sprintf("%s_%s.zip", helpers.MakeUID(), ginkgoext.GetTestName())
+		zipFileName := fmt.Sprintf("%s_%s.zip", helpers.MakeUID(), GetTestName())
 		zipFilePath := filepath.Join(helpers.TestResultsPath, zipFileName)
 
 		_, err := exec.Command(
@@ -315,7 +338,7 @@ var _ = AfterEach(func() {
 			log.WithError(err).Errorf("cannot create zip file '%s'", zipFilePath)
 		}
 
-		ginkgoext.GinkgoPrint("[[ATTACHMENT|%s]]", zipFileName)
+		GinkgoPrint("[[ATTACHMENT|%s]]", zipFileName)
 	}
 
 	if !ginkgo.CurrentGinkgoTestDescription().Failed && helpers.IsRunningOnJenkins() {

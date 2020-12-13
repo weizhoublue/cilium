@@ -46,7 +46,7 @@ var rootCmd = &cobra.Command{
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 }
 
@@ -62,7 +62,8 @@ func init() {
 	flags.StringP("host", "H", "", "URI to server-side API")
 	viper.BindPFlags(flags)
 	rootCmd.AddCommand(newCmdCompletion(os.Stdout))
-	rootCmd.SetOutput(os.Stderr)
+	rootCmd.SetOut(os.Stdout)
+	rootCmd.SetErr(os.Stderr)
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -94,8 +95,7 @@ func initConfig() {
 	}
 }
 
-const copyRightHeader = `
-# Copyright 2017 Authors of Cilium
+const copyRightHeader = `# Copyright 2017-2020 Authors of Cilium
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -130,19 +130,36 @@ var (
 	  # Cilium shell completion
 	  source '$HOME/.cilium/completion.bash.inc'
 	  " >> $HOME/.bash_profile
-	source $HOME/.bash_profile`
+	source $HOME/.bash_profile
+
+
+# Installing zsh completion on Linux/macOS
+## Load the cilium completion code for zsh into the current shell
+	source <(cilium completion zsh)
+## Write zsh completion code to a file and source if from .zshrc
+	cilium completion zsh > ~/.cilium/completion.zsh.inc
+	printf "
+	  # Cilium shell completion
+	  source '$HOME/.cilium/completion.zsh.inc'
+	  " >> $HOME/.zshrc
+	source $HOME/.zshrc
+
+# Installing fish completion on Linux/macOS
+## Write fish completion code to fish specific location
+	cilium completion fish > ~/.config/fish/completions/cilium.fish
+`
 )
 
 func newCmdCompletion(out io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "completion [bash]",
-		Short:   "Output shell completion code for bash",
+		Use:     "completion [shell]",
+		Short:   "Output shell completion code",
 		Long:    ``,
 		Example: completionExample,
-		Run: func(cmd *cobra.Command, args []string) {
-			runCompletion(out, cmd, args)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCompletion(out, cmd, args)
 		},
-		ValidArgs: []string{"bash"},
+		ValidArgs: []string{"bash", "zsh", "fish"},
 	}
 
 	return cmd
@@ -150,11 +167,26 @@ func newCmdCompletion(out io.Writer) *cobra.Command {
 
 func runCompletion(out io.Writer, cmd *cobra.Command, args []string) error {
 	if len(args) > 1 {
-		return fmt.Errorf("Too many arguments. Expected only the shell type.")
-	}
-	if _, err := out.Write([]byte(copyRightHeader)); err != nil {
-		return err
+		return fmt.Errorf("too many arguments; expected only the shell type: %s", args)
 	}
 
-	return cmd.Parent().GenBashCompletion(out)
+	if len(args) == 0 || args[0] == "bash" {
+		if _, err := out.Write([]byte(copyRightHeader)); err != nil {
+			return err
+		}
+		return cmd.Root().GenBashCompletion(out)
+	}
+	if args[0] == "zsh" {
+		if _, err := out.Write([]byte(copyRightHeader)); err != nil {
+			return err
+		}
+		return cmd.Root().GenZshCompletion(out)
+	}
+	if args[0] == "fish" {
+		if _, err := out.Write([]byte(copyRightHeader)); err != nil {
+			return err
+		}
+		return cmd.Root().GenFishCompletion(out, true)
+	}
+	return fmt.Errorf("unsupported shell: %s", args[0])
 }

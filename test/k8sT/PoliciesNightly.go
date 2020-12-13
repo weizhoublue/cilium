@@ -29,16 +29,17 @@ var _ = Describe("NightlyPolicies", func() {
 
 	var kubectl *helpers.Kubectl
 	var timeout = 10 * time.Minute
+	var ciliumFilename string
 
 	BeforeAll(func() {
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
-		ProvisionInfraPods(kubectl)
+
+		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
+		DeployCiliumAndDNS(kubectl, ciliumFilename)
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.KubeSystemNamespace,
-			"cilium endpoint list",
-			"cilium service list")
+		kubectl.CiliumReport("cilium endpoint list", "cilium service list")
 	})
 
 	JustAfterEach(func() {
@@ -50,8 +51,12 @@ var _ = Describe("NightlyPolicies", func() {
 		kubectl.Exec(fmt.Sprintf(
 			"%s delete pods,svc,cnp -n %s -l test=policygen",
 			helpers.KubectlCmd, helpers.DefaultNamespace))
-		err := kubectl.WaitCleanAllTerminatingPods(timeout)
+		kubectl.DeleteCiliumDS()
+		err := kubectl.WaitTerminatingPods(timeout)
 		Expect(err).To(BeNil(), "Cannot clean pods during timeout")
+
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
+		kubectl.CloseSSHClient()
 	})
 
 	Context("PolicyEnforcement default", func() {
@@ -59,7 +64,7 @@ var _ = Describe("NightlyPolicies", func() {
 			testSpecs := policygen.GeneratedTestSpec()
 			for _, test := range testSpecs {
 				func(testSpec policygen.TestSpec) {
-					It(fmt.Sprintf("%s", testSpec), func() {
+					It(testSpec.String(), func() {
 						testSpec.RunTest(kubectl)
 					})
 				}(test)

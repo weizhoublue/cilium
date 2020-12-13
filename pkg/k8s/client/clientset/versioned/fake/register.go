@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import (
 
 var scheme = runtime.NewScheme()
 var codecs = serializer.NewCodecFactory(scheme)
-var parameterCodec = runtime.NewParameterCodec(scheme)
+
 var localSchemeBuilder = runtime.SchemeBuilder{
 	ciliumv2.AddToScheme,
 }

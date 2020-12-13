@@ -1,4 +1,4 @@
-// Copyright 2019 Authors of Cilium
+// Copyright 2019-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,13 +26,18 @@ import (
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/identity/cache"
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 
 	"gopkg.in/check.v1"
+)
+
+var (
+	allowAllIdentityList = cilium_v2.AllowedIdentityList{{}}
+	denyAllIdentityList  = cilium_v2.AllowedIdentityList(nil)
 )
 
 type endpointGeneratorSpec struct {
@@ -44,8 +49,17 @@ type endpointGeneratorSpec struct {
 	fakeControllerManager    bool
 }
 
-func newEndpoint(c *check.C, spec endpointGeneratorSpec) *Endpoint {
-	e, err := NewEndpointFromChangeModel(&models.EndpointChangeRequest{
+type endpointStatusConfiguration map[string]bool
+
+func (e endpointStatusConfiguration) EndpointStatusIsEnabled(name string) bool {
+	if e != nil {
+		return e[string(name)]
+	}
+	return false
+}
+
+func (s *EndpointSuite) newEndpoint(c *check.C, spec endpointGeneratorSpec) *Endpoint {
+	e, err := NewEndpointFromChangeModel(context.TODO(), s, &FakeEndpointProxy{}, s.mgr, &models.EndpointChangeRequest{
 		Addressing: &models.AddressPair{},
 		ID:         200,
 		Labels: models.Labels{
@@ -73,7 +87,7 @@ func newEndpoint(c *check.C, spec endpointGeneratorSpec) *Endpoint {
 	}
 
 	for i := 0; i < spec.logErrors; i++ {
-		e.Status.addStatusLog(&statusLogMsg{
+		e.status.addStatusLog(&statusLogMsg{
 			Status: Status{Code: Failure, Msg: "Failure", Type: BPF},
 		})
 	}
@@ -110,8 +124,8 @@ func newEndpoint(c *check.C, spec endpointGeneratorSpec) *Endpoint {
 }
 
 func (s *EndpointSuite) TestGetCiliumEndpointStatusSuccessfulControllers(c *check.C) {
-	e := newEndpoint(c, endpointGeneratorSpec{})
-	cepA := e.GetCiliumEndpointStatus()
+	e := s.newEndpoint(c, endpointGeneratorSpec{})
+	cepA := e.GetCiliumEndpointStatus(&endpointStatusConfiguration{})
 
 	// Run successful controllers in the background
 	for i := 0; i < 50; i++ {
@@ -135,19 +149,19 @@ func (s *EndpointSuite) TestGetCiliumEndpointStatusSuccessfulControllers(c *chec
 		case <-timeout:
 			return
 		case <-tick:
-			cepB := e.GetCiliumEndpointStatus()
+			cepB := e.GetCiliumEndpointStatus(&endpointStatusConfiguration{})
 			c.Assert(cepA, checker.DeepEquals, cepB)
 		}
 	}
 }
 
 func (s *EndpointSuite) TestGetCiliumEndpointStatusSuccessfulLog(c *check.C) {
-	e := newEndpoint(c, endpointGeneratorSpec{})
-	cepA := e.GetCiliumEndpointStatus()
+	e := s.newEndpoint(c, endpointGeneratorSpec{})
+	cepA := e.GetCiliumEndpointStatus(&endpointStatusConfiguration{})
 
 	go func() {
 		for i := 0; i < 1000; i++ {
-			e.Status.addStatusLog(&statusLogMsg{
+			e.status.addStatusLog(&statusLogMsg{
 				Status: Status{Code: OK, Msg: "Success", Type: BPF},
 			})
 			time.Sleep(time.Millisecond)
@@ -163,14 +177,14 @@ func (s *EndpointSuite) TestGetCiliumEndpointStatusSuccessfulLog(c *check.C) {
 		case <-timeout:
 			return
 		case <-tick:
-			cepB := e.GetCiliumEndpointStatus()
+			cepB := e.GetCiliumEndpointStatus(&endpointStatusConfiguration{})
 			c.Assert(cepA, checker.DeepEquals, cepB)
 		}
 	}
 }
 
 func (s *EndpointSuite) TestGetCiliumEndpointStatusDeepEqual(c *check.C) {
-	a := newEndpoint(c, endpointGeneratorSpec{
+	a := s.newEndpoint(c, endpointGeneratorSpec{
 		fakeControllerManager:    true,
 		failingControllers:       10,
 		logErrors:                maxLogs,
@@ -179,7 +193,7 @@ func (s *EndpointSuite) TestGetCiliumEndpointStatusDeepEqual(c *check.C) {
 		numPortsPerIdentity:      10,
 	})
 
-	b := newEndpoint(c, endpointGeneratorSpec{
+	b := s.newEndpoint(c, endpointGeneratorSpec{
 		fakeControllerManager:    true,
 		failingControllers:       10,
 		logErrors:                maxLogs,
@@ -188,14 +202,14 @@ func (s *EndpointSuite) TestGetCiliumEndpointStatusDeepEqual(c *check.C) {
 		numPortsPerIdentity:      10,
 	})
 
-	cepA := a.GetCiliumEndpointStatus()
-	cepB := b.GetCiliumEndpointStatus()
+	cepA := a.GetCiliumEndpointStatus(&endpointStatusConfiguration{})
+	cepB := b.GetCiliumEndpointStatus(&endpointStatusConfiguration{})
 
 	c.Assert(cepA, checker.DeepEquals, cepB)
 }
 
 func (s *EndpointSuite) TestGetCiliumEndpointStatusCorrectnes(c *check.C) {
-	e := newEndpoint(c, endpointGeneratorSpec{
+	e := s.newEndpoint(c, endpointGeneratorSpec{
 		fakeControllerManager:    true,
 		failingControllers:       10,
 		logErrors:                maxLogs,
@@ -204,13 +218,46 @@ func (s *EndpointSuite) TestGetCiliumEndpointStatusCorrectnes(c *check.C) {
 		numPortsPerIdentity:      10,
 	})
 
-	cep := e.GetCiliumEndpointStatus()
+	cep := e.GetCiliumEndpointStatus(&endpointStatusConfiguration{
+		option.EndpointStatusLog: true,
+	})
 
-	c.Assert(len(cep.Status.Log), check.Equals, cilium_v2.EndpointStatusLogEntries)
+	c.Assert(len(cep.Log), check.Equals, cilium_v2.EndpointStatusLogEntries)
+}
+
+// apiResult is an individual desired AllowedIdentityEntry test result entry.
+type apiResult struct {
+	labels   string
+	identity uint64
+	dport    uint16
+	proto    uint8
+}
+
+func prepareExpectedList(want []apiResult) cilium_v2.AllowedIdentityList {
+	expectedList := denyAllIdentityList
+	if want != nil {
+		expectedList = cilium_v2.AllowedIdentityList{}
+		for _, w := range want {
+			entry := cilium_v2.IdentityTuple{
+				Identity: w.identity,
+				DestPort: w.dport,
+				Protocol: w.proto,
+			}
+			if w.labels != "" {
+				entry.IdentityLabels = map[string]string{
+					w.labels: "",
+				}
+			}
+			expectedList = append(expectedList, entry)
+		}
+		expectedList.Sort()
+	}
+
+	return expectedList
 }
 
 func (s *EndpointSuite) TestgetEndpointPolicyMapState(c *check.C) {
-	e := newEndpoint(c, endpointGeneratorSpec{
+	e := s.newEndpoint(c, endpointGeneratorSpec{
 		fakeControllerManager:    true,
 		failingControllers:       10,
 		logErrors:                maxLogs,
@@ -220,71 +267,221 @@ func (s *EndpointSuite) TestgetEndpointPolicyMapState(c *check.C) {
 	})
 	// Policy not enabled; allow all.
 	apiPolicy := e.getEndpointPolicy()
-	c.Assert(apiPolicy.Ingress.Allowed, checker.DeepEquals, cilium_v2.AllowedIdentityList(nil))
-	c.Assert(apiPolicy.Egress.Allowed, checker.DeepEquals, cilium_v2.AllowedIdentityList(nil))
+	c.Assert(apiPolicy.Ingress.Allowed, checker.DeepEquals, allowAllIdentityList)
+	c.Assert(apiPolicy.Egress.Allowed, checker.DeepEquals, allowAllIdentityList)
 
 	fooLbls := labels.Labels{"": labels.ParseLabel("foo")}
-	fooIdentity, _, err := cache.AllocateIdentity(context.Background(), fooLbls)
+	fooIdentity, _, err := e.allocator.AllocateIdentity(context.Background(), fooLbls, false)
 	c.Assert(err, check.Equals, nil)
-	defer cache.Release(context.Background(), fooIdentity)
+	defer s.mgr.Release(context.Background(), fooIdentity)
 
-	e.desiredPolicy = &policy.EndpointPolicy{
-		PolicyMapState: policy.MapState{
-			// L3-only map state
-			{
-				Identity: uint32(fooIdentity.ID),
-				DestPort: 0,
-				Nexthdr:  0,
-			}: {},
-			// L4-only map state
-			{
-				Identity: 0,
-				DestPort: 80,
-				Nexthdr:  6,
-			}: {},
-			// L3-dependent L4 map state
-			{
-				Identity: uint32(fooIdentity.ID),
-				DestPort: 80,
-				Nexthdr:  6,
-			}: {},
-		},
-		SelectorPolicy: &policy.SelectorPolicy{
-			IngressPolicyEnabled: true,
-			EgressPolicyEnabled:  true,
-		},
+	e.desiredPolicy = policy.NewEndpointPolicy(s.repo)
+	e.desiredPolicy.IngressPolicyEnabled = true
+	e.desiredPolicy.EgressPolicyEnabled = true
+
+	type args struct {
+		identity  uint32
+		destPort  uint16
+		nexthdr   uint8
+		direction trafficdirection.TrafficDirection
 	}
 
-	apiPolicy = e.getEndpointPolicy()
-	expectedIdentityList := cilium_v2.AllowedIdentityList{
+	tests := []struct {
+		name          string
+		args          []args
+		egressResult  []apiResult
+		ingressResult []apiResult
+	}{
 		{
-			Identity: uint64(fooIdentity.ID),
-			IdentityLabels: map[string]string{
-				"unspec:foo": "",
+			name: "Deny all",
+		},
+		{
+			name: "Allow all ingress",
+			args: []args{
+				{0, 0, 0, trafficdirection.Ingress},
+			},
+			ingressResult: []apiResult{{}},
+			egressResult:  nil,
+		},
+		{
+			name: "Allow all egress",
+			args: []args{
+				{0, 0, 0, trafficdirection.Egress},
+			},
+			ingressResult: nil,
+			egressResult:  []apiResult{{}},
+		},
+		{
+			name: "Allow all both directions",
+			args: []args{
+				{0, 0, 0, trafficdirection.Ingress},
+				{0, 0, 0, trafficdirection.Egress},
+			},
+			ingressResult: []apiResult{{}},
+			egressResult:  []apiResult{{}},
+		},
+		{
+			name: "Allow world ingress",
+			args: []args{
+				{uint32(identity.ReservedIdentityWorld), 0, 0, trafficdirection.Ingress},
+			},
+			ingressResult: []apiResult{
+				{"reserved:world", uint64(identity.ReservedIdentityWorld), 0, 0},
+			},
+			egressResult: nil,
+		},
+		{
+			name: "Allow world egress",
+			args: []args{
+				{uint32(identity.ReservedIdentityWorld), 0, 0, trafficdirection.Egress},
+			},
+			ingressResult: nil,
+			egressResult: []apiResult{
+				{"reserved:world", uint64(identity.ReservedIdentityWorld), 0, 0},
 			},
 		},
 		{
-			Identity:       0,
-			DestPort:       80,
-			Protocol:       6,
-			IdentityLabels: map[string]string(nil),
+			name: "Allow world both directions",
+			args: []args{
+				{uint32(identity.ReservedIdentityWorld), 0, 0, trafficdirection.Ingress},
+				{uint32(identity.ReservedIdentityWorld), 0, 0, trafficdirection.Egress},
+			},
+			ingressResult: []apiResult{
+				{"reserved:world", uint64(identity.ReservedIdentityWorld), 0, 0},
+			},
+			egressResult: []apiResult{
+				{"reserved:world", uint64(identity.ReservedIdentityWorld), 0, 0},
+			},
 		},
 		{
-			Identity: uint64(fooIdentity.ID),
-			DestPort: 80,
-			Protocol: 6,
-			IdentityLabels: map[string]string{
-				"unspec:foo": "",
+			name: "Ingress mix of L3, L4, L3-dependent L4",
+			args: []args{
+				{uint32(fooIdentity.ID), 0, 0, trafficdirection.Ingress},  // L3-only map state
+				{0, 80, 6, trafficdirection.Ingress},                      // L4-only map state
+				{uint32(fooIdentity.ID), 80, 6, trafficdirection.Ingress}, // L3-dependent L4 map state
+			},
+			ingressResult: []apiResult{
+				{"unspec:foo", uint64(fooIdentity.ID), 0, 0},
+				{"", 0, 80, 6},
+				{"unspec:foo", uint64(fooIdentity.ID), 80, 6},
+			},
+			egressResult: nil,
+		},
+		{
+			name: "Egress mix of L3, L4, L3-dependent L4",
+			args: []args{
+				{uint32(fooIdentity.ID), 0, 0, trafficdirection.Egress},  // L3-only map state
+				{0, 80, 6, trafficdirection.Egress},                      // L4-only map state
+				{uint32(fooIdentity.ID), 80, 6, trafficdirection.Egress}, // L3-dependent L4 map state
+			},
+			ingressResult: nil,
+			egressResult: []apiResult{
+				{"unspec:foo", uint64(fooIdentity.ID), 0, 0},
+				{"", 0, 80, 6},
+				{"unspec:foo", uint64(fooIdentity.ID), 80, 6},
+			},
+		},
+		{
+			name: "World shadows CIDR ingress",
+			args: []args{
+				{uint32(identity.ReservedIdentityWorld), 0, 0, trafficdirection.Ingress},
+				{uint32(identity.LocalIdentityFlag), 0, 0, trafficdirection.Ingress},
+			},
+			ingressResult: []apiResult{
+				{"reserved:world", uint64(identity.ReservedIdentityWorld), 0, 0},
+			},
+			egressResult: nil,
+		},
+		{
+			name: "World shadows CIDR egress",
+			args: []args{
+				{uint32(identity.ReservedIdentityWorld), 0, 0, trafficdirection.Egress},
+				{uint32(identity.LocalIdentityFlag), 0, 0, trafficdirection.Egress},
+			},
+			ingressResult: nil,
+			egressResult: []apiResult{
+				{"reserved:world", uint64(identity.ReservedIdentityWorld), 0, 0},
 			},
 		},
 	}
-	expectedIdentityList.Sort()
-	c.Assert(apiPolicy.Ingress.Allowed, checker.DeepEquals, expectedIdentityList)
-	c.Assert(apiPolicy.Egress.Allowed, checker.DeepEquals, cilium_v2.AllowedIdentityList(nil))
+
+	for _, tt := range tests {
+		e.desiredPolicy.PolicyMapState = policy.MapState{}
+		for _, arg := range tt.args {
+			t := policy.Key{
+				Identity:         arg.identity,
+				DestPort:         arg.destPort,
+				Nexthdr:          arg.nexthdr,
+				TrafficDirection: arg.direction.Uint8(),
+			}
+			e.desiredPolicy.PolicyMapState[t] = policy.MapStateEntry{}
+		}
+		expectedIngressList := prepareExpectedList(tt.ingressResult)
+		expectedEgressList := prepareExpectedList(tt.egressResult)
+
+		apiPolicy = e.getEndpointPolicy()
+		c.Assert(apiPolicy.Ingress.Allowed, checker.DeepEquals, expectedIngressList)
+		c.Assert(apiPolicy.Egress.Allowed, checker.DeepEquals, expectedEgressList)
+	}
+}
+
+func (s *EndpointSuite) TestEndpointPolicyStatus(c *check.C) {
+	tcs := []struct {
+		ingressEnabled bool
+		egressEnabled  bool
+		auditEnabled   bool
+		status         models.EndpointPolicyEnabled
+	}{
+		{false, false, false, models.EndpointPolicyEnabledNone},
+		{true, false, false, models.EndpointPolicyEnabledIngress},
+		{false, true, false, models.EndpointPolicyEnabledEgress},
+		{true, true, false, models.EndpointPolicyEnabledBoth},
+		{false, false, true, models.EndpointPolicyEnabledNone},
+		{true, false, true, models.EndpointPolicyEnabledAuditIngress},
+		{false, true, true, models.EndpointPolicyEnabledAuditEgress},
+		{true, true, true, models.EndpointPolicyEnabledAuditBoth},
+	}
+
+	e := s.newEndpoint(c, endpointGeneratorSpec{})
+	for _, tc := range tcs {
+		e.realizedPolicy.IngressPolicyEnabled = tc.ingressEnabled
+		e.realizedPolicy.EgressPolicyEnabled = tc.egressEnabled
+		e.Options.SetBool(option.PolicyAuditMode, tc.auditEnabled)
+		c.Assert(e.policyStatus(), checker.Equals, tc.status)
+	}
+}
+
+func (s *EndpointSuite) TestEndpointPolicy(c *check.C) {
+	tcs := []struct {
+		ingressEnabled   bool
+		egressEnabled    bool
+		auditEnabled     bool
+		ingressEnforcing bool
+		egressEnforcing  bool
+	}{
+		{false, false, false, false, false},
+		{true, false, false, true, false},
+		{false, true, false, false, true},
+		{true, true, false, true, true},
+		{false, false, true, false, false},
+		{true, false, true, false, false},
+		{false, true, true, false, false},
+		{true, true, true, false, false},
+	}
+
+	e := s.newEndpoint(c, endpointGeneratorSpec{})
+	for _, tc := range tcs {
+		e.desiredPolicy.IngressPolicyEnabled = tc.ingressEnabled
+		e.desiredPolicy.EgressPolicyEnabled = tc.egressEnabled
+		e.Options.SetBool(option.PolicyAuditMode, tc.auditEnabled)
+		policy := e.getEndpointPolicy()
+		c.Assert(policy.Ingress.Enforcing, checker.Equals, tc.ingressEnforcing)
+		c.Assert(policy.Egress.Enforcing, checker.Equals, tc.egressEnforcing)
+	}
 }
 
 func (s *EndpointSuite) BenchmarkGetCiliumEndpointStatusDeepEqual(c *check.C) {
-	a := newEndpoint(c, endpointGeneratorSpec{
+	a := s.newEndpoint(c, endpointGeneratorSpec{
 		fakeControllerManager:    true,
 		failingControllers:       10,
 		logErrors:                maxLogs,
@@ -293,7 +490,7 @@ func (s *EndpointSuite) BenchmarkGetCiliumEndpointStatusDeepEqual(c *check.C) {
 		numPortsPerIdentity:      10,
 	})
 
-	b := newEndpoint(c, endpointGeneratorSpec{
+	b := s.newEndpoint(c, endpointGeneratorSpec{
 		fakeControllerManager:    true,
 		failingControllers:       10,
 		logErrors:                maxLogs,
@@ -312,7 +509,7 @@ func (s *EndpointSuite) BenchmarkGetCiliumEndpointStatusDeepEqual(c *check.C) {
 }
 
 func (s *EndpointSuite) BenchmarkGetCiliumEndpointStatus(c *check.C) {
-	e := newEndpoint(c, endpointGeneratorSpec{
+	e := s.newEndpoint(c, endpointGeneratorSpec{
 		failingControllers:       10,
 		logErrors:                maxLogs,
 		allowedIngressIdentities: 100,
@@ -322,7 +519,7 @@ func (s *EndpointSuite) BenchmarkGetCiliumEndpointStatus(c *check.C) {
 
 	c.ResetTimer()
 	for i := 0; i < c.N; i++ {
-		status := e.GetCiliumEndpointStatus()
+		status := e.GetCiliumEndpointStatus(&endpointStatusConfiguration{})
 		c.Assert(status, check.Not(check.IsNil))
 	}
 	c.StopTimer()

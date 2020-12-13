@@ -23,7 +23,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/kevinburke/ssh_config"
@@ -138,7 +137,7 @@ func ImportSSHconfig(config []byte) (SSHConfigs, error) {
 // copyWait runs an instance of io.Copy() in a goroutine, and returns a channel
 // to receive the error result.
 func copyWait(dst io.Writer, src io.Reader) chan error {
-	c := make(chan error)
+	c := make(chan error, 1)
 	go func() {
 		_, err := io.Copy(dst, src)
 		c <- err
@@ -249,51 +248,49 @@ func (client *SSHClient) RunCommandContext(ctx context.Context, cmd *SSHCommand)
 		panic("nil context provided to RunCommandContext()")
 	}
 
-	session, err := client.newSession()
-	if err != nil {
-		return err
-	}
-	defer session.Close()
+	var (
+		session        *ssh.Session
+		sessionErrChan = make(chan error, 1)
+	)
 
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		log.Errorf("Could not get stdin %s", err)
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
 	go func() {
-		select {
-		case <-ctx.Done():
-			_, err := stdin.Write([]byte{3})
-			if err != nil {
-				log.Errorf("write ^C error: %s", err)
-			}
-			err = session.Wait()
-			if err != nil {
-				log.Errorf("wait error: %s", err)
-			}
-			if err = session.Signal(ssh.SIGHUP); err != nil {
-				log.Errorf("failed to kill command: %s", err)
-			}
-			if err = session.Close(); err != nil {
-				log.Errorf("failed to close session: %s", err)
-			}
+		var sessionErr error
+
+		// This may block depending on the state of the setup tests are being
+		// ran against. As a result, these goroutines may leak, but the logic
+		// below will fail and propagate to the rest of the CI framework, which
+		// will error out anyway. It's better to leak in really bad cases since
+		// the CI will fail anyway. Unfortunately, the golang SSH library does
+		// not provide a way to propagate context through to creating sessions.
+
+		// Note that this is a closure on the session variable!
+		session, sessionErr = client.newSession()
+		if sessionErr != nil {
+			log.Infof("error creating session: %s", sessionErr)
+			sessionErrChan <- sessionErr
+			return
 		}
-		wg.Done()
+
+		_, runErr := runCommand(session, cmd)
+		sessionErrChan <- runErr
 	}()
 
-	running, err := runCommand(session, cmd)
-	if !running {
-		return err
-	}
 	select {
+	case asyncErr := <-sessionErrChan:
+		return asyncErr
 	case <-ctx.Done():
-		// Wait until the ssh session is stopped
-		wg.Wait()
+		if session != nil {
+			log.Warning("sending SIGHUP to session due to canceled context")
+			if err := session.Signal(ssh.SIGHUP); err != nil {
+				log.Errorf("failed to kill command when context is canceled: %s", err)
+			}
+			if closeErr := session.Close(); closeErr != nil {
+				log.WithError(closeErr).Error("failed to close session")
+			}
+		} else {
+			log.Error("timeout reached; no session was able to be created")
+		}
 		return ctx.Err()
-	default:
-		return err
 	}
 }
 
@@ -306,7 +303,7 @@ func (client *SSHClient) newSession() (*ssh.Session, error) {
 	} else {
 		connection, err = ssh.Dial(
 			"tcp",
-			fmt.Sprintf("%s:%d", client.Host, client.Port),
+			net.JoinHostPort(client.Host, fmt.Sprintf("%d", client.Port)),
 			client.Config)
 
 		if err != nil {

@@ -1,20 +1,6 @@
-/*
- *  Copyright (C) 2016-2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2016-2020 Authors of Cilium */
+
 #ifndef __LIB_DBG__
 #define __LIB_DBG__
 
@@ -42,26 +28,26 @@ enum {
 	DBG_TO_HOST,
 	DBG_TO_STACK,
 	DBG_PKT_HASH,
-	DBG_LB6_LOOKUP_MASTER,
-	DBG_LB6_LOOKUP_MASTER_FAIL,
-	DBG_LB6_LOOKUP_SLAVE,
-	DBG_LB6_LOOKUP_SLAVE_SUCCESS,
-	DBG_LB6_LOOKUP_SLAVE_V2_FAIL,
+	DBG_LB6_LOOKUP_FRONTEND,
+	DBG_LB6_LOOKUP_FRONTEND_FAIL,
+	DBG_LB6_LOOKUP_BACKEND_SLOT,
+	DBG_LB6_LOOKUP_BACKEND_SLOT_SUCCESS,
+	DBG_LB6_LOOKUP_BACKEND_SLOT_V2_FAIL,
 	DBG_LB6_LOOKUP_BACKEND_FAIL,
 	DBG_LB6_REVERSE_NAT_LOOKUP,
 	DBG_LB6_REVERSE_NAT,
-	DBG_LB4_LOOKUP_MASTER,
-	DBG_LB4_LOOKUP_MASTER_FAIL,
-	DBG_LB4_LOOKUP_SLAVE,
-	DBG_LB4_LOOKUP_SLAVE_SUCCESS,
-	DBG_LB4_LOOKUP_SLAVE_V2_FAIL,
+	DBG_LB4_LOOKUP_FRONTEND,
+	DBG_LB4_LOOKUP_FRONTEND_FAIL,
+	DBG_LB4_LOOKUP_BACKEND_SLOT,
+	DBG_LB4_LOOKUP_BACKEND_SLOT_SUCCESS,
+	DBG_LB4_LOOKUP_BACKEND_SLOT_V2_FAIL,
 	DBG_LB4_LOOKUP_BACKEND_FAIL,
 	DBG_LB4_REVERSE_NAT_LOOKUP,
 	DBG_LB4_REVERSE_NAT,
 	DBG_LB4_LOOPBACK_SNAT,
 	DBG_LB4_LOOPBACK_SNAT_REV,
 	DBG_CT_LOOKUP4,
-	DBG_RR_SLAVE_SEL,
+	DBG_RR_BACKEND_SLOT_SEL,
 	DBG_REV_PROXY_LOOKUP,
 	DBG_REV_PROXY_FOUND,
 	DBG_REV_PROXY_UPDATE,
@@ -79,7 +65,7 @@ enum {
 	DBG_CT_CREATED4,        /* arg1: (unused << 16) | rev_nat_index
 				 * arg2: src sec-id
 				 * arg3: lb address
-				 */ 
+				 */
 	DBG_CT_LOOKUP6_1,       /* arg1: saddr (last 4 bytes)
 				 * arg2: daddr (last 4 bytes)
 				 * arg3: (sport << 16) | dport
@@ -92,7 +78,7 @@ enum {
 				 * arg2: src sec-id
 				 * arg3: unused
 				 */
-	DBG_SKIP_PROXY,          /* arg1: skb->tc_index
+	DBG_SKIP_PROXY,          /* arg1: ctx->tc_index
 				  * arg2: unused
 				  */
 	DBG_L4_CREATE,		/* arg1: src sec-id
@@ -101,16 +87,38 @@ enum {
 				 */
 	DBG_IP_ID_MAP_FAILED4,	/* arg1: daddr
 				 * arg2: unused
-				 * arg3: unused */
+				 * arg3: unused
+				 */
 	DBG_IP_ID_MAP_FAILED6,	/* arg1: daddr (last 4 bytes)
 				 * arg2: unused
-				 * arg3: unused */
+				 * arg3: unused
+				 */
 	DBG_IP_ID_MAP_SUCCEED4,	/* arg1: daddr
 				 * arg2: identity
-				 * arg3: unused */
+				 * arg3: unused
+				 */
 	DBG_IP_ID_MAP_SUCCEED6,	/* arg1: daddr (last 4 bytes)
 				 * arg2: identity
-				 * arg3: unused */
+				 * arg3: unused
+				 */
+	DBG_LB_STALE_CT,	/* arg1: svc rev_nat_id
+				 * arg2: stale CT rev_nat_id
+				 * arg3: unused
+				 */
+	DBG_INHERIT_IDENTITY,	/* arg1: ctx->mark
+				 * arg2: unused
+				 */
+	DBG_SK_LOOKUP4,		/* arg1: saddr
+				 * arg2: daddr
+				 * arg3: (sport << 16) | dport
+				 */
+	DBG_SK_LOOKUP6,		/* arg1: saddr (last 4 bytes)
+				 * arg2: daddr (last 4 bytes)
+				 * arg3: (sport << 16) | dport
+				 */
+	DBG_SK_ASSIGN,		/* arg1: result
+				 * arg2: unuseds
+				 */
 };
 
 /* Capture types */
@@ -133,16 +141,30 @@ enum {
 #define EVENT_SOURCE 0
 #endif
 
-#if defined DEBUG
+#ifdef DEBUG
 #include "events.h"
 #endif
 
 #ifdef DEBUG
+#include "common.h"
 #include "utils.h"
 
+/* This takes both literals and modifiers, e.g.,
+ * printk("hello\n");
+ * printk("%d\n", ret);
+ *
+ * Three caveats when using this:
+ * - message needs to end with newline
+ *
+ * - only a subset of specifier are supported:
+ *   https://elixir.bootlin.com/linux/v5.7.7/source/kernel/trace/bpf_trace.c#L325
+ *
+ * - cannot use more than 3 format specifiers in the format string
+ *   because BPF helpers take a maximum of 5 arguments
+ */
 # define printk(fmt, ...)					\
 		({						\
-			char ____fmt[] = fmt;			\
+			const char ____fmt[] = fmt;		\
 			trace_printk(____fmt, sizeof(____fmt),	\
 				     ##__VA_ARGS__);		\
 		})
@@ -154,93 +176,90 @@ struct debug_msg {
 	__u32		arg3;
 };
 
-static inline void cilium_dbg(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline void cilium_dbg(struct __ctx_buff *ctx, __u8 type,
+				       __u32 arg1, __u32 arg2)
 {
-	uint32_t hash = get_hash_recalc(skb);
 	struct debug_msg msg = {
-		.type = CILIUM_NOTIFY_DBG_MSG,
-		.subtype = type,
-		.source = EVENT_SOURCE,
-		.hash = hash,
-		.arg1 = arg1,
-		.arg2 = arg2,
+		__notify_common_hdr(CILIUM_NOTIFY_DBG_MSG, type),
+		.arg1	= arg1,
+		.arg2	= arg2,
 	};
 
-	skb_event_output(skb, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
+	ctx_event_output(ctx, &EVENTS_MAP, BPF_F_CURRENT_CPU,
+			 &msg, sizeof(msg));
 }
 
-static inline void cilium_dbg3(struct __sk_buff *skb, __u8 type, __u32 arg1,
-			       __u32 arg2, __u32 arg3)
+static __always_inline void cilium_dbg3(struct __ctx_buff *ctx, __u8 type,
+					__u32 arg1, __u32 arg2, __u32 arg3)
 {
-	uint32_t hash = get_hash_recalc(skb);
 	struct debug_msg msg = {
-		.type = CILIUM_NOTIFY_DBG_MSG,
-		.subtype = type,
-		.source = EVENT_SOURCE,
-		.hash = hash,
-		.arg1 = arg1,
-		.arg2 = arg2,
-		.arg3 = arg3,
+		__notify_common_hdr(CILIUM_NOTIFY_DBG_MSG, type),
+		.arg1	= arg1,
+		.arg2	= arg2,
+		.arg3	= arg3,
 	};
 
-	skb_event_output(skb, &EVENTS_MAP, BPF_F_CURRENT_CPU, &msg, sizeof(msg));
+	ctx_event_output(ctx, &EVENTS_MAP, BPF_F_CURRENT_CPU,
+			 &msg, sizeof(msg));
 }
 
 struct debug_capture_msg {
-	NOTIFY_COMMON_HDR
-	__u32		len_orig;
-	__u32		len_cap;
+	NOTIFY_CAPTURE_HDR
 	__u32		arg1;
 	__u32		arg2;
 };
 
-static inline void cilium_dbg_capture2(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline void cilium_dbg_capture2(struct __ctx_buff *ctx, __u8 type,
+						__u32 arg1, __u32 arg2)
 {
-	uint64_t skb_len = (uint64_t)skb->len, cap_len = min((uint64_t)TRACE_PAYLOAD_LEN, (uint64_t)skb_len);
-	uint32_t hash = get_hash_recalc(skb);
+	__u64 ctx_len = ctx_full_len(ctx);
+	__u64 cap_len = min_t(__u64, TRACE_PAYLOAD_LEN, ctx_len);
 	struct debug_capture_msg msg = {
-		.type = CILIUM_NOTIFY_DBG_CAPTURE,
-		.subtype = type,
-		.source = EVENT_SOURCE,
-		.hash = hash,
-		.len_orig = skb_len,
-		.len_cap = cap_len,
-		.arg1 = arg1,
-		.arg2 = arg2,
+		__notify_common_hdr(CILIUM_NOTIFY_DBG_CAPTURE, type),
+		__notify_pktcap_hdr(ctx_len, cap_len),
+		.arg1	= arg1,
+		.arg2	= arg2,
 	};
 
-	skb_event_output(skb, &EVENTS_MAP,
+	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));
 }
 
-static inline void cilium_dbg_capture(struct __sk_buff *skb, __u8 type, __u32 arg1)
+static __always_inline void cilium_dbg_capture(struct __ctx_buff *ctx, __u8 type,
+					       __u32 arg1)
 {
-	cilium_dbg_capture2(skb, type, arg1, 0);
+	cilium_dbg_capture2(ctx, type, arg1, 0);
 }
-
 #else
-
 # define printk(fmt, ...)					\
 		do { } while (0)
 
-static inline void cilium_dbg(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline
+void cilium_dbg(struct __ctx_buff *ctx __maybe_unused, __u8 type __maybe_unused,
+		__u32 arg1 __maybe_unused, __u32 arg2 __maybe_unused)
 {
 }
 
-static inline void cilium_dbg3(struct __sk_buff *skb, __u8 type, __u32 arg1,
-			       __u32 arg2, __u32 arg3)
+static __always_inline
+void cilium_dbg3(struct __ctx_buff *ctx __maybe_unused,
+		 __u8 type __maybe_unused, __u32 arg1 __maybe_unused,
+		 __u32 arg2 __maybe_unused, __u32 arg3 __maybe_unused)
 {
 }
 
-static inline void cilium_dbg_capture(struct __sk_buff *skb, __u8 type, __u32 arg1)
+static __always_inline
+void cilium_dbg_capture(struct __ctx_buff *ctx __maybe_unused,
+			__u8 type __maybe_unused, __u32 arg1 __maybe_unused)
 {
 }
 
-static inline void cilium_dbg_capture2(struct __sk_buff *skb, __u8 type, __u32 arg1, __u32 arg2)
+static __always_inline
+void cilium_dbg_capture2(struct __ctx_buff *ctx __maybe_unused,
+			 __u8 type __maybe_unused, __u32 arg1 __maybe_unused,
+			 __u32 arg2 __maybe_unused)
 {
 }
 
 #endif
-
 #endif /* __LIB_DBG__ */

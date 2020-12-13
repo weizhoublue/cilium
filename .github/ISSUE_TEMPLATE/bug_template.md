@@ -2,7 +2,7 @@
 name: Bug Report
 about: Report a bug encountered while operating Cilium
 title: ''
-labels: ''
+labels: 'kind/bug'
 assignees: ''
 
 ---
@@ -33,9 +33,10 @@ security@cilium.io - first, before disclosing them in any public forums.
 - Kernel version (run `uname -a`)
 - Orchestration system version in use (e.g. `kubectl version`, Mesos, ...)
 - Link to relevant artifacts (policies, deployments scripts, ...)
-- Upload a system dump (run `curl -sLO
-releases.cilium.io/tools/cluster-diagnosis.zip &&
-python cluster-diagnosis.zip sysdump` and then attach the generated zip file)
+- Generate and upload a system zip:
+```
+curl -sLO https://git.io/cilium-sysdump-latest.zip && python cilium-sysdump-latest.zip
+```
 
 **How to reproduce the issue**
 

@@ -4,10 +4,6 @@
 
 Direct access to local BPF maps
 
-### Synopsis
-
-Direct access to local BPF maps
-
 ### Options
 
 ```
@@ -25,15 +21,16 @@ Direct access to local BPF maps
 ### SEE ALSO
 
 * [cilium](../cilium)	 - CLI
-* [cilium bpf config](../cilium_bpf_config)	 - Manage endpoint configuration BPF maps
+* [cilium bpf bandwidth](../cilium_bpf_bandwidth)	 - BPF datapath bandwidth settings
 * [cilium bpf ct](../cilium_bpf_ct)	 - Connection tracking tables
 * [cilium bpf endpoint](../cilium_bpf_endpoint)	 - Local endpoint map
+* [cilium bpf fs](../cilium_bpf_fs)	 - BPF filesystem mount
 * [cilium bpf ipcache](../cilium_bpf_ipcache)	 - Manage the IPCache mappings for IP/CIDR <-> Identity
+* [cilium bpf ipmasq](../cilium_bpf_ipmasq)	 - ip-masq-agent CIDRs
 * [cilium bpf lb](../cilium_bpf_lb)	 - Load-balancing configuration
 * [cilium bpf metrics](../cilium_bpf_metrics)	 - BPF datapath traffic metrics
 * [cilium bpf nat](../cilium_bpf_nat)	 - NAT mapping tables
 * [cilium bpf policy](../cilium_bpf_policy)	 - Manage policy related BPF maps
-* [cilium bpf proxy](../cilium_bpf_proxy)	 - Proxy configuration
 * [cilium bpf sha](../cilium_bpf_sha)	 - Manage compiled BPF template objects
 * [cilium bpf tunnel](../cilium_bpf_tunnel)	 - Tunnel endpoint map
 

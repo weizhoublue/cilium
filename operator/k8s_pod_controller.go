@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,52 +19,57 @@ import (
 	"fmt"
 	"time"
 
+	operatorOption "github.com/cilium/cilium/operator/option"
+	"github.com/cilium/cilium/operator/watchers"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/k8s"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 const (
-	minimalPodRestartInterval = 5 * time.Minute
+	minimalPodRestartInterval  = 5 * time.Minute
+	unmanagedKubeDnsMinimalAge = 30 * time.Second
 )
 
 var (
-	unmanagedKubeDnsWatcherInterval int
-	unmanagedKubeDnsMinimalAge      = 30 * time.Second
-	lastPodRestart                  = map[string]time.Time{}
+	lastPodRestart = map[string]time.Time{}
 )
 
 func enableUnmanagedKubeDNSController() {
+	// These functions will block until the resources are synced with k8s.
+	watchers.CiliumEndpointsInit(k8s.CiliumClient().CiliumV2(), wait.NeverStop)
+	watchers.UnmanagedPodsInit(k8s.WatcherClient())
+
 	controller.NewManager().UpdateController("restart-unmanaged-kube-dns",
 		controller.ControllerParams{
-			RunInterval: time.Duration(unmanagedKubeDnsWatcherInterval) * time.Second,
+			RunInterval: time.Duration(operatorOption.Config.UnmanagedPodWatcherInterval) * time.Second,
 			DoFunc: func(ctx context.Context) error {
 				for podName, lastRestart := range lastPodRestart {
 					if time.Since(lastRestart) > 2*minimalPodRestartInterval {
 						delete(lastPodRestart, podName)
 					}
 				}
-
-				pods, err := k8s.Client().CoreV1().Pods("").List(metav1.ListOptions{
-					LabelSelector: "k8s-app=kube-dns",
-					FieldSelector: "status.phase=Running",
-				})
-				if err != nil {
-					return err
-				}
-
-				for _, pod := range pods.Items {
+				for _, podItem := range watchers.UnmanagedPodStore.List() {
+					pod, ok := podItem.(*slim_corev1.Pod)
+					if !ok {
+						log.Errorf("unexpected type mapping: found %T, expected %T", pod, &slim_corev1.Pod{})
+						continue
+					}
 					if pod.Spec.HostNetwork {
 						continue
 					}
-					cep, err := ciliumK8sClient.CiliumV2().CiliumEndpoints(pod.Namespace).Get(pod.Name, metav1.GetOptions{})
+					cep, exists, err := watchers.HasCE(pod.Namespace, pod.Name)
+					if err != nil {
+						log.WithError(err).Errorf("unexpected error when getting CiliumEndpoint %s/%s", pod.Namespace, pod.Name)
+						continue
+					}
 					podID := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-					switch {
-					case err == nil:
+					if exists {
 						log.Debugf("Found kube-dns pod %s with identity %d", podID, cep.Status.ID)
-					case errors.IsNotFound(err):
+					} else {
 						log.Debugf("Found unmanaged kube-dns pod %s", podID)
 						if startTime := pod.Status.StartTime; startTime != nil {
 							if age := time.Since((*startTime).Time); age > unmanagedKubeDnsMinimalAge {
@@ -76,16 +81,17 @@ func enableUnmanagedKubeDNSController() {
 								}
 
 								log.Infof("Restarting unmanaged kube-dns pod %s started %s ago", podID, age)
-								if err := k8s.Client().CoreV1().Pods(pod.Namespace).Delete(pod.Name, &metav1.DeleteOptions{}); err != nil {
+								if err := k8s.Client().CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
 									log.WithError(err).Warningf("Unable to restart pod %s", podID)
 								} else {
 									lastPodRestart[podID] = time.Now()
+
+									// Delete a single pod per iteration to avoid killing all replicas at once
+									return nil
 								}
 
 							}
 						}
-					default:
-						return err
 					}
 				}
 

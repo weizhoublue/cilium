@@ -1,4 +1,4 @@
-// Copyright 2016-2019 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 package endpoint
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,37 +23,43 @@ import (
 	"net"
 	"os"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unsafe"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/common/addressing"
+	"github.com/cilium/cilium/pkg/addressing"
+	"github.com/cilium/cilium/pkg/annotation"
+	"github.com/cilium/cilium/pkg/bandwidth"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/controller"
-	"github.com/cilium/cilium/pkg/datapath/loader"
+	"github.com/cilium/cilium/pkg/datapath/iptables"
+	"github.com/cilium/cilium/pkg/datapath/link"
+	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
+	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn"
-	identityPkg "github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/fqdn/restore"
+	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
-	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
-	pkgLabels "github.com/cilium/cilium/pkg/labels"
-	"github.com/cilium/cilium/pkg/labels/model"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
-	bpfconfig "github.com/cilium/cilium/pkg/maps/configmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
+	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/monitor/notifications"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
-	"github.com/cilium/cilium/pkg/policy/distillery"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
 	"github.com/cilium/cilium/pkg/trigger"
@@ -71,9 +78,6 @@ var (
 )
 
 const (
-	// StateCreating is used to set the endpoint is being created.
-	StateCreating = string(models.EndpointStateCreating)
-
 	// StateWaitingForIdentity is used to set if the endpoint is waiting
 	// for an identity from the KVStore.
 	StateWaitingForIdentity = string(models.EndpointStateWaitingForIdentity)
@@ -96,11 +100,12 @@ const (
 	// StateRestoring is used to set the endpoint is being restored.
 	StateRestoring = string(models.EndpointStateRestoring)
 
+	// StateInvalid is used when an endpoint failed during creation due to
+	// invalid data.
+	StateInvalid = string(models.EndpointStateInvalid)
+
 	// IpvlanMapName specifies the tail call map for EP on egress used with ipvlan.
 	IpvlanMapName = "cilium_lxc_ipve_"
-
-	// HealthCEPPrefix is the prefix used to name the cilium health endpoints' CEP
-	HealthCEPPrefix = "cilium-health-"
 )
 
 // compile time interface check
@@ -110,63 +115,60 @@ var _ notifications.RegenNotificationInfo = &Endpoint{}
 // addresses on L3 with its own IP addresses. This structured is managed by the
 // endpoint manager in pkg/endpointmanager.
 //
-//
-// WARNING - STABLE API
-// This structure is written as JSON to StateDir/{ID}/lxc_config.h to allow to
-// restore endpoints when the agent is being restarted. The restore operation
-// will read the file and re-create all endpoints with all fields which are not
-// marked as private to JSON marshal. Do NOT modify this structure in ways which
-// is not JSON forward compatible.
-//
+// The representation of the Endpoint which is serialized to disk for restore
+// purposes is the serializableEndpoint type in this package.
 type Endpoint struct {
+	owner regeneration.Owner
+
 	// ID of the endpoint, unique in the scope of the node
 	ID uint16
 
-	// mutex protects write operations to this endpoint structure except
-	// for the logger field which has its own mutex
+	// createdAt stores the time the endpoint was created. This value is
+	// recalculated on endpoint restore.
+	createdAt time.Time
+
+	// mutex protects write operations to this endpoint structure
 	mutex lock.RWMutex
 
-	// ContainerName is the name given to the endpoint by the container runtime
-	ContainerName string
+	// containerName is the name given to the endpoint by the container runtime
+	containerName string
 
-	// ContainerID is the container ID that docker has assigned to the endpoint
-	// Note: The JSON tag was kept for backward compatibility.
-	ContainerID string `json:"dockerID,omitempty"`
+	// containerID is the container ID that docker has assigned to the endpoint
+	containerID string
 
-	// DockerNetworkID is the network ID of the libnetwork network if the
+	// dockerNetworkID is the network ID of the libnetwork network if the
 	// endpoint is a docker managed container which uses libnetwork
-	DockerNetworkID string
+	dockerNetworkID string
 
-	// DockerEndpointID is the Docker network endpoint ID if managed by
+	// dockerEndpointID is the Docker network endpoint ID if managed by
 	// libnetwork
-	DockerEndpointID string
+	dockerEndpointID string
 
 	// Corresponding BPF map identifier for tail call map of ipvlan datapath
-	DatapathMapID int
+	datapathMapID int
 
-	// isDatapathMapPinned denotes whether the datapath map has been pinned.
-	isDatapathMapPinned bool
-
-	// IfName is the name of the host facing interface (veth pair) which
+	// ifName is the name of the host facing interface (veth pair) which
 	// connects into the endpoint
-	IfName string
+	ifName string
 
-	// IfIndex is the interface index of the host face interface (veth pair)
-	IfIndex int
+	// ifIndex is the interface index of the host face interface (veth pair)
+	ifIndex int
 
 	// OpLabels is the endpoint's label configuration
 	//
 	// FIXME: Rename this field to Labels
-	OpLabels pkgLabels.OpLabels
+	OpLabels labels.OpLabels
 
 	// identityRevision is incremented each time the identity label
 	// information of the endpoint has changed
 	identityRevision int
 
-	// LXCMAC is the MAC address of the endpoint
+	// bps is the egress rate of the endpoint
+	bps uint64
+
+	// mac is the MAC address of the endpoint
 	//
-	// FIXME: Rename this field to MAC
-	LXCMAC mac.MAC // Container MAC address.
+	mac mac.MAC // Container MAC address.
 
 	// IPv6 is the IPv6 address of the endpoint
 	IPv6 addressing.CiliumIPv6
@@ -174,12 +176,12 @@ type Endpoint struct {
 	// IPv4 is the IPv4 address of the endpoint
 	IPv4 addressing.CiliumIPv4
 
-	// NodeMAC is the MAC of the node (agent). The MAC is different for every endpoint.
-	NodeMAC mac.MAC
+	// nodeMAC is the MAC of the node (agent). The MAC is different for every endpoint.
+	nodeMAC mac.MAC
 
 	// SecurityIdentity is the security identity of this endpoint. This is computed from
 	// the endpoint's labels.
-	SecurityIdentity *identityPkg.Identity `json:"SecLabel"`
+	SecurityIdentity *identity.Identity `json:"SecLabel"`
 
 	// hasSidecarProxy indicates whether the endpoint has been injected by
 	// Istio with a Cilium-compatible sidecar proxy. If true, the sidecar proxy
@@ -188,29 +190,34 @@ type Endpoint struct {
 	// TODO: Currently this applies only to HTTP L7 rules. Kafka L7 rules are still enforced by Cilium's node-wide Kafka proxy.
 	hasSidecarProxy bool
 
-	// prevIdentityCache is the set of all security identities used in the
-	// previous policy computation
-	prevIdentityCache *cache.IdentityCache
-
-	// PolicyMap is the policy related state of the datapath including
+	// policyMap is the policy related state of the datapath including
 	// reference to all policy related BPF
-	PolicyMap *policymap.PolicyMap `json:"-"`
+	policyMap *policymap.PolicyMap
 
 	// Options determine the datapath configuration of the endpoint.
 	Options *option.IntOptions
 
-	// Status are the last n state transitions this endpoint went through
-	Status *EndpointStatus
+	// status contains the last n state transitions this endpoint went through
+	status *EndpointStatus
+
+	// DNSRules is the collection of current endpoint-specific DNS proxy
+	// rules. These can be restored during Cilium restart.
+	DNSRules restore.DNSRules
 
 	// DNSHistory is the collection of still-valid DNS responses intercepted for
 	// this endpoint.
 	DNSHistory *fqdn.DNSCache
 
-	// dnsHistoryTrigger is the trigger to write down the lxc_config.h to make
+	// DNSZombies is the collection of DNS IPs that have expired in or been
+	// evicted from DNSHistory. They are held back from deletion until we can
+	// confirm that no existing connection is using them.
+	DNSZombies *fqdn.DNSZombieMappings
+
+	// dnsHistoryTrigger is the trigger to write down the ep_config.h to make
 	// sure that restores when DNS policy is in there are correct
 	dnsHistoryTrigger *trigger.Trigger
 
-	// state is the state the endpoint is in. See SetStateLocked()
+	// state is the state the endpoint is in. See setState()
 	state string
 
 	// bpfHeaderfileHash is the hash of the last BPF headerfile that has been
@@ -222,6 +229,19 @@ type Endpoint struct {
 
 	// K8sNamespace is the Kubernetes namespace of the endpoint
 	K8sNamespace string
+
+	// pod
+	pod *slim_corev1.Pod
+
+	// k8sPorts contains container ports associated in the pod.
+	// It is used to enforce k8s network policies with port names.
+	k8sPorts policy.NamedPortMap
+
+	// logLimiter rate limits potentially repeating warning logs
+	logLimiter logging.Limiter
+
+	// k8sPortsSet keep track when k8sPorts was set at least one time.
+	hasK8sMetadata bool
 
 	// policyRevision is the policy revision this endpoint is currently on
 	// to modify this field please use endpoint.setPolicyRevision instead
@@ -239,11 +259,12 @@ type Endpoint struct {
 	// proxyStatistics.
 	proxyStatisticsMutex lock.RWMutex
 
+	proxy EndpointProxy
+
 	// proxyStatistics contains statistics of proxy redirects.
-	// They keys in this map are the ProxyStatistics with their
-	// AllocatedProxyPort and Statistics fields set to 0 and nil.
+	// They keys in this map are policy.ProxyIDs.
 	// You must hold Endpoint.proxyStatisticsMutex to read or write it.
-	proxyStatistics map[models.ProxyStatistics]*models.ProxyStatistics
+	proxyStatistics map[string]*models.ProxyStatistics
 
 	// nextPolicyRevision is the policy revision that the endpoint has
 	// updated to and that will become effective with the next regenerate
@@ -254,16 +275,21 @@ type Endpoint struct {
 	// endpoint mutex after policy recalculation.
 	forcePolicyCompute bool
 
-	// BuildMutex synchronizes builds of individual endpoints and locks out
+	// buildMutex synchronizes builds of individual endpoints and locks out
 	// deletion during builds
-	//
-	// FIXME: Mark private once endpoint deletion can be moved into
-	// `pkg/endpoint`
-	BuildMutex lock.Mutex `json:"-"`
+	buildMutex lock.Mutex
 
 	// logger is a logrus object with fields set to report an endpoints information.
-	// You must hold Endpoint.Mutex to read or write it (but not to log with it).
+	// This must only be accessed with atomic.LoadPointer/StorePointer.
+	// 'mutex' must be Lock()ed to synchronize stores. No lock needs to be held
+	// when loading this pointer.
 	logger unsafe.Pointer
+
+	// policyLogger is a logrus object with fields set to report an endpoints information.
+	// This must only be accessed with atomic LoadPointer/StorePointer.
+	// 'mutex' must be Lock()ed to synchronize stores. No lock needs to be held
+	// when loading this pointer.
+	policyLogger unsafe.Pointer
 
 	// controllers is the list of async controllers syncing the endpoint to
 	// other resources
@@ -272,17 +298,8 @@ type Endpoint struct {
 	// realizedRedirects maps the ID of each proxy redirect that has been
 	// successfully added into a proxy for this endpoint, to the redirect's
 	// proxy port number.
-	// You must hold Endpoint.Mutex to read or write it.
+	// You must hold Endpoint.mutex to read or write it.
 	realizedRedirects map[string]uint16
-
-	// BPFConfigMap provides access to the endpoint's BPF configuration.
-	bpfConfigMap *bpfconfig.EndpointConfigMap
-
-	// desiredBPFConfig is the BPF Configuration computed from the endpoint.
-	desiredBPFConfig *bpfconfig.EndpointConfig
-
-	// realizedBPFConfig is the config currently active in the BPF datapath.
-	realizedBPFConfig *bpfconfig.EndpointConfig
 
 	// ctCleaned indicates whether the conntrack table has already been
 	// cleaned when this endpoint was first created
@@ -292,13 +309,21 @@ type Endpoint struct {
 
 	// selectorPolicy represents a reference to the shared SelectorPolicy
 	// for all endpoints that have the same Identity.
-	selectorPolicy distillery.SelectorPolicy
+	selectorPolicy policy.SelectorPolicy
 
 	desiredPolicy *policy.EndpointPolicy
 
 	realizedPolicy *policy.EndpointPolicy
 
-	EventQueue *eventqueue.EventQueue `json:"-"`
+	visibilityPolicy *policy.VisibilityPolicy
+
+	eventQueue *eventqueue.EventQueue
+
+	// skippedRegenerationLevel is the DatapathRegenerationLevel of the regeneration event that
+	// was skipped due to another regeneration event already being queued, as indicated by
+	// state. A lower-level current regeneration is bumped to this level to cover for the
+	// skipped regeneration levels.
+	skippedRegenerationLevel regeneration.DatapathRegenerationLevel
 
 	// DatapathConfiguration is the endpoint's datapath configuration as
 	// passed in via the plugin that created the endpoint, e.g. the CNI
@@ -306,27 +331,49 @@ type Endpoint struct {
 	// features according to the mode selected.
 	DatapathConfiguration models.EndpointDatapathConfiguration
 
-	///////////////////////
-	// DEPRECATED FIELDS //
-	///////////////////////
+	aliveCtx        context.Context
+	aliveCancel     context.CancelFunc
+	regenFailedChan chan struct{}
 
-	// DeprecatedOpts represents the mutable options for the endpoint, in
-	// the format understood by Cilium 1.1 or earlier.
-	//
-	// Deprecated: Use Options instead.
-	DeprecatedOpts deprecatedOptions `json:"Opts"`
+	allocator cache.IdentityAllocator
+
+	isHost bool
+
+	noTrackPort uint16
+}
+
+// SetAllocator sets the identity allocator for this endpoint.
+func (e *Endpoint) SetAllocator(allocator cache.IdentityAllocator) {
+	e.unconditionalLock()
+	defer e.unlock()
+	e.allocator = allocator
 }
 
 // UpdateController updates the controller with the specified name with the
 // provided list of parameters in endpoint's list of controllers.
-func (e *Endpoint) UpdateController(name string, params controller.ControllerParams) *controller.Controller {
-	return e.controllers.UpdateController(name, params)
+func (e *Endpoint) UpdateController(name string, params controller.ControllerParams) {
+	params.Context = e.aliveCtx
+	e.controllers.UpdateController(name, params)
 }
 
-// CloseBPFProgramChannel closes the channel that signals whether the endpoint
+// GetIfIndex returns the ifIndex for this endpoint.
+func (e *Endpoint) GetIfIndex() int {
+	return e.ifIndex
+}
+
+// LXCMac returns the LXCMac for this endpoint.
+func (e *Endpoint) LXCMac() mac.MAC {
+	return e.mac
+}
+
+func (e *Endpoint) IsHost() bool {
+	return e.isHost
+}
+
+// closeBPFProgramChannel closes the channel that signals whether the endpoint
 // has had its BPF program compiled. If the channel is already closed, this is
 // a no-op.
-func (e *Endpoint) CloseBPFProgramChannel() {
+func (e *Endpoint) closeBPFProgramChannel() {
 	select {
 	case <-e.hasBPFProgram:
 	default:
@@ -334,9 +381,9 @@ func (e *Endpoint) CloseBPFProgramChannel() {
 	}
 }
 
-// HasBPFProgram returns whether a BPF program has been generated for this
+// bpfProgramInstalled returns whether a BPF program has been generated for this
 // endpoint.
-func (e *Endpoint) HasBPFProgram() bool {
+func (e *Endpoint) bpfProgramInstalled() bool {
 	select {
 	case <-e.hasBPFProgram:
 		return true
@@ -347,56 +394,15 @@ func (e *Endpoint) HasBPFProgram() bool {
 
 // HasIpvlanDataPath returns whether the daemon is running in ipvlan mode.
 func (e *Endpoint) HasIpvlanDataPath() bool {
-	if e.DatapathMapID > 0 {
+	if e.datapathMapID > 0 {
 		return true
 	}
 	return false
 }
 
-// GetIngressPolicyEnabledLocked returns whether ingress policy enforcement is
-// enabled for endpoint or not. The endpoint's mutex must be held.
-func (e *Endpoint) GetIngressPolicyEnabledLocked() bool {
-	return e.desiredPolicy.IngressPolicyEnabled
-}
-
-// GetEgressPolicyEnabledLocked returns whether egress policy enforcement is
-// enabled for endpoint or not. The endpoint's mutex must be held.
-func (e *Endpoint) GetEgressPolicyEnabledLocked() bool {
-	return e.desiredPolicy.EgressPolicyEnabled
-}
-
-// SetDesiredIngressPolicyEnabled sets Endpoint's ingress policy enforcement
-// configuration to the specified value. The endpoint's mutex must not be held.
-func (e *Endpoint) SetDesiredIngressPolicyEnabled(ingress bool) {
-	e.UnconditionalLock()
-	e.desiredPolicy.IngressPolicyEnabled = ingress
-	e.Unlock()
-
-}
-
-// SetDesiredEgressPolicyEnabled sets Endpoint's egress policy enforcement
-// configuration to the specified value. The endpoint's mutex must not be held.
-func (e *Endpoint) SetDesiredEgressPolicyEnabled(egress bool) {
-	e.UnconditionalLock()
-	e.desiredPolicy.EgressPolicyEnabled = egress
-	e.Unlock()
-}
-
-// SetDesiredIngressPolicyEnabledLocked sets Endpoint's ingress policy enforcement
-// configuration to the specified value. The endpoint's mutex must be held.
-func (e *Endpoint) SetDesiredIngressPolicyEnabledLocked(ingress bool) {
-	e.desiredPolicy.IngressPolicyEnabled = ingress
-}
-
-// SetDesiredEgressPolicyEnabledLocked sets Endpoint's egress policy enforcement
-// configuration to the specified value. The endpoint's mutex must be held.
-func (e *Endpoint) SetDesiredEgressPolicyEnabledLocked(egress bool) {
-	e.desiredPolicy.EgressPolicyEnabled = egress
-}
-
-// WaitForProxyCompletions blocks until all proxy changes have been completed.
-// Called with BuildMutex held.
-func (e *Endpoint) WaitForProxyCompletions(proxyWaitGroup *completion.WaitGroup) error {
+// waitForProxyCompletions blocks until all proxy changes have been completed.
+// Called with buildMutex held.
+func (e *Endpoint) waitForProxyCompletions(proxyWaitGroup *completion.WaitGroup) error {
 	if proxyWaitGroup == nil {
 		return nil
 	}
@@ -419,397 +425,73 @@ func (e *Endpoint) WaitForProxyCompletions(proxyWaitGroup *completion.WaitGroup)
 }
 
 // NewEndpointWithState creates a new endpoint useful for testing purposes
-func NewEndpointWithState(ID uint16, state string) *Endpoint {
-	ep := &Endpoint{
-		ID:             ID,
-		OpLabels:       pkgLabels.NewOpLabels(),
-		Status:         NewEndpointStatus(),
-		DNSHistory:     fqdn.NewDNSCacheWithLimit(option.Config.ToFQDNsMinTTL, option.Config.ToFQDNsMaxIPsPerHost),
-		state:          state,
-		hasBPFProgram:  make(chan struct{}, 0),
-		controllers:    controller.NewManager(),
-		EventQueue:     eventqueue.NewEventQueueBuffered(fmt.Sprintf("endpoint-%d", ID), option.Config.EndpointQueueSize),
-		desiredPolicy:  policy.NewEndpointPolicy(),
-		realizedPolicy: policy.NewEndpointPolicy(),
-	}
-	ep.SetDefaultOpts(option.Config.Opts)
+func NewEndpointWithState(owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, state string) *Endpoint {
+	ep := createEndpoint(owner, proxy, allocator, ID, "")
+	ep.state = state
+	ep.eventQueue = eventqueue.NewEventQueueBuffered(fmt.Sprintf("endpoint-%d", ID), option.Config.EndpointQueueSize)
+
 	ep.UpdateLogger(nil)
 
-	ep.EventQueue.Run()
+	ep.eventQueue.Run()
 
 	return ep
 }
 
-// NewEndpointFromChangeModel creates a new endpoint from a request
-func NewEndpointFromChangeModel(base *models.EndpointChangeRequest) (*Endpoint, error) {
-	if base == nil {
-		return nil, nil
-	}
-
+func createEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, ifName string) *Endpoint {
 	ep := &Endpoint{
-		ID:               uint16(base.ID),
-		ContainerName:    base.ContainerName,
-		ContainerID:      base.ContainerID,
-		DockerNetworkID:  base.DockerNetworkID,
-		DockerEndpointID: base.DockerEndpointID,
-		IfName:           base.InterfaceName,
-		K8sPodName:       base.K8sPodName,
-		K8sNamespace:     base.K8sNamespace,
-		DatapathMapID:    int(base.DatapathMapID),
-		IfIndex:          int(base.InterfaceIndex),
-		OpLabels:         pkgLabels.NewOpLabels(),
-		DNSHistory:       fqdn.NewDNSCacheWithLimit(option.Config.ToFQDNsMinTTL, option.Config.ToFQDNsMaxIPsPerHost),
-		state:            "",
-		Status:           NewEndpointStatus(),
-		hasBPFProgram:    make(chan struct{}, 0),
-		desiredPolicy:    policy.NewEndpointPolicy(),
-		realizedPolicy:   policy.NewEndpointPolicy(),
-		controllers:      controller.NewManager(),
+		owner:           owner,
+		ID:              ID,
+		createdAt:       time.Now(),
+		proxy:           proxy,
+		ifName:          ifName,
+		OpLabels:        labels.NewOpLabels(),
+		DNSRules:        nil,
+		DNSHistory:      fqdn.NewDNSCacheWithLimit(option.Config.ToFQDNsMinTTL, option.Config.ToFQDNsMaxIPsPerHost),
+		DNSZombies:      fqdn.NewDNSZombieMappings(option.Config.ToFQDNsMaxDeferredConnectionDeletes),
+		state:           "",
+		status:          NewEndpointStatus(),
+		hasBPFProgram:   make(chan struct{}, 0),
+		desiredPolicy:   policy.NewEndpointPolicy(owner.GetPolicyRepository()),
+		controllers:     controller.NewManager(),
+		regenFailedChan: make(chan struct{}, 1),
+		allocator:       allocator,
+		logLimiter:      logging.NewLimiter(10*time.Second, 3), // 1 log / 10 secs, burst of 3
+		noTrackPort:     0,
 	}
 
-	if base.Mac != "" {
-		m, err := mac.ParseMAC(base.Mac)
-		if err != nil {
-			return nil, err
-		}
-		ep.LXCMAC = m
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ep.aliveCancel = cancel
+	ep.aliveCtx = ctx
 
-	if base.HostMac != "" {
-		m, err := mac.ParseMAC(base.HostMac)
-		if err != nil {
-			return nil, err
-		}
-		ep.NodeMAC = m
-	}
-
-	if base.Addressing != nil {
-		if ip := base.Addressing.IPV6; ip != "" {
-			ip6, err := addressing.NewCiliumIPv6(ip)
-			if err != nil {
-				return nil, err
-			}
-			ep.IPv6 = ip6
-		}
-
-		if ip := base.Addressing.IPV4; ip != "" {
-			ip4, err := addressing.NewCiliumIPv4(ip)
-			if err != nil {
-				return nil, err
-			}
-			ep.IPv4 = ip4
-		}
-	}
-
-	if base.DatapathConfiguration != nil {
-		ep.DatapathConfiguration = *base.DatapathConfiguration
-	}
+	ep.realizedPolicy = ep.desiredPolicy
 
 	ep.SetDefaultOpts(option.Config.Opts)
 
-	ep.UpdateLogger(nil)
-	ep.SetStateLocked(string(base.State), "Endpoint creation")
+	return ep
+}
+
+// CreateHostEndpoint creates the endpoint corresponding to the host.
+func CreateHostEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator) (*Endpoint, error) {
+	ifName := option.Config.HostDevice
+	if option.Config.IsFlannelMasterDeviceSet() {
+		ifName = option.Config.FlannelMasterDevice
+	}
+
+	mac, err := link.GetHardwareAddr(ifName)
+	if err != nil {
+		return nil, err
+	}
+
+	ep := createEndpoint(owner, proxy, allocator, 0, ifName)
+	ep.isHost = true
+	ep.nodeMAC = mac
+	ep.DatapathConfiguration = models.EndpointDatapathConfiguration{
+		RequireEgressProg: true,
+	}
+
+	ep.setState(StateWaitingForIdentity, "Endpoint creation")
 
 	return ep, nil
-}
-
-// GetModelRLocked returns the API model of endpoint e.
-// e.mutex must be RLocked.
-func (e *Endpoint) GetModelRLocked() *models.Endpoint {
-	if e == nil {
-		return nil
-	}
-
-	currentState := models.EndpointState(e.state)
-	if currentState == models.EndpointStateReady && e.Status.CurrentStatus() != OK {
-		currentState = models.EndpointStateNotReady
-	}
-
-	// This returns the most recent log entry for this endpoint. It is backwards
-	// compatible with the json from before we added `cilium endpoint log` but it
-	// only returns 1 entry.
-	statusLog := e.Status.GetModel()
-	if len(statusLog) > 0 {
-		statusLog = statusLog[:1]
-	}
-
-	lblMdl := model.NewModel(&e.OpLabels)
-
-	// Sort these slices since they come out in random orders. This allows
-	// reflect.DeepEqual to succeed.
-	sort.StringSlice(lblMdl.Realized.User).Sort()
-	sort.StringSlice(lblMdl.Disabled).Sort()
-	sort.StringSlice(lblMdl.SecurityRelevant).Sort()
-	sort.StringSlice(lblMdl.Derived).Sort()
-
-	controllerMdl := e.controllers.GetStatusModel()
-	sort.Slice(controllerMdl, func(i, j int) bool { return controllerMdl[i].Name < controllerMdl[j].Name })
-
-	spec := &models.EndpointConfigurationSpec{
-		LabelConfiguration: lblMdl.Realized,
-	}
-
-	if e.Options != nil {
-		spec.Options = *e.Options.GetMutableModel()
-	}
-
-	mdl := &models.Endpoint{
-		ID:   int64(e.ID),
-		Spec: spec,
-		Status: &models.EndpointStatus{
-			// FIXME GH-3280 When we begin implementing revision numbers this will
-			// diverge from models.Endpoint.Spec to reflect the in-datapath config
-			Realized: spec,
-			Identity: e.SecurityIdentity.GetModel(),
-			Labels:   lblMdl,
-			Networking: &models.EndpointNetworking{
-				Addressing: []*models.AddressPair{{
-					IPV4: e.IPv4.String(),
-					IPV6: e.IPv6.String(),
-				}},
-				InterfaceIndex: int64(e.IfIndex),
-				InterfaceName:  e.IfName,
-				Mac:            e.LXCMAC.String(),
-				HostMac:        e.NodeMAC.String(),
-			},
-			ExternalIdentifiers: &models.EndpointIdentifiers{
-				ContainerID:      e.ContainerID,
-				ContainerName:    e.ContainerName,
-				DockerEndpointID: e.DockerEndpointID,
-				DockerNetworkID:  e.DockerNetworkID,
-				PodName:          e.GetK8sNamespaceAndPodNameLocked(),
-			},
-			// FIXME GH-3280 When we begin returning endpoint revisions this should
-			// change to return the configured and in-datapath policies.
-			Policy:      e.GetPolicyModel(),
-			Log:         statusLog,
-			Controllers: controllerMdl,
-			State:       currentState, // TODO: Validate
-			Health:      e.getHealthModel(),
-		},
-	}
-
-	return mdl
-}
-
-// GetHealthModel returns the endpoint's health object.
-//
-// Must be called with e.Mutex locked.
-func (e *Endpoint) getHealthModel() *models.EndpointHealth {
-	// Duplicated from GetModelRLocked.
-	currentState := models.EndpointState(e.state)
-	if currentState == models.EndpointStateReady && e.Status.CurrentStatus() != OK {
-		currentState = models.EndpointStateNotReady
-	}
-
-	h := models.EndpointHealth{
-		Bpf:           models.EndpointHealthStatusDisabled,
-		Policy:        models.EndpointHealthStatusDisabled,
-		Connected:     false,
-		OverallHealth: models.EndpointHealthStatusDisabled,
-	}
-	switch currentState {
-	case models.EndpointStateRegenerating, models.EndpointStateWaitingToRegenerate, models.EndpointStateDisconnecting:
-		h = models.EndpointHealth{
-			Bpf:           models.EndpointHealthStatusPending,
-			Policy:        models.EndpointHealthStatusPending,
-			Connected:     true,
-			OverallHealth: models.EndpointHealthStatusPending,
-		}
-	case models.EndpointStateCreating:
-		h = models.EndpointHealth{
-			Bpf:           models.EndpointHealthStatusBootstrap,
-			Policy:        models.EndpointHealthStatusDisabled,
-			Connected:     true,
-			OverallHealth: models.EndpointHealthStatusDisabled,
-		}
-	case models.EndpointStateWaitingForIdentity:
-		h = models.EndpointHealth{
-			Bpf:           models.EndpointHealthStatusDisabled,
-			Policy:        models.EndpointHealthStatusBootstrap,
-			Connected:     true,
-			OverallHealth: models.EndpointHealthStatusDisabled,
-		}
-	case models.EndpointStateNotReady:
-		h = models.EndpointHealth{
-			Bpf:           models.EndpointHealthStatusWarning,
-			Policy:        models.EndpointHealthStatusWarning,
-			Connected:     true,
-			OverallHealth: models.EndpointHealthStatusWarning,
-		}
-	case models.EndpointStateDisconnected:
-		h = models.EndpointHealth{
-			Bpf:           models.EndpointHealthStatusDisabled,
-			Policy:        models.EndpointHealthStatusDisabled,
-			Connected:     false,
-			OverallHealth: models.EndpointHealthStatusDisabled,
-		}
-	case models.EndpointStateReady:
-		h = models.EndpointHealth{
-			Bpf:           models.EndpointHealthStatusOK,
-			Policy:        models.EndpointHealthStatusOK,
-			Connected:     true,
-			OverallHealth: models.EndpointHealthStatusOK,
-		}
-	}
-
-	return &h
-}
-
-// GetHealthModel returns the endpoint's health object.
-func (e *Endpoint) GetHealthModel() *models.EndpointHealth {
-	// NOTE: Using rlock on mutex directly because getHealthModel handles removed endpoint properly
-	e.mutex.RLock()
-	defer e.mutex.RUnlock()
-	return e.getHealthModel()
-}
-
-// GetModel returns the API model of endpoint e.
-func (e *Endpoint) GetModel() *models.Endpoint {
-	if e == nil {
-		return nil
-	}
-	// NOTE: Using rlock on mutex directly because GetModelRLocked handles removed endpoint properly
-	e.mutex.RLock()
-	defer e.mutex.RUnlock()
-
-	return e.GetModelRLocked()
-}
-
-// GetPolicyModel returns the endpoint's policy as an API model.
-//
-// Must be called with e.Mutex locked.
-func (e *Endpoint) GetPolicyModel() *models.EndpointPolicyStatus {
-	if e == nil {
-		return nil
-	}
-
-	if e.SecurityIdentity == nil {
-		return nil
-	}
-
-	realizedIngressIdentities := make([]int64, 0)
-	realizedEgressIdentities := make([]int64, 0)
-
-	for policyMapKey := range e.realizedPolicy.PolicyMapState {
-		if policyMapKey.DestPort != 0 {
-			// If the port is non-zero, then the Key no longer only applies
-			// at L3. AllowedIngressIdentities and AllowedEgressIdentities
-			// contain sets of which identities (i.e., label-based L3 only)
-			// are allowed, so anything which contains L4-related policy should
-			// not be added to these sets.
-			continue
-		}
-		switch trafficdirection.TrafficDirection(policyMapKey.TrafficDirection) {
-		case trafficdirection.Ingress:
-			realizedIngressIdentities = append(realizedIngressIdentities, int64(policyMapKey.Identity))
-		case trafficdirection.Egress:
-			realizedEgressIdentities = append(realizedEgressIdentities, int64(policyMapKey.Identity))
-		default:
-			log.WithField(logfields.TrafficDirection, trafficdirection.TrafficDirection(policyMapKey.TrafficDirection)).Error("Unexpected traffic direction present in realized PolicyMap state for endpoint")
-		}
-	}
-
-	desiredIngressIdentities := make([]int64, 0)
-	desiredEgressIdentities := make([]int64, 0)
-
-	for policyMapKey := range e.desiredPolicy.PolicyMapState {
-		if policyMapKey.DestPort != 0 {
-			// If the port is non-zero, then the Key no longer only applies
-			// at L3. AllowedIngressIdentities and AllowedEgressIdentities
-			// contain sets of which identities (i.e., label-based L3 only)
-			// are allowed, so anything which contains L4-related policy should
-			// not be added to these sets.
-			continue
-		}
-		switch trafficdirection.TrafficDirection(policyMapKey.TrafficDirection) {
-		case trafficdirection.Ingress:
-			desiredIngressIdentities = append(desiredIngressIdentities, int64(policyMapKey.Identity))
-		case trafficdirection.Egress:
-			desiredEgressIdentities = append(desiredEgressIdentities, int64(policyMapKey.Identity))
-		default:
-			log.WithField(logfields.TrafficDirection, trafficdirection.TrafficDirection(policyMapKey.TrafficDirection)).Error("Unexpected traffic direction present in desired PolicyMap state for endpoint")
-		}
-	}
-
-	policyEnabled := e.policyStatus()
-
-	e.proxyStatisticsMutex.RLock()
-	proxyStats := make([]*models.ProxyStatistics, 0, len(e.proxyStatistics))
-	for _, stats := range e.proxyStatistics {
-		proxyStats = append(proxyStats, stats.DeepCopy())
-	}
-	e.proxyStatisticsMutex.RUnlock()
-	sortProxyStats(proxyStats)
-
-	var (
-		realizedCIDRPolicy *policy.CIDRPolicy
-		realizedL4Policy   *policy.L4Policy
-	)
-	if e.realizedPolicy != nil {
-		realizedL4Policy = e.realizedPolicy.L4Policy
-		realizedCIDRPolicy = e.realizedPolicy.CIDRPolicy
-	}
-
-	mdl := &models.EndpointPolicy{
-		ID: int64(e.SecurityIdentity.ID),
-		// This field should be removed.
-		Build:                    int64(e.policyRevision),
-		PolicyRevision:           int64(e.policyRevision),
-		AllowedIngressIdentities: realizedIngressIdentities,
-		AllowedEgressIdentities:  realizedEgressIdentities,
-		CidrPolicy:               realizedCIDRPolicy.GetModel(),
-		L4:                       realizedL4Policy.GetModel(),
-		PolicyEnabled:            policyEnabled,
-	}
-
-	var (
-		desiredCIDRPolicy *policy.CIDRPolicy
-		desiredL4Policy   *policy.L4Policy
-	)
-	if e.desiredPolicy != nil {
-		desiredL4Policy = e.desiredPolicy.L4Policy
-		desiredCIDRPolicy = e.desiredPolicy.CIDRPolicy
-	} else {
-		desiredL4Policy = &policy.L4Policy{}
-		desiredCIDRPolicy = &policy.CIDRPolicy{}
-	}
-
-	desiredMdl := &models.EndpointPolicy{
-		ID: int64(e.SecurityIdentity.ID),
-		// This field should be removed.
-		Build:                    int64(e.nextPolicyRevision),
-		PolicyRevision:           int64(e.nextPolicyRevision),
-		AllowedIngressIdentities: desiredIngressIdentities,
-		AllowedEgressIdentities:  desiredEgressIdentities,
-		CidrPolicy:               desiredCIDRPolicy.GetModel(),
-		L4:                       desiredL4Policy.GetModel(),
-		PolicyEnabled:            policyEnabled,
-	}
-	// FIXME GH-3280 Once we start returning revisions Realized should be the
-	// policy implemented in the data path
-	return &models.EndpointPolicyStatus{
-		Spec:                desiredMdl,
-		Realized:            mdl,
-		ProxyPolicyRevision: int64(e.proxyPolicyRevision),
-		ProxyStatistics:     proxyStats,
-	}
-}
-
-// policyStatus returns the endpoint's policy status
-//
-// Must be called with e.Mutex locked.
-func (e *Endpoint) policyStatus() models.EndpointPolicyEnabled {
-	policyEnabled := models.EndpointPolicyEnabledNone
-	switch {
-	case e.realizedPolicy.IngressPolicyEnabled && e.realizedPolicy.EgressPolicyEnabled:
-		policyEnabled = models.EndpointPolicyEnabledBoth
-	case e.realizedPolicy.IngressPolicyEnabled:
-		policyEnabled = models.EndpointPolicyEnabledIngress
-	case e.realizedPolicy.EgressPolicyEnabled:
-		policyEnabled = models.EndpointPolicyEnabledEgress
-	}
-	return policyEnabled
 }
 
 // GetID returns the endpoint's ID as a 64-bit unsigned integer.
@@ -828,8 +510,12 @@ func (e *Endpoint) GetLabels() []string {
 
 // GetSecurityIdentity returns the security identity of the endpoint. It assumes
 // the endpoint's mutex is held.
-func (e *Endpoint) GetSecurityIdentity() *identityPkg.Identity {
-	return e.SecurityIdentity
+func (e *Endpoint) GetSecurityIdentity() (*identity.Identity, error) {
+	if err := e.rlockAlive(); err != nil {
+		return nil, err
+	}
+	defer e.runlock()
+	return e.SecurityIdentity, nil
 }
 
 // GetID16 returns the endpoint's ID as a 16-bit unsigned integer.
@@ -837,19 +523,19 @@ func (e *Endpoint) GetID16() uint16 {
 	return e.ID
 }
 
-// GetK8sPodLabels returns all labels that exist in the endpoint and were
+// getK8sPodLabels returns all labels that exist in the endpoint and were
 // derived from k8s pod.
-func (e *Endpoint) GetK8sPodLabels() pkgLabels.Labels {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+func (e *Endpoint) getK8sPodLabels() labels.Labels {
+	e.unconditionalRLock()
+	defer e.runlock()
 	allLabels := e.OpLabels.AllLabels()
 	if allLabels == nil {
 		return nil
 	}
 
-	allLabelsFromK8s := allLabels.GetFromSource(pkgLabels.LabelSourceK8s)
+	allLabelsFromK8s := allLabels.GetFromSource(labels.LabelSourceK8s)
 
-	k8sEPPodLabels := pkgLabels.Labels{}
+	k8sEPPodLabels := labels.Labels{}
 	for k, v := range allLabelsFromK8s {
 		if !strings.HasPrefix(v.Key, ciliumio.PodNamespaceMetaLabels) &&
 			!strings.HasPrefix(v.Key, ciliumio.PolicyLabelServiceAccount) &&
@@ -871,8 +557,8 @@ func (e *Endpoint) GetLabelsSHA() string {
 
 // GetOpLabels returns the labels as slice
 func (e *Endpoint) GetOpLabels() []string {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+	e.unconditionalRLock()
+	defer e.runlock()
 	return e.OpLabels.IdentityLabels().GetModel()
 }
 
@@ -903,12 +589,7 @@ func (e *Endpoint) IPv6Address() addressing.CiliumIPv6 {
 
 // GetNodeMAC returns the MAC address of the node from this endpoint's perspective.
 func (e *Endpoint) GetNodeMAC() mac.MAC {
-	return e.NodeMAC
-}
-
-// SetNodeMACLocked updates the node MAC inside the endpoint.
-func (e *Endpoint) SetNodeMACLocked(m mac.MAC) {
-	e.NodeMAC = m
+	return e.nodeMAC
 }
 
 func (e *Endpoint) HasSidecarProxy() bool {
@@ -918,8 +599,25 @@ func (e *Endpoint) HasSidecarProxy() bool {
 // ConntrackName returns the name suffix for the endpoint-specific bpf
 // conntrack map, which is a 5-digit endpoint ID, or "global" when the
 // global map should be used.
-// Must be called with the endpoint locked.
 func (e *Endpoint) ConntrackName() string {
+	e.unconditionalRLock()
+	defer e.runlock()
+	return e.conntrackName()
+}
+
+// ConntrackNameLocked returns the name suffix for the endpoint-specific bpf
+// conntrack map, which is a 5-digit endpoint ID, or "global" when the
+// global map should be used.
+// Must be called with the endpoint locked.
+func (e *Endpoint) ConntrackNameLocked() string {
+	return e.conntrackName()
+}
+
+// ConntrackName returns the name suffix for the endpoint-specific bpf
+// conntrack map, which is a 5-digit endpoint ID, or "global" when the
+// global map should be used.
+// Must be called with the endpoint locked.
+func (e *Endpoint) conntrackName() string {
 	if e.ConntrackLocalLocked() {
 		return fmt.Sprintf("%05d", int(e.ID))
 	}
@@ -931,31 +629,46 @@ func (e *Endpoint) StringID() string {
 	return strconv.Itoa(int(e.ID))
 }
 
-func (e *Endpoint) GetIdentity() identityPkg.NumericIdentity {
+// GetIdentityLocked is identical to GetIdentity() but assumes that a.mutex is
+// already held. This function is obsolete and should no longer be used.
+func (e *Endpoint) GetIdentityLocked() identity.NumericIdentity {
+	return e.getIdentity()
+}
+
+// GetIdentity returns the numeric security identity of the endpoint
+func (e *Endpoint) GetIdentity() identity.NumericIdentity {
+	e.unconditionalRLock()
+	defer e.runlock()
+
+	return e.getIdentity()
+}
+
+func (e *Endpoint) getIdentity() identity.NumericIdentity {
 	if e.SecurityIdentity != nil {
 		return e.SecurityIdentity.ID
 	}
 
-	return identityPkg.InvalidIdentity
+	return identity.InvalidIdentity
 }
 
-func (e *Endpoint) Allows(id identityPkg.NumericIdentity) bool {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+// Allows is only used for unit testing
+func (e *Endpoint) Allows(id identity.NumericIdentity) bool {
+	e.unconditionalRLock()
+	defer e.runlock()
 
 	keyToLookup := policy.Key{
 		Identity:         uint32(id),
 		TrafficDirection: trafficdirection.Ingress.Uint8(),
 	}
 
-	_, ok := e.desiredPolicy.PolicyMapState[keyToLookup]
-	return ok
+	v, ok := e.desiredPolicy.PolicyMapState[keyToLookup]
+	return ok && !v.IsDeny
 }
 
 // String returns endpoint on a JSON format.
 func (e *Endpoint) String() string {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+	e.unconditionalRLock()
+	defer e.runlock()
 	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
 		return err.Error()
@@ -979,8 +692,9 @@ func (e *Endpoint) applyOptsLocked(opts option.OptionMap) bool {
 	return changed
 }
 
-// ForcePolicyCompute marks the endpoint for forced bpf regeneration.
-func (e *Endpoint) ForcePolicyCompute() {
+// forcePolicyComputation ensures that upon the next policy calculation for this
+// Endpoint, that no short-circuiting of said operation occurs.
+func (e *Endpoint) forcePolicyComputation() {
 	e.forcePolicyCompute = true
 }
 
@@ -993,6 +707,9 @@ func (e *Endpoint) SetDefaultOpts(opts *option.IntOptions) {
 	if e.Options.Library == nil {
 		e.Options.Library = &EndpointMutableOptionLibrary
 	}
+	if e.Options.Opts == nil {
+		e.Options.Opts = option.OptionMap{}
+	}
 
 	if opts != nil {
 		epOptLib := option.GetEndpointMutableOptionLibrary()
@@ -1000,14 +717,17 @@ func (e *Endpoint) SetDefaultOpts(opts *option.IntOptions) {
 			e.Options.SetValidated(k, opts.GetValue(k))
 		}
 	}
+	if option.Config.Debug {
+		e.Options.SetValidated(option.DebugPolicy, option.OptionEnabled)
+	}
 	e.UpdateLogger(nil)
 }
 
 // ConntrackLocal determines whether this endpoint is currently using a local
 // table to handle connection tracking (true), or the global table (false).
 func (e *Endpoint) ConntrackLocal() bool {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+	e.unconditionalRLock()
+	defer e.runlock()
 
 	return e.ConntrackLocalLocked()
 }
@@ -1030,7 +750,6 @@ func (e *Endpoint) base64() (string, error) {
 		err       error
 	)
 
-	transformEndpointForDowngrade(e)
 	jsonBytes, err = json.Marshal(e)
 	if err != nil {
 		return "", err
@@ -1038,13 +757,19 @@ func (e *Endpoint) base64() (string, error) {
 	return base64.StdEncoding.EncodeToString(jsonBytes), nil
 }
 
-// parseBase64ToEndpoint parses the endpoint stored in the given base64 string.
-func parseBase64ToEndpoint(str string, ep *Endpoint) error {
-	jsonBytes, err := base64.StdEncoding.DecodeString(str)
+// parseBase64ToEndpoint parses the endpoint stored in the given base64 byte slice.
+func parseBase64ToEndpoint(b []byte, ep *Endpoint) error {
+	jsonBytes := make([]byte, base64.StdEncoding.DecodedLen(len(b)))
+	n, err := base64.StdEncoding.Decode(jsonBytes, b)
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(jsonBytes, ep)
+
+	if err := json.Unmarshal(jsonBytes[:n], ep); err != nil {
+		return fmt.Errorf("error unmarshaling serializableEndpoint from base64 representation: %s", err)
+	}
+
+	return nil
 }
 
 // FilterEPDir returns a list of directories' names that possible belong to an endpoint.
@@ -1053,7 +778,7 @@ func FilterEPDir(dirFiles []os.FileInfo) []string {
 	for _, file := range dirFiles {
 		if file.IsDir() {
 			_, err := strconv.ParseUint(file.Name(), 10, 16)
-			if err == nil || strings.HasSuffix(file.Name(), "_next") || strings.HasSuffix(file.Name(), "_next_fail") {
+			if err == nil || strings.HasSuffix(file.Name(), nextDirectorySuffix) || strings.HasSuffix(file.Name(), nextFailedDirectorySuffix) {
 				eptsID = append(eptsID, file.Name())
 			}
 		}
@@ -1061,21 +786,23 @@ func FilterEPDir(dirFiles []os.FileInfo) []string {
 	return eptsID
 }
 
-// ParseEndpoint parses the given strEp which is in the form of:
+// parseEndpoint parses the given bEp which is in the form of:
 // common.CiliumCHeaderPrefix + common.Version + ":" + endpointBase64
-func ParseEndpoint(strEp string) (*Endpoint, error) {
+// Note that the parse'd endpoint's identity is only partially restored. The
+// caller must call `SetIdentity()` to make the returned endpoint's identity useful.
+func parseEndpoint(ctx context.Context, owner regeneration.Owner, bEp []byte) (*Endpoint, error) {
 	// TODO: Provide a better mechanism to update from old version once we bump
 	// TODO: cilium version.
-	strEpSlice := strings.Split(strEp, ":")
-	if len(strEpSlice) != 2 {
-		return nil, fmt.Errorf("invalid format %q. Should contain a single ':'", strEp)
+	epSlice := bytes.Split(bEp, []byte{':'})
+	if len(epSlice) != 2 {
+		return nil, fmt.Errorf("invalid format %q. Should contain a single ':'", bEp)
 	}
 	ep := Endpoint{
-		OpLabels:   pkgLabels.NewOpLabels(),
-		DNSHistory: fqdn.NewDNSCacheWithLimit(option.Config.ToFQDNsMinTTL, option.Config.ToFQDNsMaxIPsPerHost),
+		owner: owner,
 	}
-	if err := parseBase64ToEndpoint(strEpSlice[1], &ep); err != nil {
-		return nil, fmt.Errorf("failed to parse base64toendpoint: %s", err)
+
+	if err := parseBase64ToEndpoint(epSlice[1], &ep); err != nil {
+		return nil, fmt.Errorf("failed to parse restored endpoint: %s", err)
 	}
 
 	// Validate the options that were parsed
@@ -1083,33 +810,42 @@ func ParseEndpoint(strEp string) (*Endpoint, error) {
 
 	// Initialize fields to values which are non-nil that are not serialized.
 	ep.hasBPFProgram = make(chan struct{}, 0)
-	ep.desiredPolicy = policy.NewEndpointPolicy()
-	ep.realizedPolicy = policy.NewEndpointPolicy()
+	ep.desiredPolicy = policy.NewEndpointPolicy(owner.GetPolicyRepository())
+	ep.realizedPolicy = ep.desiredPolicy
 	ep.controllers = controller.NewManager()
+	ep.regenFailedChan = make(chan struct{}, 1)
+
+	ctx, cancel := context.WithCancel(ctx)
+	ep.aliveCancel = cancel
+	ep.aliveCtx = ctx
+
+	// If host label is present, it's the host endpoint.
+	ep.isHost = ep.HasLabels(labels.LabelHost)
 
 	// We need to check for nil in Status, CurrentStatuses and Log, since in
 	// some use cases, status will be not nil and Cilium will eventually
 	// error/panic if CurrentStatus or Log are not initialized correctly.
 	// Reference issue GH-2477
-	if ep.Status == nil || ep.Status.CurrentStatuses == nil || ep.Status.Log == nil {
-		ep.Status = NewEndpointStatus()
+	if ep.status == nil || ep.status.CurrentStatuses == nil || ep.status.Log == nil {
+		ep.status = NewEndpointStatus()
 	}
 
+	// Make sure the endpoint has an identity, using the 'init' identity if none.
 	if ep.SecurityIdentity == nil {
-		ep.SetIdentity(identityPkg.LookupReservedIdentity(identityPkg.ReservedIdentityInit))
-	} else {
-		ep.SecurityIdentity.Sanitize()
+		ep.SecurityIdentity = identity.LookupReservedIdentity(identity.ReservedIdentityInit)
 	}
+	ep.SecurityIdentity.Sanitize()
+
 	ep.UpdateLogger(nil)
 
-	ep.SetStateLocked(StateRestoring, "Endpoint restoring")
+	ep.setState(StateRestoring, "Endpoint restoring")
 
 	return &ep, nil
 }
 
 func (e *Endpoint) LogStatus(typ StatusType, code StatusCode, msg string) {
-	e.UnconditionalLock()
-	defer e.Unlock()
+	e.unconditionalLock()
+	defer e.unlock()
 	// FIXME GH2323 instead of a mutex we could use a channel to send the status
 	// log message to a single writer?
 	e.logStatusLocked(typ, code, msg)
@@ -1121,16 +857,16 @@ func (e *Endpoint) LogStatusOK(typ StatusType, msg string) {
 
 // LogStatusOKLocked will log an OK message of the given status type with the
 // given msg string.
-// must be called with endpoint.Mutex held
+// Must be called with endpoint.mutex RLock()ed.
 func (e *Endpoint) LogStatusOKLocked(typ StatusType, msg string) {
 	e.logStatusLocked(typ, OK, msg)
 }
 
-// logStatusLocked logs a status message
-// must be called with endpoint.Mutex held
+// logStatusLocked logs a status message.
+// Must be called with endpoint.mutex RLock()ed.
 func (e *Endpoint) logStatusLocked(typ StatusType, code StatusCode, msg string) {
-	e.Status.indexMU.Lock()
-	defer e.Status.indexMU.Unlock()
+	e.status.indexMU.Lock()
+	defer e.status.indexMU.Unlock()
 	sts := &statusLogMsg{
 		Status: Status{
 			Code:  code,
@@ -1140,7 +876,7 @@ func (e *Endpoint) logStatusLocked(typ StatusType, code StatusCode, msg string) 
 		},
 		Timestamp: time.Now().UTC(),
 	}
-	e.Status.addStatusLog(sts)
+	e.status.addStatusLog(sts)
 	e.getLogger().WithFields(logrus.Fields{
 		"code":                   sts.Status.Code,
 		"type":                   sts.Status.Type,
@@ -1175,13 +911,13 @@ func (e UpdateStateChangeError) Error() string { return e.msg }
 // if there was an issue triggering policy updates for the given endpoint,
 // or if endpoint regeneration was unable to be triggered. Note that the
 // LabelConfiguration in the EndpointConfigurationSpec is *not* consumed here.
-func (e *Endpoint) Update(owner Owner, cfg *models.EndpointConfigurationSpec) error {
+func (e *Endpoint) Update(cfg *models.EndpointConfigurationSpec) error {
 	om, err := EndpointMutableOptionLibrary.ValidateConfigurationMap(cfg.Options)
 	if err != nil {
 		return UpdateValidationError{err.Error()}
 	}
 
-	if err := e.LockAlive(); err != nil {
+	if err := e.lockAlive(); err != nil {
 		return err
 	}
 
@@ -1189,23 +925,24 @@ func (e *Endpoint) Update(owner Owner, cfg *models.EndpointConfigurationSpec) er
 
 	// CurrentStatus will be not OK when we have an uncleared error in BPF,
 	// policy or Other. We should keep trying to regenerate in the hopes of
-	// suceeding.
+	// succeeding.
 	// Note: This "retry" behaviour is better suited to a controller, and can be
 	// moved there once we have an endpoint regeneration controller.
-	regenCtx := &ExternalRegenerationMetadata{
-		Reason: "endpoint was updated via API",
+	regenCtx := &regeneration.ExternalRegenerationMetadata{
+		Reason:            "endpoint was updated via API",
+		RegenerationLevel: regeneration.RegenerateWithoutDatapath,
 	}
 
 	// If configuration options are provided, we only regenerate if necessary.
 	// Otherwise always regenerate.
 	if cfg.Options == nil {
-		regenCtx.RegenerationLevel = RegenerateWithDatapathRebuild
+		regenCtx.RegenerationLevel = regeneration.RegenerateWithDatapathRebuild
 		regenCtx.Reason = "endpoint was manually regenerated via API"
-	} else if e.updateAndOverrideEndpointOptions(om) || e.Status.CurrentStatus() != OK {
-		regenCtx.RegenerationLevel = RegenerateWithDatapathRewrite
+	} else if e.updateAndOverrideEndpointOptions(om) || e.status.CurrentStatus() != OK {
+		regenCtx.RegenerationLevel = regeneration.RegenerateWithDatapathRewrite
 	}
 
-	if regenCtx.RegenerationLevel > RegenerateWithoutDatapath {
+	if regenCtx.RegenerationLevel > regeneration.RegenerateWithoutDatapath {
 		e.getLogger().Debug("need to regenerate endpoint; checking state before" +
 			" attempting to regenerate")
 
@@ -1221,23 +958,18 @@ func (e *Endpoint) Update(owner Owner, cfg *models.EndpointConfigurationSpec) er
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
-		e.Unlock()
+		e.unlock()
 		for {
 			select {
 			case <-ticker.C:
-				if err := e.LockAlive(); err != nil {
+				regen, err := e.SetRegenerateStateIfAlive(regenCtx)
+				if err != nil {
 					return err
 				}
-				// Check endpoint state before attempting configuration update because
-				// configuration updates can only be applied when the endpoint is in
-				// specific states. See GH-3058.
-				stateTransitionSucceeded := e.SetStateLocked(StateWaitingToRegenerate, regenCtx.Reason)
-				if stateTransitionSucceeded {
-					e.Unlock()
-					e.Regenerate(owner, regenCtx)
+				if regen {
+					e.Regenerate(regenCtx)
 					return nil
 				}
-				e.Unlock()
 			case <-timeout:
 				e.getLogger().Warning("timed out waiting for endpoint state to change")
 				return UpdateStateChangeError{fmt.Sprintf("unable to regenerate endpoint program because state transition to %s was unsuccessful; check `cilium endpoint log %d` for more information", StateWaitingToRegenerate, e.ID)}
@@ -1246,23 +978,23 @@ func (e *Endpoint) Update(owner Owner, cfg *models.EndpointConfigurationSpec) er
 
 	}
 
-	e.Unlock()
+	e.unlock()
 	return nil
 }
 
 // HasLabels returns whether endpoint e contains all labels l. Will return 'false'
 // if any label in l is not in the endpoint's labels.
-func (e *Endpoint) HasLabels(l pkgLabels.Labels) bool {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+func (e *Endpoint) HasLabels(l labels.Labels) bool {
+	e.unconditionalRLock()
+	defer e.runlock()
 
 	return e.hasLabelsRLocked(l)
 }
 
 // hasLabelsRLocked returns whether endpoint e contains all labels l. Will
 // return 'false' if any label in l is not in the endpoint's labels.
-// e.Mutex must be RLocked
-func (e *Endpoint) hasLabelsRLocked(l pkgLabels.Labels) bool {
+// e.mutex must be RLock()ed.
+func (e *Endpoint) hasLabelsRLocked(l labels.Labels) bool {
 	allEpLabels := e.OpLabels.AllLabels()
 
 	for _, v := range l {
@@ -1283,8 +1015,8 @@ func (e *Endpoint) hasLabelsRLocked(l pkgLabels.Labels) bool {
 
 // replaceInformationLabels replaces the information labels of the endpoint.
 // Passing a nil set of labels will not perform any action.
-// Must be called with e.Mutex.Lock().
-func (e *Endpoint) replaceInformationLabels(l pkgLabels.Labels) {
+// Must be called with e.mutex.Lock().
+func (e *Endpoint) replaceInformationLabels(l labels.Labels) {
 	if l == nil {
 		return
 	}
@@ -1296,8 +1028,8 @@ func (e *Endpoint) replaceInformationLabels(l pkgLabels.Labels) {
 // returned.
 // Passing a nil set of labels will not perform any action and will return the
 // current endpoint's identityRevision.
-// Must be called with e.Mutex.Lock().
-func (e *Endpoint) replaceIdentityLabels(l pkgLabels.Labels) int {
+// Must be called with e.mutex.Lock().
+func (e *Endpoint) replaceIdentityLabels(l labels.Labels) int {
 	if l == nil {
 		return e.identityRevision
 	}
@@ -1318,44 +1050,53 @@ type DeleteConfig struct {
 	NoIdentityRelease bool
 }
 
-// LeaveLocked removes the endpoint's directory from the system. Must be called
-// with Endpoint's mutex AND BuildMutex locked.
+// leaveLocked removes the endpoint's directory from the system. Must be called
+// with Endpoint's mutex AND buildMutex locked.
 //
-// Note: LeaveLocked() is called indirectly from endpoint restore logic for
-// endpoints which failed to be restored. Any cleanup routine of LeaveLocked()
+// Note: leaveLocked() is called indirectly from endpoint restore logic for
+// endpoints which failed to be restored. Any cleanup routine of leaveLocked()
 // which depends on kvstore connectivity must be protected by a flag in
 // DeleteConfig and the restore logic must opt-out of it.
-func (e *Endpoint) LeaveLocked(owner Owner, proxyWaitGroup *completion.WaitGroup, conf DeleteConfig) []error {
+func (e *Endpoint) leaveLocked(proxyWaitGroup *completion.WaitGroup, conf DeleteConfig) []error {
 	errors := []error{}
 
-	loader.Unload(e.createEpInfoCache(""))
-
-	owner.RemoveFromEndpointQueue(uint64(e.ID))
-	if e.SecurityIdentity != nil && e.realizedPolicy != nil && e.realizedPolicy.L4Policy != nil {
-		// Passing a new map of nil will purge all redirects
-		e.removeOldRedirects(owner, nil, proxyWaitGroup)
+	if !option.Config.DryMode {
+		e.owner.Datapath().Loader().Unload(e.createEpInfoCache(""))
 	}
 
-	if e.PolicyMap != nil {
-		if err := e.PolicyMap.Close(); err != nil {
-			errors = append(errors, fmt.Errorf("unable to close policymap %s: %s", e.PolicyMap.String(), err))
+	// Remove restored rules of cleaned endpoint
+	e.owner.RemoveRestoredDNSRules(e.ID)
+
+	if e.SecurityIdentity != nil && len(e.realizedRedirects) > 0 {
+		// Passing a new map of nil will purge all redirects
+		finalize, _ := e.removeOldRedirects(nil, proxyWaitGroup)
+		if finalize != nil {
+			finalize()
 		}
 	}
 
-	if e.bpfConfigMap != nil {
-		if err := e.bpfConfigMap.Close(); err != nil {
-			errors = append(errors, fmt.Errorf("unable to close configmap %s: %s", e.BPFConfigMapPath(), err))
+	if e.policyMap != nil {
+		if err := e.policyMap.Close(); err != nil {
+			errors = append(errors, fmt.Errorf("unable to close policymap %s: %s", e.policyMap.String(), err))
 		}
 	}
 
 	if !conf.NoIdentityRelease && e.SecurityIdentity != nil {
-		identitymanager.Remove(e.SecurityIdentity)
-		_, err := cache.Release(context.Background(), e.SecurityIdentity)
+		// Restored endpoint may be created with a reserved identity of 5
+		// (init), which is not registered in the identity manager and
+		// therefore doesn't need to be removed.
+		if e.SecurityIdentity.ID != identity.ReservedIdentityInit {
+			identitymanager.Remove(e.SecurityIdentity)
+		}
+
+		releaseCtx, cancel := context.WithTimeout(context.Background(), option.Config.KVstoreConnectivityTimeout)
+		defer cancel()
+
+		_, err := e.allocator.Release(releaseCtx, e.SecurityIdentity)
 		if err != nil {
 			errors = append(errors, fmt.Errorf("unable to release identity: %s", err))
 		}
-		// TODO: Check if network policy was created even without SecurityIdentity
-		owner.RemoveNetworkPolicy(e)
+		e.removeNetworkPolicy()
 		e.SecurityIdentity = nil
 	}
 
@@ -1368,12 +1109,12 @@ func (e *Endpoint) LeaveLocked(owner Owner, proxyWaitGroup *completion.WaitGroup
 	}
 
 	if e.ConntrackLocalLocked() {
-		ctmap.CloseLocalMaps(e.ConntrackName())
+		ctmap.CloseLocalMaps(e.conntrackName())
 	} else if !option.Config.DryMode {
 		e.scrubIPsInConntrackTableLocked()
 	}
 
-	e.SetStateLocked(StateDisconnected, "Endpoint removed")
+	e.setState(StateDisconnected, "Endpoint removed")
 
 	endpointPolicyStatus.Remove(e.ID)
 	e.getLogger().Info("Removed endpoint")
@@ -1381,99 +1122,172 @@ func (e *Endpoint) LeaveLocked(owner Owner, proxyWaitGroup *completion.WaitGroup
 	return errors
 }
 
-// RegenerateWait should only be called when endpoint's state has successfully
-// been changed to "waiting-to-regenerate"
-func (e *Endpoint) RegenerateWait(owner Owner, reason string) error {
-	if !<-e.Regenerate(owner, &ExternalRegenerationMetadata{Reason: reason}) {
-		return fmt.Errorf("error while regenerating endpoint."+
-			" For more info run: 'cilium endpoint get %d'", e.ID)
-	}
-	return nil
+// GetContainerName returns the name of the container for the endpoint.
+func (e *Endpoint) GetContainerName() string {
+	e.unconditionalRLock()
+	defer e.runlock()
+	return e.containerName
 }
 
 // SetContainerName modifies the endpoint's container name
 func (e *Endpoint) SetContainerName(name string) {
-	e.UnconditionalLock()
-	e.ContainerName = name
-	e.Unlock()
+	e.unconditionalLock()
+	e.containerName = name
+	e.unlock()
 }
 
 // GetK8sNamespace returns the name of the pod if the endpoint represents a
 // Kubernetes pod
 func (e *Endpoint) GetK8sNamespace() string {
-	e.UnconditionalRLock()
+	e.unconditionalRLock()
 	ns := e.K8sNamespace
-	e.RUnlock()
+	e.runlock()
 	return ns
+}
+
+// SetPod sets the pod related to this endpoint.
+func (e *Endpoint) SetPod(pod *slim_corev1.Pod) {
+	e.unconditionalLock()
+	e.pod = pod
+	e.unlock()
+}
+
+// GetPod retrieves the pod related to this endpoint
+func (e *Endpoint) GetPod() *slim_corev1.Pod {
+	e.unconditionalRLock()
+	pod := e.pod
+	e.runlock()
+	return pod
 }
 
 // SetK8sNamespace modifies the endpoint's pod name
 func (e *Endpoint) SetK8sNamespace(name string) {
-	e.UnconditionalLock()
+	e.unconditionalLock()
 	e.K8sNamespace = name
 	e.UpdateLogger(map[string]interface{}{
-		logfields.K8sPodName: e.GetK8sNamespaceAndPodNameLocked(),
+		logfields.K8sPodName: e.getK8sNamespaceAndPodName(),
 	})
-	e.Unlock()
+	e.unlock()
+}
+
+// SetK8sMetadata sets the k8s container ports specified by kubernetes.
+// Note that once put in place, the new k8sPorts is never changed,
+// so that the map can be used concurrently without keeping locks.
+// Reading the 'e.k8sPorts' member (the "map pointer") *itself* requires the endpoint lock!
+// Can't really error out as that might break backwards compatibility.
+func (e *Endpoint) SetK8sMetadata(containerPorts []slim_corev1.ContainerPort) error {
+	k8sPorts := make(policy.NamedPortMap, len(containerPorts))
+	for _, cp := range containerPorts {
+		if cp.Name == "" {
+			continue // silently skip unnamed ports
+		}
+		err := k8sPorts.AddPort(cp.Name, int(cp.ContainerPort), string(cp.Protocol))
+		if err != nil {
+			e.getLogger().WithError(err).Warning("Adding named port failed")
+			continue
+		}
+	}
+	if len(k8sPorts) == 0 {
+		k8sPorts = nil // nil map with no storage
+	}
+	e.mutex.Lock()
+	e.hasK8sMetadata = true
+	e.k8sPorts = k8sPorts
+	e.mutex.Unlock()
+	return nil
+}
+
+// GetK8sPorts returns the k8sPorts, which must not be modified by the caller
+func (e *Endpoint) GetK8sPorts() (k8sPorts policy.NamedPortMap, err error) {
+	err = e.rlockAlive()
+	if err != nil {
+		return nil, err
+	}
+	k8sPorts = e.k8sPorts
+	e.mutex.RUnlock()
+	return k8sPorts, nil
+}
+
+// HaveK8sMetadata returns true once hasK8sMetadata was set
+func (e *Endpoint) HaveK8sMetadata() (metadataSet bool) {
+	e.mutex.RLock()
+	metadataSet = e.hasK8sMetadata
+	e.mutex.RUnlock()
+	return
+}
+
+// K8sNamespaceAndPodNameIsSet returns true if the pod name is set
+func (e *Endpoint) K8sNamespaceAndPodNameIsSet() bool {
+	e.unconditionalLock()
+	podName := e.getK8sNamespaceAndPodName()
+	e.unlock()
+	return podName != "" && podName != "/"
 }
 
 // GetK8sPodName returns the name of the pod if the endpoint represents a
 // Kubernetes pod
 func (e *Endpoint) GetK8sPodName() string {
-	e.UnconditionalRLock()
+	e.unconditionalRLock()
 	k8sPodName := e.K8sPodName
-	e.RUnlock()
+	e.runlock()
 
 	return k8sPodName
 }
 
 // HumanStringLocked returns the endpoint's most human readable identifier as string
 func (e *Endpoint) HumanStringLocked() string {
-	if pod := e.GetK8sNamespaceAndPodNameLocked(); pod != "" {
+	if pod := e.getK8sNamespaceAndPodName(); pod != "" {
 		return pod
 	}
 
 	return e.StringID()
 }
 
-// GetK8sNamespaceAndPodNameLocked returns the namespace and pod name.  This
-// function requires e.Mutex to be held.
-func (e *Endpoint) GetK8sNamespaceAndPodNameLocked() string {
+// GetK8sNamespaceAndPodName returns the corresponding namespace and pod
+// name for this endpoint.
+func (e *Endpoint) GetK8sNamespaceAndPodName() string {
+	e.unconditionalRLock()
+	defer e.runlock()
+
+	return e.getK8sNamespaceAndPodName()
+}
+
+func (e *Endpoint) getK8sNamespaceAndPodName() string {
 	return e.K8sNamespace + "/" + e.K8sPodName
 }
 
 // SetK8sPodName modifies the endpoint's pod name
 func (e *Endpoint) SetK8sPodName(name string) {
-	e.UnconditionalLock()
+	e.unconditionalLock()
 	e.K8sPodName = name
 	e.UpdateLogger(map[string]interface{}{
-		logfields.K8sPodName: e.GetK8sNamespaceAndPodNameLocked(),
+		logfields.K8sPodName: e.getK8sNamespaceAndPodName(),
 	})
-	e.Unlock()
+	e.unlock()
 }
 
 // SetContainerID modifies the endpoint's container ID
 func (e *Endpoint) SetContainerID(id string) {
-	e.UnconditionalLock()
-	e.ContainerID = id
+	e.unconditionalLock()
+	e.containerID = id
 	e.UpdateLogger(map[string]interface{}{
 		logfields.ContainerID: e.getShortContainerID(),
 	})
-	e.Unlock()
+	e.unlock()
 }
 
 // GetContainerID returns the endpoint's container ID
 func (e *Endpoint) GetContainerID() string {
-	e.UnconditionalRLock()
-	cID := e.ContainerID
-	e.RUnlock()
+	e.unconditionalRLock()
+	cID := e.containerID
+	e.runlock()
 	return cID
 }
 
 // GetShortContainerID returns the endpoint's shortened container ID
 func (e *Endpoint) GetShortContainerID() string {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+	e.unconditionalRLock()
+	defer e.runlock()
 
 	return e.getShortContainerID()
 }
@@ -1484,65 +1298,66 @@ func (e *Endpoint) getShortContainerID() string {
 	}
 
 	caplen := 10
-	if len(e.ContainerID) <= caplen {
-		return e.ContainerID
+	if len(e.containerID) <= caplen {
+		return e.containerID
 	}
 
-	return e.ContainerID[:caplen]
+	return e.containerID[:caplen]
 
 }
 
 // SetDockerEndpointID modifies the endpoint's Docker Endpoint ID
 func (e *Endpoint) SetDockerEndpointID(id string) {
-	e.UnconditionalLock()
-	e.DockerEndpointID = id
-	e.Unlock()
+	e.unconditionalLock()
+	e.dockerEndpointID = id
+	e.unlock()
+}
+
+func (e *Endpoint) GetDockerEndpointID() string {
+	e.unconditionalRLock()
+	defer e.runlock()
+	return e.dockerEndpointID
 }
 
 // SetDockerNetworkID modifies the endpoint's Docker Endpoint ID
 func (e *Endpoint) SetDockerNetworkID(id string) {
-	e.UnconditionalLock()
-	e.DockerNetworkID = id
-	e.Unlock()
+	e.unconditionalLock()
+	e.dockerNetworkID = id
+	e.unlock()
 }
 
 // GetDockerNetworkID returns the endpoint's Docker Endpoint ID
 func (e *Endpoint) GetDockerNetworkID() string {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
+	e.unconditionalRLock()
+	defer e.runlock()
 
-	return e.DockerNetworkID
+	return e.dockerNetworkID
 }
 
-// SetDatapathMapIDAndPinMapLocked modifies the endpoint's datapath map ID
-func (e *Endpoint) SetDatapathMapIDAndPinMapLocked(id int) error {
-	e.DatapathMapID = id
-	return e.PinDatapathMap()
-}
-
-// IsDatapathMapPinnedLocked returns whether the endpoint's datapath map has been pinned
-func (e *Endpoint) IsDatapathMapPinnedLocked() bool {
-	return e.isDatapathMapPinned
-}
-
-// GetState returns the endpoint's state
-// endpoint.Mutex may only be.RLockAlive()ed
-func (e *Endpoint) GetStateLocked() string {
+// getState returns the endpoint's state
+// endpoint.mutex may only be rlockAlive()ed
+func (e *Endpoint) getState() string {
 	return e.state
 }
 
 // GetState returns the endpoint's state
-// endpoint.Mutex may only be.RLockAlive()ed
+// endpoint.mutex may only be rlockAlive()ed
 func (e *Endpoint) GetState() string {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
-	return e.GetStateLocked()
+	e.unconditionalRLock()
+	defer e.runlock()
+	return e.getState()
 }
 
-// SetStateLocked modifies the endpoint's state
-// endpoint.Mutex must be held
-// Returns true only if endpoints state was changed as requested
-func (e *Endpoint) SetStateLocked(toState, reason string) bool {
+// SetState modifies the endpoint's state. Returns true only if endpoints state
+// was changed as requested
+func (e *Endpoint) SetState(toState, reason string) bool {
+	e.unconditionalLock()
+	defer e.unlock()
+
+	return e.setState(toState, reason)
+}
+
+func (e *Endpoint) setState(toState, reason string) bool {
 	// Validate the state transition.
 	fromState := e.state
 
@@ -1553,14 +1368,9 @@ func (e *Endpoint) SetStateLocked(toState, reason string) bool {
 		case StateWaitingForIdentity, StateRestoring:
 			goto OKState
 		}
-	case StateCreating:
-		switch toState {
-		case StateDisconnecting, StateWaitingForIdentity, StateRestoring:
-			goto OKState
-		}
 	case StateWaitingForIdentity:
 		switch toState {
-		case StateReady, StateDisconnecting:
+		case StateReady, StateDisconnecting, StateInvalid:
 			goto OKState
 		}
 	case StateReady:
@@ -1573,13 +1383,24 @@ func (e *Endpoint) SetStateLocked(toState, reason string) bool {
 		case StateDisconnected:
 			goto OKState
 		}
-	case StateDisconnected:
-		// No valid transitions, as disconnected is a terminal state for the endpoint.
+	case StateDisconnected, StateInvalid:
+		// No valid transitions, as disconnected and invalid are terminal
+		// states for the endpoint.
 	case StateWaitingToRegenerate:
 		switch toState {
-		// Note that transitions to waiting-to-regenerate state
+		// Note that transitions to StateWaitingToRegenerate are not allowed,
+		// as callers of this function enqueue regenerations if 'true' is
+		// returned. We don't want to return 'true' for the case of
+		// transitioning to StateWaitingToRegenerate, as this means that a
+		// regeneration is already queued up. Callers would then queue up
+		// another unneeded regeneration, which is undesired.
 		case StateWaitingForIdentity, StateDisconnecting, StateRestoring:
 			goto OKState
+		// Don't log this state transition being invalid below so that we don't
+		// put warnings in the logs for a case which does not result in incorrect
+		// behavior.
+		case StateWaitingToRegenerate:
+			return false
 		}
 	case StateRegenerating:
 		switch toState {
@@ -1593,7 +1414,7 @@ func (e *Endpoint) SetStateLocked(toState, reason string) bool {
 		}
 	case StateRestoring:
 		switch toState {
-		case StateDisconnecting, StateWaitingToRegenerate, StateRestoring:
+		case StateDisconnecting, StateRestoring:
 			goto OKState
 		}
 	}
@@ -1618,9 +1439,10 @@ OKState:
 			WithLabelValues(fromState).Dec()
 	}
 
-	// Since StateDisconnected is the final state, after which the
-	// endpoint is gone, we should not increment metrics for this state.
-	if toState != "" && toState != StateDisconnected {
+	// Since StateDisconnected and StateInvalid are final states, after which
+	// the endpoint is gone or doesn't exist, we should not increment metrics
+	// for these states.
+	if toState != "" && toState != StateDisconnected && toState != StateInvalid {
 		metrics.EndpointStateCount.
 			WithLabelValues(toState).Inc()
 	}
@@ -1628,15 +1450,15 @@ OKState:
 }
 
 // BuilderSetStateLocked modifies the endpoint's state
-// endpoint.Mutex must be held
-// endpoint BuildMutex must be held!
+// endpoint.mutex must be Lock()ed
+// endpoint buildMutex must be held!
 func (e *Endpoint) BuilderSetStateLocked(toState, reason string) bool {
 	// Validate the state transition.
 	fromState := e.state
 	switch fromState { // From state
-	case StateCreating, StateWaitingForIdentity, StateReady, StateDisconnecting, StateDisconnected:
+	case StateWaitingForIdentity, StateReady, StateDisconnecting, StateDisconnected, StateInvalid:
 		// No valid transitions for the builder
-	case StateWaitingToRegenerate:
+	case StateWaitingToRegenerate, StateRestoring:
 		switch toState {
 		// Builder transitions the endpoint from
 		// waiting-to-regenerate state to regenerating state
@@ -1685,9 +1507,10 @@ OKState:
 			WithLabelValues(fromState).Dec()
 	}
 
-	// Since StateDisconnected is the final state, after which the
-	// endpoint is gone, we should not increment metrics for this state.
-	if toState != "" && toState != StateDisconnected {
+	// Since StateDisconnected and StateInvalid are final states, after which
+	// the endpoint is gone or doesn't exist, we should not increment metrics
+	// for these states.
+	if toState != "" && toState != StateDisconnected && toState != StateInvalid {
 		metrics.EndpointStateCount.
 			WithLabelValues(toState).Inc()
 	}
@@ -1698,42 +1521,45 @@ OKState:
 // proxyPolicyRevision when the specified revision has been applied in the
 // proxy.
 func (e *Endpoint) OnProxyPolicyUpdate(revision uint64) {
-	// NOTE: UnconditionalLock is used here because this callback has no way of reporting an error
-	e.UnconditionalLock()
+	// NOTE: unconditionalLock is used here because this callback has no way of reporting an error
+	e.unconditionalLock()
 	if revision > e.proxyPolicyRevision {
 		e.proxyPolicyRevision = revision
 	}
-	e.Unlock()
+	e.unlock()
+}
+
+// OnDNSPolicyUpdateLocked is called when the Endpoint's DNS policy has been updated
+func (e *Endpoint) OnDNSPolicyUpdateLocked(rules restore.DNSRules) {
+	e.DNSRules = rules
 }
 
 // getProxyStatisticsLocked gets the ProxyStatistics for the flows with the
 // given characteristics, or adds a new one and returns it.
 // Must be called with e.proxyStatisticsMutex held.
-func (e *Endpoint) getProxyStatisticsLocked(l7Protocol string, port uint16, ingress bool) *models.ProxyStatistics {
-	var location string
-	if ingress {
-		location = models.ProxyStatisticsLocationIngress
-	} else {
-		location = models.ProxyStatisticsLocationEgress
-	}
-	key := models.ProxyStatistics{
-		Location: location,
-		Port:     int64(port),
-		Protocol: l7Protocol,
-	}
-
+func (e *Endpoint) getProxyStatisticsLocked(key string, l7Protocol string, port uint16, ingress bool) *models.ProxyStatistics {
 	if e.proxyStatistics == nil {
-		e.proxyStatistics = make(map[models.ProxyStatistics]*models.ProxyStatistics)
+		e.proxyStatistics = make(map[string]*models.ProxyStatistics)
 	}
 
 	proxyStats, ok := e.proxyStatistics[key]
 	if !ok {
-		keyCopy := key
-		proxyStats = &keyCopy
-		proxyStats.Statistics = &models.RequestResponseStatistics{
-			Requests:  &models.MessageForwardingStatistics{},
-			Responses: &models.MessageForwardingStatistics{},
+		var location string
+		if ingress {
+			location = models.ProxyStatisticsLocationIngress
+		} else {
+			location = models.ProxyStatisticsLocationEgress
 		}
+		proxyStats = &models.ProxyStatistics{
+			Location: location,
+			Port:     int64(port),
+			Protocol: l7Protocol,
+			Statistics: &models.RequestResponseStatistics{
+				Requests:  &models.MessageForwardingStatistics{},
+				Responses: &models.MessageForwardingStatistics{},
+			},
+		}
+
 		e.proxyStatistics[key] = proxyStats
 	}
 
@@ -1742,11 +1568,16 @@ func (e *Endpoint) getProxyStatisticsLocked(l7Protocol string, port uint16, ingr
 
 // UpdateProxyStatistics updates the Endpoint's proxy  statistics to account
 // for a new observed flow with the given characteristics.
-func (e *Endpoint) UpdateProxyStatistics(l7Protocol string, port uint16, ingress, request bool, verdict accesslog.FlowVerdict) {
+func (e *Endpoint) UpdateProxyStatistics(l4Protocol string, port uint16, ingress, request bool, verdict accesslog.FlowVerdict) {
 	e.proxyStatisticsMutex.Lock()
 	defer e.proxyStatisticsMutex.Unlock()
 
-	proxyStats := e.getProxyStatisticsLocked(l7Protocol, port, ingress)
+	key := policy.ProxyID(e.ID, ingress, l4Protocol, port)
+	proxyStats, ok := e.proxyStatistics[key]
+	if !ok {
+		e.getLogger().WithField(logfields.L4PolicyID, key).Debug("Proxy stats not found when updating")
+		return
+	}
 
 	var stats *models.MessageForwardingStatistics
 	if request {
@@ -1757,17 +1588,21 @@ func (e *Endpoint) UpdateProxyStatistics(l7Protocol string, port uint16, ingress
 
 	stats.Received++
 	metrics.ProxyReceived.Inc()
+	metrics.ProxyPolicyL7Total.WithLabelValues("received").Inc()
 
 	switch verdict {
 	case accesslog.VerdictForwarded:
 		stats.Forwarded++
 		metrics.ProxyForwarded.Inc()
+		metrics.ProxyPolicyL7Total.WithLabelValues("forwarded").Inc()
 	case accesslog.VerdictDenied:
 		stats.Denied++
 		metrics.ProxyDenied.Inc()
+		metrics.ProxyPolicyL7Total.WithLabelValues("denied").Inc()
 	case accesslog.VerdictError:
 		stats.Error++
 		metrics.ProxyParseErrors.Inc()
+		metrics.ProxyPolicyL7Total.WithLabelValues("parse_errors").Inc()
 	}
 }
 
@@ -1783,53 +1618,135 @@ func APICanModify(e *Endpoint) error {
 	return nil
 }
 
-func (e *Endpoint) getIDandLabels() string {
-	e.UnconditionalRLock()
-	defer e.RUnlock()
-
-	labels := ""
-	if e.SecurityIdentity != nil {
-		labels = e.SecurityIdentity.Labels.String()
+// APICanModifyConfig determines whether API requests from users are allowed to
+// modify the configuration of the endpoint.
+func (e *Endpoint) APICanModifyConfig(n models.ConfigurationMap) error {
+	if !e.OpLabels.OrchestrationIdentity.IsReserved() {
+		return nil
 	}
+	for config, val := range n {
+		if optionSetting, err := option.NormalizeBool(val); err == nil {
+			if e.Options.Opts[config] == optionSetting {
+				// The option won't be changed.
+				continue
+			}
+			if config != option.Debug && config != option.DebugLB &&
+				config != option.TraceNotify && config != option.PolicyVerdictNotify &&
+				config != option.PolicyAuditMode && config != option.MonitorAggregation &&
+				config != option.PolicyTracing {
+				return fmt.Errorf("%s cannot be modified for endpoints with reserved labels", config)
+			}
+		}
+	}
+	return nil
+}
 
-	return fmt.Sprintf("%d (%s)", e.ID, labels)
+// MetadataResolverCB provides an implementation for resolving the endpoint
+// metadata for an endpoint such as the associated labels and annotations.
+type MetadataResolverCB func(ns, podName string) (pod *slim_corev1.Pod, _ []slim_corev1.ContainerPort, identityLabels labels.Labels, infoLabels labels.Labels, annotations map[string]string, err error)
+
+// RunMetadataResolver starts a controller associated with the received
+// endpoint which will periodically attempt to resolve the metadata for the
+// endpoint and update the endpoint with the related. It stops resolving after
+// either the first successful metadata resolution or when the endpoint is
+// removed.
+//
+// This assumes that after the initial successful resolution, other mechanisms
+// will handle updates (such as pkg/k8s/watchers informers).
+func (e *Endpoint) RunMetadataResolver(resolveMetadata MetadataResolverCB) {
+	done := make(chan struct{})
+	const controllerPrefix = "resolve-labels"
+	controllerName := fmt.Sprintf("%s-%s", controllerPrefix, e.GetK8sNamespaceAndPodName())
+	go func() {
+		select {
+		case <-done:
+		case <-e.aliveCtx.Done():
+			return
+		}
+		e.controllers.RemoveController(controllerName)
+	}()
+
+	e.controllers.UpdateController(controllerName,
+		controller.ControllerParams{
+			DoFunc: func(ctx context.Context) error {
+				ns, podName := e.GetK8sNamespace(), e.GetK8sPodName()
+				pod, cp, identityLabels, info, _, err := resolveMetadata(ns, podName)
+				if err != nil {
+					e.Logger(controllerPrefix).WithError(err).Warning("Unable to fetch kubernetes labels")
+					return err
+				}
+				e.SetPod(pod)
+				e.SetK8sMetadata(cp)
+				e.UpdateNoTrackRules(func(_, _ string) (noTrackPort string, err error) {
+					_, _, _, _, annotations, err := resolveMetadata(ns, podName)
+					if err != nil {
+						return "", err
+					}
+					return annotations[annotation.NoTrack], nil
+				})
+				e.UpdateVisibilityPolicy(func(_, _ string) (proxyVisibility string, err error) {
+					_, _, _, _, annotations, err := resolveMetadata(ns, podName)
+					if err != nil {
+						return "", err
+					}
+					return annotations[annotation.ProxyVisibility], nil
+				})
+				e.UpdateBandwidthPolicy(func(ns, podName string) (bandwidthEgress string, err error) {
+					_, _, _, _, annotations, err := resolveMetadata(ns, podName)
+					if err != nil {
+						return "", err
+					}
+					return annotations[bandwidth.EgressBandwidth], nil
+				})
+				e.UpdateLabels(ctx, identityLabels, info, true)
+				close(done)
+				return nil
+			},
+			Context: e.aliveCtx,
+		},
+	)
 }
 
 // ModifyIdentityLabels changes the custom and orchestration identity labels of an endpoint.
 // Labels can be added or deleted. If a label change is performed, the
 // endpoint will receive a new identity and will be regenerated. Both of these
 // operations will happen in the background.
-func (e *Endpoint) ModifyIdentityLabels(owner Owner, addLabels, delLabels pkgLabels.Labels) error {
-	if err := e.LockAlive(); err != nil {
+func (e *Endpoint) ModifyIdentityLabels(addLabels, delLabels labels.Labels) error {
+	if err := e.lockAlive(); err != nil {
 		return err
-	}
-
-	switch e.GetStateLocked() {
-	case StateDisconnected, StateDisconnecting:
-		e.Unlock()
-		return nil
 	}
 
 	changed, err := e.OpLabels.ModifyIdentityLabels(addLabels, delLabels)
 	if err != nil {
-		e.Unlock()
+		e.unlock()
 		return err
 	}
 
 	var rev int
+	// If the client made a request to modify labels, even if there was
+	// no new labels added or deleted then we can safely remove the init
+	// label. This is a workaround to allow the cilium-docker plugin
+	// to remove endpoints in 'init' state if the containers were not
+	// started with any label.
+	if len(addLabels) == 0 && len(delLabels) == 0 && e.IsInit() {
+		idLabls := e.OpLabels.IdentityLabels()
+		delete(idLabls, labels.IDNameInit)
+		rev = e.replaceIdentityLabels(idLabls)
+		changed = true
+	}
 	if changed {
 		// Mark with StateWaitingForIdentity, it will be set to
 		// StateWaitingToRegenerate after the identity resolution has been
 		// completed
-		e.SetStateLocked(StateWaitingForIdentity, "Triggering identity resolution due to updated identity labels")
+		e.setState(StateWaitingForIdentity, "Triggering identity resolution due to updated identity labels")
 
 		e.identityRevision++
 		rev = e.identityRevision
 	}
-	e.Unlock()
+	e.unlock()
 
 	if changed {
-		e.runLabelsResolver(context.Background(), owner, rev, false)
+		e.runIdentityResolver(context.Background(), rev, false)
 	}
 	return nil
 }
@@ -1837,8 +1754,8 @@ func (e *Endpoint) ModifyIdentityLabels(owner Owner, addLabels, delLabels pkgLab
 // IsInit returns true if the endpoint still hasn't received identity labels,
 // i.e. has the special identity with label reserved:init.
 func (e *Endpoint) IsInit() bool {
-	init, found := e.OpLabels.GetIdentityLabel(pkgLabels.IDNameInit)
-	return found && init.Source == pkgLabels.LabelSourceReserved
+	init, found := e.OpLabels.GetIdentityLabel(labels.IDNameInit)
+	return found && init.Source == labels.LabelSourceReserved
 }
 
 // UpdateLabels is called to update the labels of an endpoint. Calls to this
@@ -1846,9 +1763,11 @@ func (e *Endpoint) IsInit() bool {
 // container runtime layer will periodically synchronize labels.
 //
 // If a net label changed was performed, the endpoint will receive a new
-// identity and will be regenerated. Both of these operations will happen in
-// the background.
-func (e *Endpoint) UpdateLabels(ctx context.Context, owner Owner, identityLabels, infoLabels pkgLabels.Labels, blocking bool) {
+// security identity and will be regenerated. Both of these operations will
+// run first synchronously if 'blocking' is true, and then in the background.
+//
+// Returns 'true' if endpoint regeneration was triggered.
+func (e *Endpoint) UpdateLabels(ctx context.Context, identityLabels, infoLabels labels.Labels, blocking bool) (regenTriggered bool) {
 	log.WithFields(logrus.Fields{
 		logfields.ContainerID:    e.GetShortContainerID(),
 		logfields.EndpointID:     e.StringID(),
@@ -1856,27 +1775,23 @@ func (e *Endpoint) UpdateLabels(ctx context.Context, owner Owner, identityLabels
 		logfields.InfoLabels:     infoLabels.String(),
 	}).Debug("Refreshing labels of endpoint")
 
-	if err := e.LockAlive(); err != nil {
-		e.LogDisconnectedMutexAction(err, "when trying to refresh endpoint labels")
-		return
+	if err := e.lockAlive(); err != nil {
+		e.logDisconnectedMutexAction(err, "when trying to refresh endpoint labels")
+		return false
 	}
 
 	e.replaceInformationLabels(infoLabels)
 	// replace identity labels and update the identity if labels have changed
 	rev := e.replaceIdentityLabels(identityLabels)
-	e.Unlock()
+	e.unlock()
 	if rev != 0 {
-		e.runLabelsResolver(ctx, owner, rev, blocking)
+		return e.runIdentityResolver(ctx, rev, blocking)
 	}
+
+	return false
 }
 
 func (e *Endpoint) identityResolutionIsObsolete(myChangeRev int) bool {
-	// If in disconnected state, skip as well as this operation is no
-	// longer required.
-	if e.state == StateDisconnected {
-		return true
-	}
-
 	// Check if the endpoint has since received a new identity revision, if
 	// so, abort as a new resolution routine will have been started.
 	if myChangeRev != e.identityRevision {
@@ -1886,30 +1801,34 @@ func (e *Endpoint) identityResolutionIsObsolete(myChangeRev int) bool {
 	return false
 }
 
-// Must be called with e.Mutex NOT held.
-func (e *Endpoint) runLabelsResolver(ctx context.Context, owner Owner, myChangeRev int, blocking bool) {
-	if err := e.RLockAlive(); err != nil {
+// runIdentityResolver resolves the numeric identity for the set of labels that
+// are currently configured on the endpoint.
+//
+// Must be called with e.mutex NOT held.
+func (e *Endpoint) runIdentityResolver(ctx context.Context, myChangeRev int, blocking bool) (regenTriggered bool) {
+	err := e.rlockAlive()
+	if err != nil {
 		// If a labels update and an endpoint delete API request arrive
 		// in quick succession, this could occur; in that case, there's
 		// no point updating the controller.
 		e.getLogger().WithError(err).Info("Cannot run labels resolver")
-		return
+		return false
 	}
 	newLabels := e.OpLabels.IdentityLabels()
-	e.RUnlock()
+	e.runlock()
 	scopedLog := e.getLogger().WithField(logfields.IdentityLabels, newLabels)
 
 	// If we are certain we can resolve the identity without accessing the KV
 	// store, do it first synchronously right now. This can reduce the number
 	// of regenerations for the endpoint during its initialization.
-	if blocking || cache.IdentityAllocationIsLocal(newLabels) {
+	regenTriggered = false
+	if blocking || identity.IdentityAllocationIsLocal(newLabels) {
 		scopedLog.Info("Resolving identity labels (blocking)")
-
-		err := e.identityLabelsChanged(ctx, owner, myChangeRev)
+		regenTriggered, err = e.identityLabelsChanged(ctx, myChangeRev)
 		switch err {
 		case ErrNotAlive:
 			scopedLog.Debug("not changing endpoint identity because endpoint is in process of being removed")
-			return
+			return false
 		default:
 			if err != nil {
 				scopedLog.WithError(err).Warn("Error changing endpoint identity")
@@ -1923,7 +1842,7 @@ func (e *Endpoint) runLabelsResolver(ctx context.Context, owner Owner, myChangeR
 	e.controllers.UpdateController(ctrlName,
 		controller.ControllerParams{
 			DoFunc: func(ctx context.Context) error {
-				err := e.identityLabelsChanged(ctx, owner, myChangeRev)
+				_, err := e.identityLabelsChanged(ctx, myChangeRev)
 				switch err {
 				case ErrNotAlive:
 					e.getLogger().Debug("not changing endpoint identity because endpoint is in process of being removed")
@@ -1933,13 +1852,17 @@ func (e *Endpoint) runLabelsResolver(ctx context.Context, owner Owner, myChangeR
 				}
 			},
 			RunInterval: 5 * time.Minute,
+			Context:     e.aliveCtx,
 		},
 	)
+
+	return regenTriggered
 }
 
-func (e *Endpoint) identityLabelsChanged(ctx context.Context, owner Owner, myChangeRev int) error {
-	if err := e.RLockAlive(); err != nil {
-		return ErrNotAlive
+func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (regenTriggered bool, err error) {
+	// e.setState() called below, can't take a read lock.
+	if err := e.lockAlive(); err != nil {
+		return false, ErrNotAlive
 	}
 	newLabels := e.OpLabels.IdentityLabels()
 	elog := e.getLogger().WithFields(logrus.Fields{
@@ -1949,30 +1872,33 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, owner Owner, myCha
 
 	// Since we unlocked the endpoint and re-locked, the label update may already be obsolete
 	if e.identityResolutionIsObsolete(myChangeRev) {
-		e.RUnlock()
+		e.unlock()
 		elog.Debug("Endpoint identity has changed, aborting resolution routine in favour of new one")
-		return nil
+		return false, nil
 	}
 
 	if e.SecurityIdentity != nil && e.SecurityIdentity.Labels.Equals(newLabels) {
 		// Sets endpoint state to ready if was waiting for identity
-		if e.GetStateLocked() == StateWaitingForIdentity {
-			e.SetStateLocked(StateReady, "Set identity for this endpoint")
+		if e.getState() == StateWaitingForIdentity {
+			e.setState(StateReady, "Set identity for this endpoint")
 		}
-		e.RUnlock()
+		e.unlock()
 		elog.Debug("Endpoint labels unchanged, skipping resolution of identity")
-		return nil
+		return false, nil
 	}
 
 	// Unlock the endpoint mutex for the possibly long lasting kvstore operation
-	e.RUnlock()
+	e.unlock()
 	elog.Debug("Resolving identity for labels")
 
-	identity, _, err := cache.AllocateIdentity(ctx, newLabels)
+	allocateCtx, cancel := context.WithTimeout(ctx, option.Config.KVstoreConnectivityTimeout)
+	defer cancel()
+
+	allocatedIdentity, _, err := e.allocator.AllocateIdentity(allocateCtx, newLabels, true)
 	if err != nil {
 		err = fmt.Errorf("unable to resolve identity: %s", err)
 		e.LogStatus(Other, Warning, fmt.Sprintf("%s (will retry)", err.Error()))
-		return err
+		return false, err
 	}
 
 	// When releasing identities after allocation due to either failure of
@@ -1980,30 +1906,30 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, owner Owner, myCha
 	// continue even if the parent has given up. Enforce a timeout of two
 	// minutes to avoid blocking forever but give plenty of time to release
 	// the identity.
-	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	releaseCtx, cancel := context.WithTimeout(ctx, option.Config.KVstoreConnectivityTimeout)
 	defer cancel()
 
 	releaseNewlyAllocatedIdentity := func() {
-		_, err := cache.Release(releaseCtx, identity)
+		_, err := e.allocator.Release(releaseCtx, allocatedIdentity)
 		if err != nil {
 			// non fatal error as keys will expire after lease expires but log it
-			elog.WithFields(logrus.Fields{logfields.Identity: identity.ID}).
+			elog.WithFields(logrus.Fields{logfields.Identity: allocatedIdentity.ID}).
 				WithError(err).Warn("Unable to release newly allocated identity again")
 		}
 	}
 
-	if err := e.LockAlive(); err != nil {
+	if err := e.lockAlive(); err != nil {
 		releaseNewlyAllocatedIdentity()
-		return err
+		return false, err
 	}
 
 	// Since we unlocked the endpoint and re-locked, the label update may already be obsolete
 	if e.identityResolutionIsObsolete(myChangeRev) {
-		e.Unlock()
+		e.unlock()
 
 		releaseNewlyAllocatedIdentity()
 
-		return nil
+		return false, nil
 	}
 
 	// If endpoint has an old identity, defer release of it to the end of
@@ -2018,33 +1944,33 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, owner Owner, myCha
 		// If the identity change is from init -> *, don't delay the
 		// use of the identity as we want the init duration to be as
 		// short as possible.
-		if identity.ID != oldIdentity.ID && oldIdentity.ID != identityPkg.ReservedIdentityInit {
-			e.Unlock()
+		if allocatedIdentity.ID != oldIdentity.ID && oldIdentity.ID != identity.ReservedIdentityInit {
+			e.unlock()
 
 			elog.Debugf("Applying grace period before regeneration due to identity change")
 			time.Sleep(option.Config.IdentityChangeGracePeriod)
 
-			if err := e.LockAlive(); err != nil {
+			if err := e.lockAlive(); err != nil {
 				releaseNewlyAllocatedIdentity()
-				return err
+				return false, err
 			}
 
 			// Since we unlocked the endpoint and re-locked, the label update may already be obsolete
 			if e.identityResolutionIsObsolete(myChangeRev) {
-				e.Unlock()
+				e.unlock()
 				releaseNewlyAllocatedIdentity()
-				return nil
+				return false, nil
 			}
 		}
 	}
 
-	elog.WithFields(logrus.Fields{logfields.Identity: identity.StringID()}).
+	elog.WithFields(logrus.Fields{logfields.Identity: allocatedIdentity.StringID()}).
 		Debug("Assigned new identity to endpoint")
 
-	e.SetIdentity(identity)
+	e.SetIdentity(allocatedIdentity, false)
 
 	if oldIdentity != nil {
-		_, err := cache.Release(releaseCtx, oldIdentity)
+		_, err := e.allocator.Release(releaseCtx, oldIdentity)
 		if err != nil {
 			elog.WithFields(logrus.Fields{logfields.Identity: oldIdentity.ID}).
 				WithError(err).Warn("Unable to release old endpoint identity")
@@ -2052,8 +1978,12 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, owner Owner, myCha
 	}
 
 	readyToRegenerate := false
+	regenMetadata := &regeneration.ExternalRegenerationMetadata{
+		Reason:            "updated security labels",
+		RegenerationLevel: regeneration.RegenerateWithDatapathRewrite,
+	}
 
-	// Regeneration is olny triggered once the endpoint ID has been
+	// Regeneration is only triggered once the endpoint ID has been
 	// assigned. This ensures that on the initial creation, the endpoint is
 	// not generated until the endpoint ID has been assigned. If the
 	// identity is resolved before the endpoint ID is assigned, the
@@ -2062,30 +1992,30 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, owner Owner, myCha
 	// called, the controller calling identityLabelsChanged() will trigger
 	// the regeneration as soon as the identity is known.
 	if e.ID != 0 {
-		readyToRegenerate = e.SetStateLocked(StateWaitingToRegenerate, "Triggering regeneration due to new identity")
+		readyToRegenerate = e.setRegenerateStateLocked(regenMetadata)
 	}
 
 	// Unconditionally force policy recomputation after a new identity has been
 	// assigned.
-	e.ForcePolicyCompute()
+	e.forcePolicyComputation()
 
-	e.Unlock()
+	e.unlock()
 
 	if readyToRegenerate {
-		e.Regenerate(owner, &ExternalRegenerationMetadata{Reason: "updated security labels"})
+		e.Regenerate(regenMetadata)
 	}
 
-	return nil
+	return readyToRegenerate, nil
 }
 
 // SetPolicyRevision sets the endpoint's policy revision with the given
 // revision.
 func (e *Endpoint) SetPolicyRevision(rev uint64) {
-	if err := e.LockAlive(); err != nil {
+	if err := e.lockAlive(); err != nil {
 		return
 	}
 	e.setPolicyRevision(rev)
-	e.Unlock()
+	e.unlock()
 }
 
 // setPolicyRevision sets the endpoint's policy revision with the given
@@ -2145,9 +2075,9 @@ type policySignal struct {
 //  - the endpoint's policy revision reaches the wanted revision
 // When the done callback is non-nil it will be called just before the channel is closed.
 func (e *Endpoint) WaitForPolicyRevision(ctx context.Context, rev uint64, done func(ts time.Time)) <-chan struct{} {
-	// NOTE: UnconditionalLock is used here because this method handles endpoint in disconnected state on its own
-	e.UnconditionalLock()
-	defer e.Unlock()
+	// NOTE: unconditionalLock is used here because this method handles endpoint in disconnected state on its own
+	e.unconditionalLock()
+	defer e.unlock()
 
 	if done == nil {
 		done = func(time.Time) {}
@@ -2184,16 +2114,10 @@ func (e *Endpoint) IPs() []net.IP {
 	return ips
 }
 
-// InsertEvent is called when the endpoint is inserted into the endpoint
-// manager.
-func (e *Endpoint) InsertEvent() {
-	e.getLogger().Info("New endpoint")
-}
-
 // IsDisconnecting returns true if the endpoint is being disconnected or
 // already disconnected
 //
-// This function must be called after re-aquiring the endpoint mutex to verify
+// This function must be called after re-acquiring the endpoint mutex to verify
 // that the endpoint has not been removed in the meantime.
 //
 // endpoint.mutex must be held in read mode at least
@@ -2204,36 +2128,40 @@ func (e *Endpoint) IsDisconnecting() bool {
 // PinDatapathMap retrieves a file descriptor from the map ID from the API call
 // and pins the corresponding map into the BPF file system.
 func (e *Endpoint) PinDatapathMap() error {
-	if e.DatapathMapID == 0 {
+	if err := e.lockAlive(); err != nil {
+		return err
+	}
+	defer e.unlock()
+	return e.pinDatapathMap()
+}
+
+// PinDatapathMap retrieves a file descriptor from the map ID from the API call
+// and pins the corresponding map into the BPF file system.
+func (e *Endpoint) pinDatapathMap() error {
+	if e.datapathMapID == 0 {
 		return nil
 	}
 
-	mapFd, err := bpf.MapFdFromID(e.DatapathMapID)
+	mapFd, err := bpf.MapFdFromID(e.datapathMapID)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(mapFd)
 
-	err = bpf.ObjPin(mapFd, e.BPFIpvlanMapPath())
-
-	if err == nil {
-		e.isDatapathMapPinned = true
-	}
-
-	return err
+	return bpf.ObjPin(mapFd, e.BPFIpvlanMapPath())
 }
 
-func (e *Endpoint) syncEndpointHeaderFile(owner Owner, reasons []string) {
-	e.BuildMutex.Lock()
-	defer e.BuildMutex.Unlock()
+func (e *Endpoint) syncEndpointHeaderFile(reasons []string) {
+	e.buildMutex.Lock()
+	defer e.buildMutex.Unlock()
 
-	if err := e.LockAlive(); err != nil {
+	if err := e.lockAlive(); err != nil {
 		// endpoint was removed in the meanwhile, return
 		return
 	}
-	defer e.Unlock()
+	defer e.unlock()
 
-	if err := e.writeHeaderfile(e.StateDirectoryPath(), owner); err != nil {
+	if err := e.writeHeaderfile(e.StateDirectoryPath()); err != nil {
 		e.getLogger().WithFields(logrus.Fields{
 			logfields.Reason: reasons,
 		}).WithError(err).Warning("could not sync header file")
@@ -2241,20 +2169,19 @@ func (e *Endpoint) syncEndpointHeaderFile(owner Owner, reasons []string) {
 }
 
 // SyncEndpointHeaderFile it bumps the current DNS History information for the
-// endpoint in the lxc_config.h file.
-func (e *Endpoint) SyncEndpointHeaderFile(owner Owner) error {
-	if err := e.LockAlive(); err != nil {
+// endpoint in the ep_config.h file.
+func (e *Endpoint) SyncEndpointHeaderFile() error {
+	if err := e.lockAlive(); err != nil {
 		// endpoint was removed in the meanwhile, return
 		return nil
 	}
-	defer e.Unlock()
+	defer e.unlock()
 
 	if e.dnsHistoryTrigger == nil {
 		t, err := trigger.NewTrigger(trigger.Parameters{
-			Name:              "sync_endpoint_header_file",
-			PrometheusMetrics: false,
-			MinInterval:       5 * time.Second,
-			TriggerFunc:       func(reasons []string) { e.syncEndpointHeaderFile(owner, reasons) },
+			Name:        "sync_endpoint_header_file",
+			MinInterval: 5 * time.Second,
+			TriggerFunc: func(reasons []string) { e.syncEndpointHeaderFile(reasons) },
 		})
 		if err != nil {
 			return fmt.Errorf(
@@ -2265,4 +2192,245 @@ func (e *Endpoint) SyncEndpointHeaderFile(owner Owner) error {
 	}
 	e.dnsHistoryTrigger.Trigger()
 	return nil
+}
+
+type ipReleaser interface {
+	ReleaseIP(net.IP) error
+}
+
+type monitorOwner interface {
+	NotifyMonitorDeleted(e *Endpoint)
+}
+
+// Stop cleans up all goroutines managed by this endpoint (EventQueue,
+// Controllers).
+// This function should be used directly in cleanup functions which aim to stop
+// goroutines managed by this endpoint, but without removing BPF maps and
+// datapath state.
+func (e *Endpoint) Stop() {
+	// Since the endpoint is being deleted, we no longer need to run events
+	// in its event queue. This is a no-op if the queue has already been
+	// closed elsewhere.
+	e.eventQueue.Stop()
+
+	// Wait for the queue to be drained in case an event which is currently
+	// running for the endpoint tries to acquire the lock - we cannot be sure
+	// what types of events will be pushed onto the EventQueue for an endpoint
+	// and when they will happen. After this point, no events for the endpoint
+	// will be processed on its EventQueue, specifically regenerations.
+	e.eventQueue.WaitToBeDrained()
+
+	// Given that we are deleting the endpoint and that no more builds are
+	// going to occur for this endpoint, close the channel which signals whether
+	// the endpoint has its BPF program compiled or not to avoid it persisting
+	// if anything is blocking on it. If a delete request has already been
+	// enqueued for this endpoint, this is a no-op.
+	e.closeBPFProgramChannel()
+}
+
+// Delete cleans up all resources associated with this endpoint, including the
+// following:
+// * all goroutines managed by this Endpoint (EventQueue, Controllers)
+// * removal from the endpointmanager, resulting in new events not taking effect
+// on this endpoint
+// * cleanup of datapath state (BPF maps, proxy configuration, directories)
+// * releasing IP addresses allocated for the endpoint
+// * releasing of the reference to its allocated security identity
+func (e *Endpoint) Delete(monitor monitorOwner, ipam ipReleaser, manager endpointManager, conf DeleteConfig) []error {
+	errs := []error{}
+
+	e.Stop()
+
+	// Lock out any other writers to the endpoint.  In case multiple delete
+	// requests have been enqueued, have all of them except the first
+	// return here. Ignore the request if the endpoint is already
+	// disconnected.
+	if err := e.lockAlive(); err != nil {
+		return []error{}
+	}
+	e.aliveCancel()
+	e.setState(StateDisconnecting, "Deleting endpoint")
+
+	// Remove the endpoint before we clean up. This ensures it is no longer
+	// listed or queued for rebuilds.
+	e.Unexpose(manager)
+
+	defer func() {
+		monitor.NotifyMonitorDeleted(e)
+	}()
+
+	// If dry mode is enabled, no changes to BPF maps are performed
+	if !option.Config.DryMode {
+		if errs2 := lxcmap.DeleteElement(e); errs2 != nil {
+			errs = append(errs, errs2...)
+		}
+
+		if errs2 := e.deleteMaps(); errs2 != nil {
+			errs = append(errs, errs2...)
+		}
+	}
+
+	if !conf.NoIPRelease {
+		if option.Config.EnableIPv4 {
+			if err := ipam.ReleaseIP(e.IPv4.IP()); err != nil {
+				errs = append(errs, fmt.Errorf("unable to release ipv4 address: %s", err))
+			}
+		}
+		if option.Config.EnableIPv6 {
+			if err := ipam.ReleaseIP(e.IPv6.IP()); err != nil {
+				errs = append(errs, fmt.Errorf("unable to release ipv6 address: %s", err))
+			}
+		}
+	}
+
+	if option.Config.IPAM == ipamOption.IPAMENI || option.Config.IPAM == ipamOption.IPAMAzure {
+		e.getLogger().WithFields(logrus.Fields{
+			"ep":     e.GetID(),
+			"ipAddr": e.GetIPv4Address(),
+		}).Debug("Deleting endpoint routing rules")
+
+		// This is a best-effort attempt to cleanup. We expect there to be one
+		// ingress rule and one egress rule. If we find more than one rule in
+		// either case, then the rules will be left as-is because there was
+		// likely manual intervention.
+		if err := linuxrouting.Delete(e.IPv4.IP()); err != nil {
+			errs = append(errs, fmt.Errorf("unable to delete endpoint routing rules: %s", err))
+		}
+	}
+
+	if e.noTrackPort > 0 {
+		e.getLogger().WithFields(logrus.Fields{
+			"ep":     e.GetID(),
+			"ipAddr": e.GetIPv4Address(),
+		}).Debug("Deleting endpoint NOTRACK rules")
+
+		if e.IPv4.IsSet() {
+			if err := iptables.RemoveNoTrackRules(e.IPv4.String(), e.noTrackPort, false); err != nil {
+				errs = append(errs, fmt.Errorf("unable to delete endpoint NOTRACK ipv4 rules: %s", err))
+			}
+		}
+		if e.IPv6.IsSet() {
+			if err := iptables.RemoveNoTrackRules(e.IPv6.String(), e.noTrackPort, true); err != nil {
+				errs = append(errs, fmt.Errorf("unable to delete endpoint NOTRACK ipv6 rules: %s", err))
+			}
+		}
+	}
+
+	completionCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	proxyWaitGroup := completion.NewWaitGroup(completionCtx)
+
+	errs = append(errs, e.leaveLocked(proxyWaitGroup, conf)...)
+	e.unlock()
+
+	err := e.waitForProxyCompletions(proxyWaitGroup)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("unable to remove proxy redirects: %s", err))
+	}
+	cancel()
+
+	if option.Config.IsFlannelMasterDeviceSet() &&
+		option.Config.FlannelUninstallOnExit {
+		e.DeleteBPFProgramLocked()
+	}
+
+	return errs
+}
+
+// GetProxyInfoByFields returns the ID, IPv4 address, IPv6 address, labels,
+// SHA of labels, and identity of the endpoint. Returns an error if the endpoint
+// is in the process of being deleted / has been deleted.
+func (e *Endpoint) GetProxyInfoByFields() (uint64, string, string, []string, string, uint64, error) {
+	// We use unconditional locking here because we explicitly handle state
+	// in which the endpoint is being deleted.
+	e.unconditionalRLock()
+	defer e.runlock()
+	var err error
+	if e.IsDisconnecting() {
+		err = fmt.Errorf("endpoint is in the process of being deleted")
+	}
+	return e.GetID(), e.GetIPv4Address(), e.GetIPv6Address(), e.GetLabels(), e.GetLabelsSHA(), uint64(e.getIdentity()), err
+}
+
+// WaitForFirstRegeneration waits for specific conditions before returning:
+// * if the endpoint has a sidecar proxy, it waits for the endpoint's BPF
+// program to be generated for the first time.
+// * otherwise, waits for the endpoint to complete its first full regeneration.
+func (e *Endpoint) WaitForFirstRegeneration(ctx context.Context) error {
+	e.getLogger().Info("Waiting for endpoint to be generated")
+
+	// Default timeout for PUT /endpoint/{id} is 60 seconds, so put timeout
+	// in this function a bit below that timeout. If the timeout for clients
+	// in API is below this value, they will get a message containing
+	// "context deadline exceeded" if the operation takes longer than the
+	// client's configured timeout value.
+	ctx, cancel := context.WithTimeout(ctx, EndpointGenerationTimeout)
+
+	// Check the endpoint's state and labels periodically.
+	ticker := time.NewTicker(1 * time.Second)
+	defer func() {
+		cancel()
+		ticker.Stop()
+	}()
+
+	// Wait for any successful BPF regeneration, which is indicated by any
+	// positive policy revision (>0). As long as at least one BPF
+	// regeneration is successful, the endpoint has network connectivity
+	// so we can return from the creation API call.
+	revCh := e.WaitForPolicyRevision(ctx, 1, nil)
+
+	for {
+		select {
+		case <-revCh:
+			if ctx.Err() == nil {
+				// At least one BPF regeneration has successfully completed.
+				return nil
+			}
+
+		case <-ctx.Done():
+		case <-ticker.C:
+			if err := e.rlockAlive(); err != nil {
+				return fmt.Errorf("endpoint was deleted while waiting for initial endpoint generation to complete")
+			}
+			hasSidecarProxy := e.HasSidecarProxy()
+			e.runlock()
+			if hasSidecarProxy && e.bpfProgramInstalled() {
+				// If the endpoint is determined to have a sidecar proxy,
+				// return immediately to let the sidecar container start,
+				// in case it is required to enforce L7 rules.
+				e.getLogger().Info("Endpoint has sidecar proxy, returning from synchronous creation request before regeneration has succeeded")
+				return nil
+			}
+		}
+
+		if ctx.Err() != nil {
+			return fmt.Errorf("timeout while waiting for initial endpoint generation to complete")
+		}
+	}
+}
+
+// SetDefaultConfiguration sets the default configuration options for its
+// boolean configuration options and for policy enforcement based off of the
+// global policy enforcement configuration options. If restore is true, then
+// the configuration option to keep endpoint configuration during endpoint
+// restore is checked, and if so, this is a no-op.
+func (e *Endpoint) SetDefaultConfiguration(restore bool) {
+	e.unconditionalLock()
+	defer e.unlock()
+
+	if restore && option.Config.KeepConfig {
+		return
+	}
+	e.setDefaultPolicyConfig()
+}
+
+func (e *Endpoint) setDefaultPolicyConfig() {
+	e.SetDefaultOpts(option.Config.Opts)
+	alwaysEnforce := policy.GetPolicyEnabled() == option.AlwaysEnforce
+	e.desiredPolicy.IngressPolicyEnabled = alwaysEnforce
+	e.desiredPolicy.EgressPolicyEnabled = alwaysEnforce
+}
+
+// GetCreatedAt returns the endpoint creation time.
+func (e *Endpoint) GetCreatedAt() time.Time {
+	return e.createdAt
 }

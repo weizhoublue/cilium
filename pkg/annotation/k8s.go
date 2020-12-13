@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -45,6 +45,10 @@ const (
 	// of the cilium host interface in the node's annotation.
 	CiliumHostIPv6 = Prefix + ".network.ipv6-cilium-host"
 
+	// CiliumEncryptionKey is the annotation name used to store the encryption
+	// key of the cilium host interface in the node's annotation.
+	CiliumEncryptionKey = Prefix + ".network.encryption-key"
+
 	// GlobalService if set to true, marks a service to become a global
 	// service
 	GlobalService = Prefix + "/global-service"
@@ -54,5 +58,16 @@ const (
 	// Setting the annotation SharedService to false while setting
 	// GlobalService to true allows to expose remote endpoints without
 	// sharing local endpoints.
-	SharedService = Prefix + "shared-service"
+	SharedService = Prefix + "/shared-service"
+
+	// ProxyVisibility is the annotation name used to indicate whether proxy
+	// visibility should be enabled for a given pod (i.e., all traffic for the
+	// pod is redirected to the proxy for the given port / protocol in the
+	// annotation
+	ProxyVisibility = Prefix + ".proxy-visibility"
+
+	// NoTrack is the annotation name used to store the port and protocol
+	// that we should bypass kernel conntrack for a given pod. This applies for
+	// both TCP and UDP connection. Current use case is NodeLocalDNS.
+	NoTrack = Prefix + ".no-track-port"
 )

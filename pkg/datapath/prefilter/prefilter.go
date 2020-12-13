@@ -18,13 +18,14 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os/exec"
 	"path"
-	"syscall"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/cidrmap"
+	"github.com/cilium/cilium/pkg/probe"
 )
 
 type preFilterMapType int
@@ -60,6 +61,10 @@ type PreFilter struct {
 	revision int64
 	mutex    lock.RWMutex
 }
+
+var (
+	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "prefilter")
+)
 
 // WriteConfig dumps the configuration for the corresponding header file
 func (p *PreFilter) WriteConfig(fw io.Writer) {
@@ -254,36 +259,15 @@ func (p *PreFilter) init() (*PreFilter, error) {
 	return p, nil
 }
 
-// ProbePreFilter checks whether XDP mode is supported on given device
-func ProbePreFilter(device, mode string) error {
-	cmd := exec.Command("ip", "-force", "link", "set", "dev", device, mode, "off")
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("Cannot run ip command: %v", err)
-	}
-	if err := cmd.Wait(); err != nil {
-		if exiterr, ok := err.(*exec.ExitError); ok {
-			if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
-				switch status.ExitStatus() {
-				case 2:
-					return fmt.Errorf("Mode %s not supported on device %s", mode, device)
-				default:
-					return fmt.Errorf("Prefilter not supported on OS")
-				}
-			}
-		} else {
-			return fmt.Errorf("Cannot wait for ip command: %v", err)
-		}
-	}
-	return nil
-}
-
 // NewPreFilter returns prefilter handle
 func NewPreFilter() (*PreFilter, error) {
-	// dyn{4,6} officially disabled for now due to missing
-	// dump (get_next_key) from kernel side.
+	haveLPM := probe.HaveFullLPM()
+	if !haveLPM {
+		log.Warning("Kernel too old for full LPM map support. Needs kernel 4.16 or higher. Only enabling /32 and /128 prefixes for prefilter.")
+	}
 	c := preFilterConfig{
-		dyn4Enabled: false,
-		dyn6Enabled: false,
+		dyn4Enabled: haveLPM,
+		dyn6Enabled: haveLPM,
 		fix4Enabled: true,
 		fix6Enabled: true,
 	}

@@ -4,10 +4,6 @@
 
 Load-balancing configuration
 
-### Synopsis
-
-Load-balancing configuration
-
 ### Options
 
 ```
@@ -26,4 +22,5 @@ Load-balancing configuration
 
 * [cilium bpf](../cilium_bpf)	 - Direct access to local BPF maps
 * [cilium bpf lb list](../cilium_bpf_lb_list)	 - List load-balancing configuration
+* [cilium bpf lb maglev](../cilium_bpf_lb_maglev)	 - Maglev lookup table
 

@@ -1,33 +1,34 @@
+# Copyright 2017-2019 Authors of Cilium
+# SPDX-License-Identifier: Apache-2.0
+
 include ../../Makefile.defs
 
-FLAGS := -I../../bpf/ -I../../bpf/include -I. -D__NR_CPUS__=$(shell nproc) -O2
-BPF_CC_FLAGS :=  ${FLAGS} -target bpf -emit-llvm
-BPF_LLC_FLAGS   := -march=bpf -mcpu=probe -filetype=obj
+FLAGS := -I../../bpf/ -I../../bpf/include -I. -D__NR_CPUS__=$(shell nproc --all) -O2
+FLAGS_CLANG := -Wall -Wextra -Werror -Wshadow -Wno-unused-parameter
+FLAGS_CLANG += -Wno-address-of-packed-member
+FLAGS_CLANG += -Wno-unknown-warning-option
+FLAGS_CLANG += -Wno-gnu-variable-sized-type-not-at-end
+FLAGS_CLANG += -Wdeclaration-after-statement
+
+BPF_CC_FLAGS := ${FLAGS} -target bpf -std=gnu89 -nostdinc -emit-llvm
+BPF_LLC_FLAGS := -march=bpf -mcpu=probe -filetype=obj
 
 LIB := $(shell find ../../bpf/ -name '*.h')
 
 CLANG ?= $(QUIET) clang
 LLC ?= llc
 
-BPF_TARGETS := bpf-event-test.o elf-demo.o
-TARGETS := $(BPF_TARGETS) perf-event-test unit-test
+BPF_TARGETS := elf-demo.o
+TARGETS := $(BPF_TARGETS) unit-test
 all: $(TARGETS)
-
-perf-event-test: perf-event-test.go
-	@$(ECHO_GO)
-	$(QUIET)$(GO) build $(GOBUILD) -o $@ $<
-
-bpf-event-test.o: bpf-event-test.c
-	@$(ECHO_CC)
-	$(CLANG) ${BPF_CC_FLAGS} -c $< -o - | $(LLC) ${BPF_LLC_FLAGS} -o $@
 
 elf-demo.o: elf-demo.c
 	@$(ECHO_CC)
-	$(CLANG) ${BPF_CC_FLAGS} -c $< -o - | $(LLC) ${BPF_LLC_FLAGS} -o $@
+	$(CLANG) ${FLAGS_CLANG} ${BPF_CC_FLAGS} -c $< -o - | $(LLC) ${BPF_LLC_FLAGS} -o $@
 
 %: %.c $(LIB)
 	@$(ECHO_CC)
-	$(CLANG) $(FLAGS) -I../../bpf/ $< -o $@
+	$(CLANG) ${FLAGS_CLANG} ${FLAGS} -I../../bpf/ $< -o $@
 
 clean:
 	@$(ECHO_CLEAN)

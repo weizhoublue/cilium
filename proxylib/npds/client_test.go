@@ -17,6 +17,7 @@
 package npds
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ import (
 	"github.com/cilium/cilium/proxylib/test"
 
 	"github.com/cilium/proxy/go/cilium/api"
-	envoy_api_v2 "github.com/cilium/proxy/go/envoy/api/v2"
+	envoy_service_disacovery "github.com/cilium/proxy/go/envoy/service/discovery/v3"
 	log "github.com/sirupsen/logrus"
 	. "gopkg.in/check.v1"
 )
@@ -56,23 +57,27 @@ var resources = []*cilium.NetworkPolicy{
 
 // UpsertNetworkPolicy must only be used for testing!
 func (cs *ClientSuite) UpsertNetworkPolicy(c *C, s *envoy.XDSServer, p *cilium.NetworkPolicy) {
-	comp := completion.NewCompletion(nil, func(err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wg := completion.NewWaitGroup(ctx)
+
+	callback := func(err error) {
 		if err == nil {
-			log.Info("ACK Callback called")
+			log.Debug("ACK Callback called")
 			cs.acks++
 		} else {
-			log.Info("NACK Callback called")
+			log.Debug("NACK Callback called")
 			cs.nacks++
 		}
-	})
+	}
 
-	s.NetworkPolicyMutator.Upsert(envoy.NetworkPolicyTypeURL, p.Name, p, []string{"127.0.0.1"}, comp)
+	s.NetworkPolicyMutator.Upsert(envoy.NetworkPolicyTypeURL, p.Name, p, []string{"127.0.0.1"}, wg, callback)
 }
 
 type updater struct{}
 
-func (u *updater) PolicyUpdate(resp *envoy_api_v2.DiscoveryResponse) error {
-	log.Infof("Received policy update: %v", *resp)
+func (u *updater) PolicyUpdate(resp *envoy_service_disacovery.DiscoveryResponse) error {
+	log.Debugf("Received policy update: %v", *resp)
 	return nil
 }
 

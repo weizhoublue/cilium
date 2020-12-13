@@ -28,13 +28,13 @@
 // sets, e.g. to support the LDS and RDS protocols:
 //
 //    ldsCache := xds.NewCache()
-//    lds := xds.NewAckingResourceMutatorWrapper(ldsCache, xds.IstioNodeToIP)
+//    lds := xds.NewAckingResourceMutatorWrapper(ldsCache)
 //    rdsCache := xds.NewCache()
-//    rds := xds.NewAckingResourceMutatorWrapper(rdsCache, xds.IstioNodeToIP)
+//    rds := xds.NewAckingResourceMutatorWrapper(rdsCache)
 //
 //    resTypes := map[string]xds.ResourceTypeConfiguration{
-//        "type.googleapis.com/envoy.api.v2.Listener": {ldsCache, lds},
-//        "type.googleapis.com/envoy.api.v2.RouteConfiguration": {rdsCache, rds},
+//        "type.googleapis.com/envoy.config.listener.v3.Listener": {ldsCache, lds},
+//        "type.googleapis.com/envoy.config.route.v3.RouteConfiguration": {rdsCache, rds},
 //    }
 //
 //    server := xds.NewServer(resTypes, 5*time.Seconds)
@@ -47,7 +47,7 @@
 //
 //    type ResourceSource interface {
 //        GetResources(ctx context.Context, typeURL string, lastVersion *uint64,
-//            node *api.Node, resourceNames []string) (*VersionedResources, error)
+//            nodeIP string, resourceNames []string) (*VersionedResources, error)
 //    }
 //
 // Resource sets should implement the ResourceSet interface to provide
@@ -57,7 +57,7 @@
 //
 // Cache is an efficient, ready-to-use implementation of ResourceSet:
 //
-//    typeURL := "type.googleapis.com/envoy.api.v2.Listener"
+//    typeURL := "type.googleapis.com/envoy.config.listener.v3.Listener"
 //    ldsCache := xds.NewCache()
 //    ldsCache.Upsert(typeURL, "listener123", listenerA, false)
 //    ldsCache.Delete(typeURL, "listener456", false)
@@ -68,9 +68,9 @@
 // AckingResourceMutatorWrapper provides an extended API which accepts
 // Completions to notify of ACKs.
 //
-//    typeURL := "type.googleapis.com/envoy.api.v2.Listener"
+//    typeURL := "type.googleapis.com/envoy.config.listener.v3.Listener"
 //    ldsCache := xds.NewCache()
-//    lds := xds.NewAckingResourceMutatorWrapper(ldsCache, IstioNodeToIP)
+//    lds := xds.NewAckingResourceMutatorWrapper(ldsCache)
 //
 //    ctx, cancel := context.WithTimeout(..., 5*time.Second)
 //    wg := completion.NewWaitGroup(ctx)

@@ -15,6 +15,7 @@
 package kvstore
 
 import (
+	"context"
 	"sync"
 )
 
@@ -69,10 +70,10 @@ type stopChan chan struct{}
 // Watcher represents a KVstore watcher
 type Watcher struct {
 	// Events is the channel to which change notifications will be sent to
-	Events EventChan
+	Events EventChan `json:"-"`
 
-	name      string
-	prefix    string
+	Name      string `json:"name"`
+	Prefix    string `json:"prefix"`
 	stopWatch stopChan
 
 	// stopOnce guarantees that Stop() is only called once
@@ -84,8 +85,8 @@ type Watcher struct {
 
 func newWatcher(name, prefix string, chanSize int) *Watcher {
 	w := &Watcher{
-		name:      name,
-		prefix:    prefix,
+		Name:      name,
+		Prefix:    prefix,
 		Events:    make(EventChan, chanSize),
 		stopWatch: make(stopChan),
 	}
@@ -97,7 +98,7 @@ func newWatcher(name, prefix string, chanSize int) *Watcher {
 
 // String returns the name of the wather
 func (w *Watcher) String() string {
-	return w.name
+	return w.Name
 }
 
 // ListAndWatch creates a new watcher which will watch the specified prefix for
@@ -109,8 +110,8 @@ func (w *Watcher) String() string {
 //
 // Returns a watcher structure plus a channel that is closed when the initial
 // list operation has been completed
-func ListAndWatch(name, prefix string, chanSize int) *Watcher {
-	return Client().ListAndWatch(name, prefix, chanSize)
+func ListAndWatch(ctx context.Context, name, prefix string, chanSize int) *Watcher {
+	return Client().ListAndWatch(ctx, name, prefix, chanSize)
 }
 
 // Stop stops a watcher previously created and started with Watch()

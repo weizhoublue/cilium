@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cilium/cilium/pkg/command"
 	"github.com/cilium/cilium/pkg/kvstore"
@@ -31,14 +33,17 @@ var kvstoreGetCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		key := ""
 
-		setupKvstore()
-
 		if len(args) > 0 {
 			key = args[0]
 		}
 
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		setupKvstore(ctx)
+
 		if recursive {
-			pairs, err := kvstore.ListPrefix(key)
+			pairs, err := kvstore.Client().ListPrefix(ctx, key)
 			if err != nil {
 				Fatalf("Unable to list keys: %s", err)
 			}
@@ -49,15 +54,18 @@ var kvstoreGetCmd = &cobra.Command{
 				return
 			}
 			for k, v := range pairs {
-				fmt.Printf("%s => %s\n", k, string(v))
+				fmt.Printf("%s => %s\n", k, string(v.Data))
 			}
 		} else {
-			val, err := kvstore.Get(key)
+			val, err := kvstore.Client().Get(ctx, key)
 			if err != nil {
-				Fatalf("Unable to retrieve key: %s", err)
+				Fatalf("Unable to retrieve key %s: %s", key, err)
+			}
+			if val == nil {
+				Fatalf("key %s is not found", key)
 			}
 			if command.OutputJSON() {
-				if err := command.PrintOutput(val); err != nil {
+				if err := command.PrintOutput(string(val)); err != nil {
 					os.Exit(1)
 				}
 				return

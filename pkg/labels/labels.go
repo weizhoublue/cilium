@@ -28,11 +28,12 @@ const (
 	// PathDelimiter is the delimiter used in the labels paths.
 	PathDelimiter = "."
 
-	// IDNameAll is a special label which matches all labels.
-	IDNameAll = "all"
-
 	// IDNameHost is the label used for the hostname ID.
 	IDNameHost = "host"
+
+	// IDNameRemoteNode is the label used to describe the
+	// ReservedIdentityRemoteNode
+	IDNameRemoteNode = "remote-node"
 
 	// IDNameWorld is the label used for the world ID.
 	IDNameWorld = "world"
@@ -56,7 +57,7 @@ const (
 	// IDNameUnmanaged is the label used to identify unmanaged endpoints
 	IDNameUnmanaged = "unmanaged"
 
-	// IDNameUnknown is the label used to to idenfity an endpoint with an
+	// IDNameUnknown is the label used to to identify an endpoint with an
 	// unknown identity.
 	IDNameUnknown = "unknown"
 )
@@ -64,6 +65,9 @@ const (
 var (
 	// LabelHealth is the label used for health.
 	LabelHealth = Labels{IDNameHealth: NewLabel(IDNameHealth, "", LabelSourceReserved)}
+
+	// LabelHost is the label used for the host endpoint.
+	LabelHost = Labels{IDNameHost: NewLabel(IDNameHost, "", LabelSourceReserved)}
 )
 
 const (
@@ -106,11 +110,13 @@ const (
 	LabelSourceCiliumGenerated = "cilium-generated"
 )
 
-// Label is the cilium's representation of a container label.
+// Label is the Cilium's representation of a container label.
 type Label struct {
 	Key   string `json:"key"`
 	Value string `json:"value,omitempty"`
-	// Source can be one of the values present in const.go (e.g.: LabelSourceContainer)
+	// Source can be one of the above values (e.g.: LabelSourceContainer).
+	//
+	// +kubebuilder:validation:Optional
 	Source string `json:"source"`
 }
 
@@ -219,17 +225,12 @@ func NewLabel(key string, value string, source string) Label {
 	}
 }
 
-// Equals returns true if source, AbsoluteKey() and Value are equal and false otherwise.
+// Equals returns true if source, Key and Value are equal and false otherwise.
 func (l *Label) Equals(b *Label) bool {
 	if !l.IsAnySource() && l.Source != b.Source {
 		return false
 	}
 	return l.Key == b.Key && l.Value == b.Value
-}
-
-// IsAllLabel returns true if the label is reserved and matches with IDNameAll.
-func (l *Label) IsAllLabel() bool {
-	return l.Source == LabelSourceReserved && l.Key == "all"
 }
 
 // IsAnySource return if the label was set with source "any".
@@ -242,9 +243,9 @@ func (l *Label) IsReservedSource() bool {
 	return l.Source == LabelSourceReserved
 }
 
-// Matches returns true if l matches the target
-func (l *Label) Matches(target *Label) bool {
-	return l.IsAllLabel() || l.Equals(target)
+// matches returns true if l matches the target
+func (l *Label) matches(target *Label) bool {
+	return l.Equals(target)
 }
 
 // String returns the string representation of Label in the for of Source:Key=Value or
@@ -367,6 +368,19 @@ func (l Labels) StringMap() map[string]string {
 	return o
 }
 
+// StringMap converts Labels into map[string]string
+func (l Labels) K8sStringMap() map[string]string {
+	o := map[string]string{}
+	for _, v := range l {
+		if v.Source == LabelSourceK8s || v.Source == LabelSourceAny || v.Source == LabelSourceUnspec {
+			o[v.Key] = v.Value
+		} else {
+			o[v.Source+"."+v.Key] = v.Value
+		}
+	}
+	return o
+}
+
 // NewLabelsFromModel creates labels from string array.
 func NewLabelsFromModel(base []string) Labels {
 	lbls := make(Labels, len(base))
@@ -446,7 +460,7 @@ func (l Label) FormatForKVStore() string {
 // DO NOT BREAK THE FORMAT OF THIS. THE RETURNED STRING IS USED AS KEY IN
 // THE KEY-VALUE STORE.
 func (l Labels) SortedList() []byte {
-	var keys []string
+	keys := make([]string, 0, len(l))
 	for k := range l {
 		keys = append(keys, k)
 	}

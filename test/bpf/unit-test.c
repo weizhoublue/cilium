@@ -1,109 +1,54 @@
 // SPDX-License-Identifier: GPL-2.0
-// Copyright (c) 2018 Authors of Cilium
+// Copyright (c) 2018-2019 Authors of Cilium
+
+#include <bpf/ctx/skb.h>
+#include <bpf/api.h>
+
 #include <assert.h>
-#include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
 
 #include "lib/utils.h"
+
+/* SKIP_UNDEF_LPM_LOOKUP_FN is used to control if the LPM_LOOKUP_FN macro in
+ * lib/maps.h should be defined or not.
+ *
+ * As lib/common.h includes in turn lib/maps.h, define SKIP_UNDEF_LPM_LOOKUP_FN
+ * here since unit tests require the LPM_LOOKUP_FN macro to be defined.
+ */
+#define SKIP_UNDEF_LPM_LOOKUP_FN
+#include "lib/common.h"
+
 #include "node_config.h"
 
-#include "lib/common.h"
-#include "lib/ipv6.h"
-
-#define SKIP_UNDEF_LPM_LOOKUP_FN
-#include "lib/maps.h"
+#define CONNTRACK
 
 #define htonl bpf_htonl
 #define ntohl bpf_ntohl
 
-static void test_ipv6_addr_clear_suffix()
-{
-	union v6addr v6;
+/* Declare before lib/conntrack.h or die! */
+static __u64 __now = 0;
 
-	memset(&v6, 0xff, sizeof(v6));
-	ipv6_addr_clear_suffix(&v6, 128);
-	assert(ntohl(v6.p1) == 0xffffffff);
-	assert(ntohl(v6.p2) == 0xffffffff);
-	assert(ntohl(v6.p3) == 0xffffffff);
-	assert(ntohl(v6.p4) == 0xffffffff);
+#define ktime_get_ns()	(__now * NSEC_PER_SEC)
+#define jiffies64()	(__now)
 
-	memset(&v6, 0xff, sizeof(v6));
-	ipv6_addr_clear_suffix(&v6, 127);
-	assert(ntohl(v6.p1) == 0xffffffff);
-	assert(ntohl(v6.p2) == 0xffffffff);
-	assert(ntohl(v6.p3) == 0xffffffff);
-	assert(ntohl(v6.p4) == 0xfffffffe);
-
-	memset(&v6, 0xff, sizeof(v6));
-	ipv6_addr_clear_suffix(&v6, 95);
-	assert(ntohl(v6.p1) == 0xffffffff);
-	assert(ntohl(v6.p2) == 0xffffffff);
-	assert(ntohl(v6.p3) == 0xfffffffe);
-	assert(ntohl(v6.p4) == 0x00000000);
-
-	memset(&v6, 0xff, sizeof(v6));
-	ipv6_addr_clear_suffix(&v6, 1);
-	assert(ntohl(v6.p1) == 0x80000000);
-	assert(ntohl(v6.p2) == 0x00000000);
-	assert(ntohl(v6.p3) == 0x00000000);
-	assert(ntohl(v6.p4) == 0x00000000);
-
-	memset(&v6, 0xff, sizeof(v6));
-	ipv6_addr_clear_suffix(&v6, -1);
-	assert(ntohl(v6.p1) == 0x00000000);
-	assert(ntohl(v6.p2) == 0x00000000);
-	assert(ntohl(v6.p3) == 0x00000000);
-	assert(ntohl(v6.p4) == 0x00000000);
-}
-
-static __be32 *dummy_map = NULL;
-
-static __be32 match_dummy_prefix(void *map, __be32 addr, __u32 prefix)
-{
-	return (addr & GET_PREFIX(prefix)) == *dummy_map;
-}
-#define PREFIX32 32,
-#define PREFIX31 31,
-#define PREFIX22 22,
-#define PREFIX11 11,
-#define PREFIX0  0,
-LPM_LOOKUP_FN(lpm4_lookup32, __be32, PREFIX32, dummy_map, match_dummy_prefix)
-LPM_LOOKUP_FN(lpm4_lookup31, __be32, PREFIX31, dummy_map, match_dummy_prefix)
-LPM_LOOKUP_FN(lpm4_lookup22, __be32, PREFIX22, dummy_map, match_dummy_prefix)
-LPM_LOOKUP_FN(lpm4_lookup11, __be32, PREFIX11, dummy_map, match_dummy_prefix)
-LPM_LOOKUP_FN(lpm4_lookup0, __be32, PREFIX0, dummy_map, match_dummy_prefix)
-
-static void test_lpm_lookup()
-{
-	__be32 addr;
-	dummy_map = &addr;
-
-	addr = htonl(0xFFFFFFFF);
-	assert(__lpm4_lookup32(htonl(0xFFFFFFFF)));
-	assert(!__lpm4_lookup32(htonl(0xFFF00000)));
-	addr = htonl(0xFFFFFFFE);
-	assert(__lpm4_lookup31(htonl(0xFFFFFFFE)));
-	assert(__lpm4_lookup31(htonl(0xFFFFFFFF)));
-	assert(!__lpm4_lookup31(htonl(0xFFF00000)));
-	addr = htonl(0xFFFFFC00);
-	assert(__lpm4_lookup22(htonl(0xFFFFFC00)));
-	assert(__lpm4_lookup22(htonl(0xFFFFFFFF)));
-	assert(!__lpm4_lookup22(htonl(0xFFF00000)));
-	addr = htonl(0xFFE00000);
-	assert(__lpm4_lookup11(htonl(0xFFE00000)));
-	assert(__lpm4_lookup11(htonl(0xFFFFFFFF)));
-	assert(__lpm4_lookup11(htonl(0xFFF00000)));
-	addr = htonl(0xF0000000);
-	assert(__lpm4_lookup11(htonl(0xF0000000)));
-	addr = htonl(0x00000000);
-	assert(__lpm4_lookup0(addr));
-	assert(__lpm4_lookup0(htonl(0xFFFFFFFF)));
-}
+#include "tests/conntrack_test.h"
+#include "tests/builtin_test.h"
+#include "tests/ipv6_test.h"
 
 int main(int argc, char *argv[])
 {
+	srandom(0x61C88647);
+
 	test_lpm_lookup();
 	test_ipv6_addr_clear_suffix();
+
+	test___ct_update_timeout();
+	test___ct_lookup();
+
+	test___builtin_memzero();
+	test___builtin_memcpy();
+	test___builtin_memcmp();
+	test___builtin_memmove();
 
 	return 0;
 }

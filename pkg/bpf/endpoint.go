@@ -19,7 +19,7 @@ import (
 	"net"
 	"unsafe"
 
-	"github.com/cilium/cilium/common/types"
+	"github.com/cilium/cilium/pkg/types"
 )
 
 // Must be in sync with ENDPOINT_KEY_* in <bpf/lib/common.h>
@@ -78,7 +78,7 @@ func (k EndpointKey) ToIP() net.IP {
 // String provides a string representation of the EndpointKey.
 func (k EndpointKey) String() string {
 	if ip := k.ToIP(); ip != nil {
-		return fmt.Sprintf("%s:%d", ip.String(), k.Key)
+		return net.JoinHostPort(ip.String(), fmt.Sprintf("%d", k.Key))
 	}
 	return "nil"
 }

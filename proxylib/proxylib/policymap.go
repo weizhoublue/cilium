@@ -17,9 +17,10 @@ package proxylib
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/cilium/proxy/go/cilium/api"
-	core "github.com/cilium/proxy/go/envoy/api/v2/core"
+	core "github.com/cilium/proxy/go/envoy/config/core/v3"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -39,7 +40,7 @@ var l7RuleParsers map[string]L7RuleParser = make(map[string]L7RuleParser)
 // RegisterL7Parser adds a l7 policy protocol protocol parser to the map of known l7 policy parsers.
 // This is called from parser init() functions while we are still single-threaded
 func RegisterL7RuleParser(l7PolicyTypeName string, parserFunc L7RuleParser) {
-	log.Infof("NPDS: Registering L7 rule parser: %s", l7PolicyTypeName)
+	log.Debugf("NPDS: Registering L7 rule parser: %s", l7PolicyTypeName)
 	l7RuleParsers[l7PolicyTypeName] = parserFunc
 }
 
@@ -73,6 +74,9 @@ func newPortNetworkPolicyRule(config *cilium.PortNetworkPolicyRule) (PortNetwork
 			l7Name = typeOf.Elem().Name()
 		}
 	}
+	if strings.HasPrefix(l7Name, "envoy.") {
+		return rule, "", false // Silently drop Envoy filter traffic to this port if forwarded to proxylib
+	}
 	if l7Name != "" {
 		l7Parser, ok := l7RuleParsers[l7Name]
 		if ok {
@@ -81,7 +85,7 @@ func newPortNetworkPolicyRule(config *cilium.PortNetworkPolicyRule) (PortNetwork
 		} else {
 			log.Debugf("NPDS::PortNetworkPolicyRule: Unknown L7 (%s), should drop everything.", l7Name)
 		}
-		// Unknown parsers are expected, bur will result in drop-all policy
+		// Unknown parsers are expected, but will result in drop-all policy
 		return rule, l7Name, ok
 	}
 	return rule, "", true // No L7 is ok
@@ -110,14 +114,12 @@ func (p *PortNetworkPolicyRule) Matches(remoteId uint32, l7 interface{}) bool {
 }
 
 type PortNetworkPolicyRules struct {
-	Rules       []PortNetworkPolicyRule
-	HaveL7Rules bool
+	Rules []PortNetworkPolicyRule
 }
 
-func newPortNetworkPolicyRules(config []*cilium.PortNetworkPolicyRule) (PortNetworkPolicyRules, bool) {
+func newPortNetworkPolicyRules(config []*cilium.PortNetworkPolicyRule, port uint32) (PortNetworkPolicyRules, bool) {
 	rules := PortNetworkPolicyRules{
-		Rules:       make([]PortNetworkPolicyRule, 0, len(config)),
-		HaveL7Rules: false,
+		Rules: make([]PortNetworkPolicyRule, 0, len(config)),
 	}
 	if len(config) == 0 {
 		log.Debugf("NPDS::PortNetworkPolicyRules: No rules, will allow everything.")
@@ -127,12 +129,7 @@ func newPortNetworkPolicyRules(config []*cilium.PortNetworkPolicyRule) (PortNetw
 		newRule, typeName, ok := newPortNetworkPolicyRule(rule)
 		if !ok {
 			// Unknown L7 parser, must drop all traffic
-			// Empty set of rules drops only when 'HaveL7Rules' is 'true'
-			log.Debugf("NPDS::PortNetworkPolicyRules: Unknown L7 (%s), will drop everything.", typeName)
-			return PortNetworkPolicyRules{HaveL7Rules: true}, false
-		}
-		if len(newRule.L7Rules) > 0 {
-			rules.HaveL7Rules = true
+			return PortNetworkPolicyRules{}, false
 		}
 		if typeName != "" {
 			if firstTypeName == "" {
@@ -147,14 +144,6 @@ func newPortNetworkPolicyRules(config []*cilium.PortNetworkPolicyRule) (PortNetw
 }
 
 func (p *PortNetworkPolicyRules) Matches(remoteId uint32, l7 interface{}) bool {
-	if !p.HaveL7Rules {
-		// If there are no L7 rules, host proxy will not create a proxy redirect at all,
-		// whereby the decicion made by the bpf datapath is final. Emulate the same behavior
-		// in the sidecar by allowing such traffic.
-		// TODO: This will need to be revised when non-bpf datapaths are to be supported.
-		log.Debugf("NPDS::PortNetworkPolicyRules: No L7 rules; matches (%v)", p)
-		return true
-	}
 	// Empty set matches any payload from anyone
 	if len(p.Rules) == 0 {
 		log.Debugf("NPDS::PortNetworkPolicyRules: No Rules; matches (%v)", p)
@@ -173,7 +162,7 @@ type PortNetworkPolicies struct {
 	Rules map[uint32]PortNetworkPolicyRules
 }
 
-func newPortNetworkPolicies(config []*cilium.PortNetworkPolicy) PortNetworkPolicies {
+func newPortNetworkPolicies(config []*cilium.PortNetworkPolicy, dir string) PortNetworkPolicies {
 	policy := PortNetworkPolicies{
 		Rules: make(map[uint32]PortNetworkPolicyRules, len(config)),
 	}
@@ -193,12 +182,12 @@ func newPortNetworkPolicies(config []*cilium.PortNetworkPolicy) PortNetworkPolic
 		}
 
 		// Skip the port if not 'ok'
-		rules, ok := newPortNetworkPolicyRules(rule.GetRules())
+		rules, ok := newPortNetworkPolicyRules(rule.GetRules(), port)
 		if ok {
-			log.Debugf("NPDS::PortNetworkPolicies(): installed TCP policy for port %d", port)
+			log.Debugf("NPDS::PortNetworkPolicies(): installed %s TCP policy for port %d from rule %v in policy %v", dir, port, *rule, config)
 			policy.Rules[port] = rules
 		} else {
-			log.Debugf("NPDS::PortNetworkPolicies(): Skipped port due to unsupported L7: %d", port)
+			log.Debugf("NPDS::PortNetworkPolicies(): Skipped %s port due to unsupported L7: %d", dir, port)
 		}
 	}
 	return policy
@@ -245,12 +234,13 @@ func newPolicyInstance(config *cilium.NetworkPolicy) *PolicyInstance {
 
 	return &PolicyInstance{
 		protobuf: *config,
-		Ingress:  newPortNetworkPolicies(config.GetIngressPerPortPolicies()),
-		Egress:   newPortNetworkPolicies(config.GetEgressPerPortPolicies()),
+		Ingress:  newPortNetworkPolicies(config.GetIngressPerPortPolicies(), "ingress"),
+		Egress:   newPortNetworkPolicies(config.GetEgressPerPortPolicies(), "egress"),
 	}
 }
 
 func (p *PolicyInstance) Matches(ingress bool, port, remoteId uint32, l7 interface{}) bool {
+	log.Debugf("NPDS::PolicyInstance::Matches(ingress: %v, port: %d, remoteId: %d, l7: %v (policy: %v)", ingress, port, remoteId, l7, p.protobuf)
 	if ingress {
 		return p.Ingress.Matches(port, remoteId, l7)
 	}

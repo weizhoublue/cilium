@@ -1,4 +1,4 @@
-// Copyright 2016-2017 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,24 +15,30 @@
 package driver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/client"
+	"github.com/cilium/cilium/pkg/datapath/connector"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
-	"github.com/cilium/cilium/pkg/endpoint/connector"
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	endpointIDPkg "github.com/cilium/cilium/pkg/endpoint/id"
+	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/cilium/cilium/pkg/option"
 
+	apiTypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/events"
+	dockerCliAPI "github.com/docker/docker/client"
 	"github.com/docker/libnetwork/drivers/remote/api"
 	lnTypes "github.com/docker/libnetwork/types"
 	"github.com/gorilla/mux"
@@ -42,23 +48,19 @@ import (
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "cilium-docker-driver")
 
-const (
-	// ContainerInterfacePrefix is the container's internal interface name prefix.
-	ContainerInterfacePrefix = "cilium"
-)
-
 // Driver interface that listens for docker requests.
 type Driver interface {
 	Listen(string) error
 }
 
 type driver struct {
-	mutex       lock.RWMutex
-	client      *client.Client
-	conf        models.DaemonConfigurationStatus
-	routes      []api.StaticRoute
-	gatewayIPv6 string
-	gatewayIPv4 string
+	mutex        lock.RWMutex
+	client       *client.Client
+	dockerClient *dockerCliAPI.Client
+	conf         models.DaemonConfigurationStatus
+	routes       []api.StaticRoute
+	gatewayIPv6  string
+	gatewayIPv4  string
 }
 
 func endpointID(id string) string {
@@ -82,19 +84,28 @@ func newLibnetworkRoute(route route.Route) api.StaticRoute {
 // NewDriver creates and returns a new Driver for the given API URL.
 // If url is nil then use SockPath provided by CILIUM_SOCK
 // or the cilium default SockPath
-func NewDriver(url string) (Driver, error) {
+func NewDriver(ciliumSockPath, dockerHostPath string) (Driver, error) {
 
-	if url == "" {
-		url = client.DefaultSockPath()
+	if ciliumSockPath == "" {
+		ciliumSockPath = client.DefaultSockPath()
 	}
 
-	scopedLog := log.WithField("url", url)
-	c, err := client.NewClient(url)
+	scopedLog := log.WithField("ciliumSockPath", ciliumSockPath)
+	c, err := client.NewClient(ciliumSockPath)
 	if err != nil {
 		scopedLog.WithError(err).Fatal("Error while starting cilium-client")
 	}
 
-	d := &driver{client: c}
+	scopedLog = scopedLog.WithField("dockerHostPath", dockerHostPath)
+	dockerCli, err := dockerCliAPI.NewClientWithOpts(
+		dockerCliAPI.WithVersion("v1.21"),
+		dockerCliAPI.WithHost(dockerHostPath),
+	)
+	if err != nil {
+		scopedLog.WithError(err).Fatal("Error while starting cilium-client")
+	}
+
+	d := &driver{client: c, dockerClient: dockerCli}
 
 	for tries := 0; tries < 24; tries++ {
 		if res, err := c.ConfigGet(); err != nil {
@@ -120,9 +131,85 @@ func NewDriver(url string) (Driver, error) {
 
 	d.updateRoutes(nil)
 
+	log.Info("Starting docker events watcher")
+
+	go func() {
+		eventsCh, errCh := dockerCli.Events(context.Background(), apiTypes.EventsOptions{})
+		for {
+			select {
+			case err := <-errCh:
+				log.WithError(err).Error("Unable to connect to docker events channel, reconnecting...")
+				time.Sleep(5 * time.Second)
+				eventsCh, errCh = dockerCli.Events(context.Background(), apiTypes.EventsOptions{})
+			case event := <-eventsCh:
+				if event.Type != events.ContainerEventType || event.Action != "start" {
+					break
+				}
+				d.updateCiliumEP(event)
+			}
+		}
+	}()
+
 	log.Infof("Cilium Docker plugin ready")
 
 	return d, nil
+}
+
+func (driver *driver) updateCiliumEP(event events.Message) {
+	log = log.WithFields(logrus.Fields{"event": fmt.Sprintf("%+v", event)})
+	cont, err := driver.dockerClient.ContainerInspect(context.Background(), event.Actor.ID)
+	if err != nil {
+		log.WithFields(
+			logrus.Fields{
+				"container-id": event.Actor.ID,
+			},
+		).WithError(err).Error("Unable to inspect container")
+	}
+	if cont.Config == nil || cont.NetworkSettings == nil {
+		return
+	}
+	var epID string
+	for _, network := range cont.NetworkSettings.Networks {
+		epID = network.EndpointID
+		break
+	}
+	if epID == "" {
+		return
+	}
+	img, _, err := driver.dockerClient.ImageInspectWithRaw(context.Background(), cont.Config.Image)
+	if err != nil {
+		log.WithFields(
+			logrus.Fields{
+				"image-id": cont.Config.Image,
+			},
+		).WithError(err).Error("Unable to inspect image")
+	}
+	lbls := cont.Config.Labels
+	if img.Config != nil && img.Config.Labels != nil {
+		lbls = img.Config.Labels
+		// container labels overwrite image labels
+		for k, v := range cont.Config.Labels {
+			lbls[k] = v
+		}
+	}
+	addLbls := labels.Map2Labels(lbls, labels.LabelSourceContainer).GetModel()
+	ecr := &models.EndpointChangeRequest{
+		ContainerID:   event.Actor.ID,
+		ContainerName: strings.TrimPrefix(cont.Name, "/"),
+		Labels:        addLbls,
+		State:         models.EndpointStateWaitingForIdentity,
+	}
+	err = driver.client.EndpointPatch(endpointID(epID), ecr)
+	if err != nil {
+		log.WithFields(
+			logrus.Fields{
+				"container-id": event.Actor.ID,
+				"endpoint-id":  epID,
+				"labels":       cont.Config.Labels,
+				"error":        err,
+			}).
+			Error("Error while patching the endpoint labels of container")
+	}
 }
 
 func (driver *driver) updateRoutes(addressing *models.NodeAddressing) {
@@ -137,7 +224,7 @@ func (driver *driver) updateRoutes(addressing *models.NodeAddressing) {
 
 	if driver.conf.Addressing.IPV6 != nil && driver.conf.Addressing.IPV6.Enabled {
 		if routes, err := connector.IPv6Routes(driver.conf.Addressing, int(driver.conf.RouteMTU)); err != nil {
-			log.Fatalf("Unable to generate IPv6 routes: %s", err)
+			log.WithError(err).Fatal("Unable to generate IPv6 routes")
 		} else {
 			for _, r := range routes {
 				driver.routes = append(driver.routes, newLibnetworkRoute(r))
@@ -149,7 +236,7 @@ func (driver *driver) updateRoutes(addressing *models.NodeAddressing) {
 
 	if driver.conf.Addressing.IPV4 != nil && driver.conf.Addressing.IPV4.Enabled {
 		if routes, err := connector.IPv4Routes(driver.conf.Addressing, int(driver.conf.RouteMTU)); err != nil {
-			log.Fatalf("Unable to generate IPv4 routes: %s", err)
+			log.WithError(err).Fatal("Unable to generate IPv4 routes")
 		} else {
 			for _, r := range routes {
 				driver.routes = append(driver.routes, newLibnetworkRoute(r))
@@ -312,11 +399,11 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch driver.conf.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		var veth *netlink.Veth
 		veth, _, _, err = connector.SetupVeth(create.EndpointID, int(driver.conf.DeviceMTU), endpoint)
 		defer removeLinkOnErr(veth)
-	case option.DatapathModeIpvlan:
+	case datapathOption.DatapathModeIpvlan:
 		var ipvlan *netlink.IPVlan
 		ipvlan, _, _, err = connector.CreateIpvlanSlave(
 			create.EndpointID, int(driver.conf.DeviceMTU),
@@ -365,9 +452,9 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	log.WithField(logfields.Request, logfields.Repr(&del)).Debug("Delete endpoint request")
 
 	switch driver.conf.DatapathMode {
-	case option.DatapathModeVeth:
+	case datapathOption.DatapathModeVeth:
 		ifName = connector.Endpoint2IfName(del.EndpointID)
-	case option.DatapathModeIpvlan:
+	case datapathOption.DatapathModeIpvlan:
 		ifName = connector.Endpoint2TempIfName(del.EndpointID)
 	}
 
@@ -415,7 +502,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	res := &api.JoinResponse{
 		InterfaceName: &api.InterfaceName{
 			SrcName:   connector.Endpoint2TempIfName(j.EndpointID),
-			DstPrefix: ContainerInterfacePrefix,
+			DstPrefix: connector.ContainerInterfacePrefix,
 		},
 		StaticRoutes:          driver.routes,
 		DisableGatewayService: true,

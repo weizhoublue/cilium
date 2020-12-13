@@ -4,19 +4,18 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	request "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/internal/awsutil"
 )
 
 func init() {
-	initRequest = func(c *EC2, r *request.Request) {
+	initRequest = func(c *Client, r *aws.Request) {
 		if r.Operation.Name == opCopySnapshot { // fill the PresignedURL parameter
 			r.Handlers.Build.PushFront(fillPresignedURL)
 		}
 	}
 }
 
-func fillPresignedURL(r *request.Request) {
+func fillPresignedURL(r *aws.Request) {
 	if !r.ParamsFilled() {
 		return
 	}
@@ -38,18 +37,16 @@ func fillPresignedURL(r *request.Request) {
 	cfgCp.Region = aws.StringValue(origParams.SourceRegion)
 
 	metadata := r.Metadata
-	resolved, err := r.Config.EndpointResolver.ResolveEndpoint(metadata.ServiceName, cfgCp.Region)
+	resolved, err := r.Config.EndpointResolver.ResolveEndpoint(metadata.EndpointsID, cfgCp.Region)
 	if err != nil {
 		r.Error = err
 		return
 	}
 
 	cfgCp.EndpointResolver = aws.ResolveWithEndpoint(resolved)
-	metadata.Endpoint = resolved.URL
-	metadata.SigningRegion = resolved.SigningRegion
 
 	// Presign a CopySnapshot request with modified params
-	req := request.New(cfgCp, metadata, r.Handlers, r.Retryer, r.Operation, newParams, r.Data)
+	req := aws.New(cfgCp, metadata, r.Handlers, r.Retryer, r.Operation, newParams, r.Data)
 	url, err := req.Presign(5 * time.Minute) // 5 minutes should be enough.
 	if err != nil {                          // bubble error back up to original request
 		r.Error = err

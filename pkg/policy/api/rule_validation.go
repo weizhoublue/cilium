@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,18 +15,19 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 
+	"github.com/cilium/cilium/pkg/iana"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 const (
 	maxPorts = 40
-	// MaxCIDRPrefixLengths is used to prevent compile failures at runtime.
-	MaxCIDRPrefixLengths = 40
 )
 
 type exists struct{}
@@ -45,17 +46,35 @@ func (r Rule) Sanitize() error {
 		}
 	}
 
-	if r.EndpointSelector.LabelSelector == nil {
-		return fmt.Errorf("rule cannot have nil EndpointSelector")
+	if r.EndpointSelector.LabelSelector == nil && r.NodeSelector.LabelSelector == nil {
+		return fmt.Errorf("rule must have one of EndpointSelector or NodeSelector")
+	}
+	if r.EndpointSelector.LabelSelector != nil && r.NodeSelector.LabelSelector != nil {
+		return fmt.Errorf("rule cannot have both EndpointSelector and NodeSelector")
 	}
 
-	if err := r.EndpointSelector.sanitize(); err != nil {
-		return err
+	if r.EndpointSelector.LabelSelector != nil {
+		if err := r.EndpointSelector.sanitize(); err != nil {
+			return err
+		}
+	}
+
+	var hostPolicy bool
+	if r.NodeSelector.LabelSelector != nil {
+		if err := r.NodeSelector.sanitize(); err != nil {
+			return err
+		}
+		hostPolicy = true
 	}
 
 	for i := range r.Ingress {
 		if err := r.Ingress[i].sanitize(); err != nil {
 			return err
+		}
+		if hostPolicy {
+			if len(countL7Rules(r.Ingress[i].ToPorts)) > 0 {
+				return fmt.Errorf("host policies do not support L7 rules yet")
+			}
 		}
 	}
 
@@ -63,9 +82,26 @@ func (r Rule) Sanitize() error {
 		if err := r.Egress[i].sanitize(); err != nil {
 			return err
 		}
+		if hostPolicy {
+			if len(countL7Rules(r.Egress[i].ToPorts)) > 0 {
+				return fmt.Errorf("host policies do not support L7 rules yet")
+			}
+		}
 	}
 
 	return nil
+}
+
+func countL7Rules(ports []PortRule) map[string]int {
+	result := make(map[string]int)
+	for _, port := range ports {
+		if !port.Rules.IsEmpty() {
+			result["DNS"] += len(port.Rules.DNS)
+			result["HTTP"] += len(port.Rules.HTTP)
+			result["Kafka"] += len(port.Rules.Kafka)
+		}
+	}
+	return result
 }
 
 func (i *IngressRule) sanitize() error {
@@ -75,11 +111,11 @@ func (i *IngressRule) sanitize() error {
 		"FromCIDRSet":   len(i.FromCIDRSet),
 		"FromEntities":  len(i.FromEntities),
 	}
-	l3DependentL4Support := map[interface{}]bool{
-		"FromEndpoints": true,
-		"FromCIDR":      false,
-		"FromCIDRSet":   false,
-		"FromEntities":  true,
+	l7Members := countL7Rules(i.ToPorts)
+	l7IngressSupport := map[string]bool{
+		"DNS":   false,
+		"Kafka": true,
+		"HTTP":  true,
 	}
 
 	for m1 := range l3Members {
@@ -89,9 +125,13 @@ func (i *IngressRule) sanitize() error {
 			}
 		}
 	}
-	for member := range l3Members {
-		if l3Members[member] > 0 && len(i.ToPorts) > 0 && !l3DependentL4Support[member] {
-			return fmt.Errorf("Combining %s and ToPorts is not supported yet", member)
+
+	if len(l7Members) > 0 && !option.Config.EnableL7Proxy {
+		return errors.New("L7 policy is not supported since L7 proxy is not enabled")
+	}
+	for member := range l7Members {
+		if l7Members[member] > 0 && !l7IngressSupport[member] {
+			return fmt.Errorf("L7 protocol %s is not supported on ingress yet", member)
 		}
 	}
 
@@ -108,7 +148,7 @@ func (i *IngressRule) sanitize() error {
 	}
 
 	for n := range i.ToPorts {
-		if err := i.ToPorts[n].sanitize(); err != nil {
+		if err := i.ToPorts[n].sanitize(true); err != nil {
 			return err
 		}
 	}
@@ -137,12 +177,6 @@ func (i *IngressRule) sanitize() error {
 		}
 	}
 
-	// FIXME GH-1781 count coalesced CIDRs and restrict the number of
-	// prefix lengths based on the CIDRSet exclusions.
-	if l := len(prefixLengths); l > MaxCIDRPrefixLengths {
-		return fmt.Errorf("too many ingress CIDR prefix lengths %d/%d", l, MaxCIDRPrefixLengths)
-	}
-
 	i.SetAggregatedSelectors()
 
 	return nil
@@ -167,6 +201,13 @@ func (e *EgressRule) sanitize() error {
 		"ToFQDNs":     true,
 		"ToGroups":    true,
 	}
+	l7Members := countL7Rules(e.ToPorts)
+	l7EgressSupport := map[string]bool{
+		"DNS":   true,
+		"Kafka": true,
+		"HTTP":  true,
+	}
+
 	for m1 := range l3Members {
 		for m2 := range l3Members {
 			if m2 != m1 && l3Members[m1] > 0 && l3Members[m2] > 0 {
@@ -177,6 +218,15 @@ func (e *EgressRule) sanitize() error {
 	for member := range l3Members {
 		if l3Members[member] > 0 && len(e.ToPorts) > 0 && !l3DependentL4Support[member] {
 			return fmt.Errorf("Combining %s and ToPorts is not supported yet", member)
+		}
+	}
+
+	if len(l7Members) > 0 && !option.Config.EnableL7Proxy {
+		return errors.New("L7 policy is not supported since L7 proxy is not enabled")
+	}
+	for member := range l7Members {
+		if l7Members[member] > 0 && !l7EgressSupport[member] {
+			return fmt.Errorf("L7 protocol %s is not supported on egress yet", member)
 		}
 	}
 
@@ -193,7 +243,7 @@ func (e *EgressRule) sanitize() error {
 	}
 
 	for i := range e.ToPorts {
-		if err := e.ToPorts[i].sanitize(); err != nil {
+		if err := e.ToPorts[i].sanitize(false); err != nil {
 			return err
 		}
 	}
@@ -228,62 +278,8 @@ func (e *EgressRule) sanitize() error {
 		}
 	}
 
-	// FIXME GH-1781 count coalesced CIDRs and restrict the number of
-	// prefix lengths based on the CIDRSet exclusions.
-	if l := len(prefixLengths); l > MaxCIDRPrefixLengths {
-		return fmt.Errorf("too many egress CIDR prefix lengths %d/%d", l, MaxCIDRPrefixLengths)
-	}
-
 	e.SetAggregatedSelectors()
 
-	return nil
-}
-
-// Sanitize sanitizes Kafka rules
-// TODO we need to add support to check
-// wildcard and prefix/suffix later on.
-func (kr *PortRuleKafka) Sanitize() error {
-	if (len(kr.APIKey) > 0) && (len(kr.Role) > 0) {
-		return fmt.Errorf("Cannot set both Role:%q and APIKey :%q together", kr.Role, kr.APIKey)
-	}
-
-	if len(kr.APIKey) > 0 {
-		n, ok := KafkaAPIKeyMap[strings.ToLower(kr.APIKey)]
-		if !ok {
-			return fmt.Errorf("invalid Kafka APIKey :%q", kr.APIKey)
-		}
-		kr.apiKeyInt = append(kr.apiKeyInt, n)
-	}
-
-	if len(kr.Role) > 0 {
-		err := kr.MapRoleToAPIKey()
-		if err != nil {
-			return fmt.Errorf("invalid Kafka APIRole :%q", kr.Role)
-		}
-
-	}
-
-	if len(kr.APIVersion) > 0 {
-		n, err := strconv.ParseInt(kr.APIVersion, 10, 16)
-		if err != nil {
-			return fmt.Errorf("invalid Kafka APIVersion :%q",
-				kr.APIVersion)
-		}
-		n16 := int16(n)
-		kr.apiVersionInt = &n16
-	}
-
-	if len(kr.Topic) > 0 {
-		if len(kr.Topic) > KafkaMaxTopicLen {
-			return fmt.Errorf("kafka topic exceeds maximum len of %d",
-				KafkaMaxTopicLen)
-		}
-		// This check allows suffix and prefix matching
-		// for topic.
-		if KafkaTopicValidChar.MatchString(kr.Topic) == false {
-			return fmt.Errorf("invalid Kafka Topic name \"%s\"", kr.Topic)
-		}
-	}
 	return nil
 }
 
@@ -314,11 +310,6 @@ func (pr *L7Rules) sanitize(ports []PortProtocol) error {
 		if len(ports) == 0 {
 			return fmt.Errorf("Port 53 must be specified for DNS rules")
 		}
-		for _, port := range ports {
-			if port.Port != "53" {
-				return fmt.Errorf("DNS rules are only allowed on port 53")
-			}
-		}
 
 		nTypes++
 		for i := range pr.DNS {
@@ -346,21 +337,26 @@ func (pr *L7Rules) sanitize(ports []PortProtocol) error {
 	return nil
 }
 
-func (pr *PortRule) sanitize() error {
+func (pr *PortRule) sanitize(ingress bool) error {
 	if len(pr.Ports) > maxPorts {
 		return fmt.Errorf("too many ports, the max is %d", maxPorts)
 	}
 	for i := range pr.Ports {
-		if err := pr.Ports[i].sanitize(); err != nil {
+		if err := pr.Ports[i].Sanitize(); err != nil {
 			return err
 		}
 
+		hasDNSRules := pr.Rules != nil && len(pr.Rules.DNS) > 0
 		// DNS L7 rules can be TCP, UDP or ANY, all others are TCP only.
 		switch {
-		case pr.Rules.IsEmpty(), pr.Rules != nil && len(pr.Rules.DNS) > 0:
+		case pr.Rules.IsEmpty(), hasDNSRules:
 			// nothing to do if no rules OR they are DNS rules (note the comma above)
 		case pr.Ports[i].Protocol != ProtoTCP:
 			return fmt.Errorf("L7 rules can only apply to TCP (not %s) except for DNS rules", pr.Ports[i].Protocol)
+		}
+
+		if ingress && hasDNSRules {
+			return fmt.Errorf("DNS rules are not allowed on ingress")
 		}
 	}
 
@@ -373,20 +369,27 @@ func (pr *PortRule) sanitize() error {
 	return nil
 }
 
-func (pp *PortProtocol) sanitize() error {
+func (pp *PortProtocol) Sanitize() error {
 	if pp.Port == "" {
 		return fmt.Errorf("Port must be specified")
 	}
 
-	p, err := strconv.ParseUint(pp.Port, 0, 16)
-	if err != nil {
-		return fmt.Errorf("Unable to parse port: %s", err)
+	// Port names are formatted as IANA Service Names.  This means that
+	// some legal numeric literals are no longer considered numbers, e.g,
+	// 0x10 is now considered a name rather than number 16.
+	if iana.IsSvcName(pp.Port) {
+		pp.Port = strings.ToLower(pp.Port) // Normalize for case insensitive comparison
+	} else {
+		p, err := strconv.ParseUint(pp.Port, 0, 16)
+		if err != nil {
+			return fmt.Errorf("Unable to parse port: %s", err)
+		}
+		if p == 0 {
+			return fmt.Errorf("Port cannot be 0")
+		}
 	}
 
-	if p == 0 {
-		return fmt.Errorf("Port cannot be 0")
-	}
-
+	var err error
 	pp.Protocol, err = ParseL4Proto(string(pp.Protocol))
 	if err != nil {
 		return err
@@ -397,8 +400,8 @@ func (pp *PortProtocol) sanitize() error {
 
 // sanitize the given CIDR. If successful, returns the prefixLength specified
 // in the cidr and nil. Otherwise, returns (0, nil).
-func (cidr CIDR) sanitize() (prefixLength int, err error) {
-	strCIDR := string(cidr)
+func (c CIDR) sanitize() (prefixLength int, err error) {
+	strCIDR := string(c)
 	if strCIDR == "" {
 		return 0, fmt.Errorf("IP must be specified")
 	}

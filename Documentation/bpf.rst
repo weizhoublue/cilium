@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _bpf_guide:
 
@@ -14,7 +14,7 @@ BPF and XDP Reference Guide
           want to understand BPF and XDP in great technical depth. While
           reading this reference guide may help broaden your understanding of
           Cilium, it is not a requirement to use Cilium. Please refer to the
-          :ref:`gs_guide` and :ref:`arch_guide` for a higher level
+          :ref:`gs_guide` and :ref:`ebpf_datapath` for a higher level
           introduction.
 
 BPF is a highly flexible and efficient virtual machine-like construct in the
@@ -37,7 +37,7 @@ purpose, the instruction set is generic and flexible enough these days that
 there are many use cases for BPF apart from networking. See :ref:`bpf_users`
 for a list of projects which use BPF.
 
-Cilium uses BPF heavily in its data path, see :ref:`arch_guide` for further
+Cilium uses BPF heavily in its data path, see :ref:`ebpf_datapath` for further
 information. The goal of this chapter is to provide a BPF reference guide in
 order to gain understanding of BPF, its networking specific use including loading
 BPF programs with tc (traffic control) and XDP (eXpress Data Path), and to aid
@@ -121,12 +121,15 @@ The advantages for pushing these instructions into the kernel include:
   stack instead of bypassing it. BPF can be considered a generic "glue code" to
   kernel facilities for crafting programs to solve specific use cases.
 
-The execution of a BPF program inside the kernel is always event driven! For example,
-a networking device which has a BPF program attached on its ingress path will trigger
-the execution of the program once a packet is received, a kernel address which has a
-kprobes with a BPF program attached will trap once the code at that address gets
-executed, then invoke the kprobes callback function for instrumentation which
-subsequently triggers the execution of the BPF program attached to it.
+The execution of a BPF program inside the kernel is always event-driven! Examples:
+
+* A networking device which has a BPF program attached on its ingress path will
+  trigger the execution of the program once a packet is received.
+
+* A kernel address which has a kprobe with a BPF program attached will trap once
+  the code at that address gets executed, which will then invoke the kprobe's
+  callback function for instrumentation, subsequently triggering the execution
+  of the attached BPF program.
 
 BPF consists of eleven 64 bit registers with 32 bit subregisters, a program counter
 and a 512 byte large BPF stack space. Registers are named ``r0`` - ``r10``. The
@@ -178,7 +181,8 @@ architectures in order to perform pointer arithmetics, pass pointers but also pa
 bit values into helper functions, and to allow for 64 bit atomic operations.
 
 The maximum instruction limit per program is restricted to 4096 BPF instructions,
-which, by design, means that any program will terminate quickly. Although the
+which, by design, means that any program will terminate quickly. For kernel newer
+than 5.1 this limit was lifted to 1 million BPF instructions. Although the
 instruction set contains forward as well as backward jumps, the in-kernel BPF
 verifier will forbid loops so that termination is always guaranteed. Since BPF
 programs run inside the kernel, the verifier's job is to make sure that these are
@@ -812,7 +816,7 @@ the kernel source for the ``net-next`` tree through git:
 
 ::
 
-    $ git clone git://git.kernel.org/pub/scm/linux/kernel/git/davem/net-next.git
+    $ git clone git://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git
 
 If the git commit history is not of interest, then ``--depth 1`` will clone the
 tree much faster by truncating the git history only to the most recent commit.
@@ -821,7 +825,7 @@ In case the ``net`` tree is of interest, it can be cloned from this url:
 
 ::
 
-    $ git clone git://git.kernel.org/pub/scm/linux/kernel/git/davem/net.git
+    $ git clone git://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git
 
 There are dozens of tutorials in the Internet on how to build Linux kernels, one
 good resource is the Kernel Newbies website (https://kernelnewbies.org/KernelBuild)
@@ -1087,9 +1091,9 @@ following commands can be used:
 
 ::
 
-    $ git clone http://llvm.org/git/llvm.git
+    $ git clone https://git.llvm.org/git/llvm.git
     $ cd llvm/tools
-    $ git clone --depth 1 http://llvm.org/git/clang.git
+    $ git clone --depth 1 https://git.llvm.org/git/clang.git
     $ cd ..; mkdir build; cd build
     $ cmake .. -DLLVM_TARGETS_TO_BUILD="BPF;X86" -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DLLVM_BUILD_RUNTIME=OFF
     $ make -j $(getconf _NPROCESSORS_ONLN)
@@ -2196,6 +2200,56 @@ describe some of the differences for the BPF model:
     //  |  sector(4) |  pad (4)  | <= address aligned to 8
     //  |____________|___________|     with explicit PADDING.
 
+11. **Accessing packet data via invalidated references**
+
+  Some networking BPF helper functions such as ``bpf_skb_store_bytes`` might
+  change the size of a packet data. As verifier is not able to track such
+  changes, any a priori reference to the data will be invalidated by verifier.
+  Therefore, the reference needs to be updated before accessing the data to
+  avoid verifier rejecting a program.
+
+  To illustrate this, consider the following snippet:
+
+  ::
+
+    struct iphdr *ip4 = (struct iphdr *) skb->data + ETH_HLEN;
+
+    skb_store_bytes(skb, l3_off + offsetof(struct iphdr, saddr), &new_saddr, 4, 0);
+
+    if (ip4->protocol == IPPROTO_TCP) {
+        // do something
+    }
+
+  Verifier will reject the snippet due to dereference of the invalidated
+  ``ip4->protocol``:
+
+  ::
+
+      R1=pkt_end(id=0,off=0,imm=0) R2=pkt(id=0,off=34,r=34,imm=0) R3=inv0
+      R6=ctx(id=0,off=0,imm=0) R7=inv(id=0,umax_value=4294967295,var_off=(0x0; 0xffffffff))
+      R8=inv4294967162 R9=pkt(id=0,off=0,r=34,imm=0) R10=fp0,call_-1
+      ...
+      18: (85) call bpf_skb_store_bytes#9
+      19: (7b) *(u64 *)(r10 -56) = r7
+      R0=inv(id=0) R6=ctx(id=0,off=0,imm=0) R7=inv(id=0,umax_value=2,var_off=(0x0; 0x3))
+      R8=inv4294967162 R9=inv(id=0) R10=fp0,call_-1 fp-48=mmmm???? fp-56=mmmmmmmm
+      21: (61) r1 = *(u32 *)(r9 +23)
+      R9 invalid mem access 'inv'
+
+  To fix this, the reference to ``ip4`` has to be updated:
+
+  ::
+
+    struct iphdr *ip4 = (struct iphdr *) skb->data + ETH_HLEN;
+
+    skb_store_bytes(skb, l3_off + offsetof(struct iphdr, saddr), &new_saddr, 4, 0);
+
+    ip4 = (struct iphdr *) skb->data + ETH_HLEN;
+
+    if (ip4->protocol == IPPROTO_TCP) {
+        // do something
+    }
+
 iproute2
 --------
 
@@ -2592,25 +2646,29 @@ of all details, but enough for getting started.
 
   ::
 
-    # ip link add dev sim0 type netdevsim
-    # ip link set dev sim0 up
-    # ethtool -K sim0 hw-tc-offload on
+    # modprobe netdevsim
+    // [ID] [PORT_COUNT]
+    # echo "1 1" > /sys/bus/netdevsim/new_device
+    # devlink dev
+    netdevsim/netdevsim1
+    # devlink port
+    netdevsim/netdevsim1/0: type eth netdev eth0 flavour physical
     # ip l
     [...]
-    7: sim0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
-        link/ether a2:24:4c:1c:c2:b3 brd ff:ff:ff:ff:ff:ff
+    4: eth0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+        link/ether 2a:d5:cd:08:d1:3f brd ff:ff:ff:ff:ff:ff
 
   After that step, XDP BPF or tc BPF programs can be test loaded as shown
   in the various examples earlier:
 
   ::
 
-    # ip -force link set dev sim0 xdpoffload obj prog.o
+    # ip -force link set dev eth0 xdpoffload obj prog.o
     # ip l
     [...]
-    7: sim0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 xdpoffload qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
-        link/ether a2:24:4c:1c:c2:b3 brd ff:ff:ff:ff:ff:ff
-        prog/xdp id 20 tag 57cd311f2e27366b
+    4: eth0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 xdpoffload qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+        link/ether 2a:d5:cd:08:d1:3f brd ff:ff:ff:ff:ff:ff
+        prog/xdp id 16 tag a04f5eef06a7f555
 
 These two workflows are the basic operations to load XDP BPF respectively tc BPF
 programs with iproute2.
@@ -3114,6 +3172,44 @@ Now loading into kernel and dumping the map via bpftool:
 Lookup, update, delete, and 'get next key' operations on the map for specific
 keys can be performed through bpftool as well.
 
+If the BPF program has been successfully loaded with BTF debugging information,
+the BTF ID will be shown in ``prog show`` command result denoted in ``btf_id``.
+
+  ::
+
+     # bpftool prog show id 72
+     72: xdp  name balancer_ingres  tag acf44cabb48385ed  gpl
+        loaded_at 2020-04-13T23:12:08+0900  uid 0
+        xlated 19104B  jited 10732B  memlock 20480B  map_ids 126,130,131,127,129,128
+        btf_id 60
+
+This can also be confirmed with ``btf show`` command which dumps all BTF
+objects loaded on a system.
+
+  ::
+
+     # bpftool btf show
+     60: size 12243B  prog_ids 72  map_ids 126,130,131,127,129,128
+
+And the subcommand ``btf dump`` can be used to check which debugging information
+is included in the BTF. With this command, BTF dump can be formatted either
+'raw' or 'c', the one that is used in C code.
+
+  ::
+
+     # bpftool btf dump id 60 format c
+       [...]
+        struct ctl_value {
+              union {
+                      __u64 value;
+                      __u32 ifindex;
+                      __u8 mac[6];
+              };
+        };
+
+        typedef unsigned int u32;
+        [...]
+
 BPF sysctls
 -----------
 
@@ -3427,6 +3523,19 @@ attached to one or more tracepoints, collecting further information
 in a map or punting such events to a user space collector through the
 ``bpf_perf_event_output()`` helper, for example.
 
+Tracing pipe
+------------
+
+When a BPF program makes a call to ``bpf_trace_printk()``, the output is sent
+to the kernel tracing pipe. Users may read from this file to consume events
+that are traced to this buffer:
+
+::
+
+   # tail -f /sys/kernel/debug/tracing/trace_pipe
+   ...
+
+
 Miscellaneous
 -------------
 
@@ -3705,7 +3814,7 @@ Migrating their production infrastructure away from netfilter's IPVS
 to their previous IPVS setup. This was first presented at the netdev 2.1
 conference:
 
-* Slides: https://www.netdevconf.org/2.1/slides/apr6/zhou-netdev-xdp-2017.pdf
+* Slides: https://netdevconf.info/2.1/slides/apr6/zhou-netdev-xdp-2017.pdf
 * Video: https://youtu.be/YEU2ClcGqts
 
 Another example is the integration of XDP into Cloudflare's DDoS mitigation
@@ -3717,7 +3826,7 @@ to busy poll the NIC and expensive packet re-injection into the kernel's stack.
 The migration over to eBPF and XDP combined best of both worlds by having
 high-performance programmable packet processing directly inside the kernel:
 
-* Slides: https://www.netdevconf.org/2.1/slides/apr6/bertin_Netdev-XDP.pdf
+* Slides: https://netdevconf.info/2.1/slides/apr6/bertin_Netdev-XDP.pdf
 * Video: https://youtu.be/7OuOukmuivg
 
 **XDP operation modes**
@@ -4361,7 +4470,7 @@ legacy cBPF:
   load balancing and for XDP to implement a bypass or dropping mechanism at high
   packet rates.
 
-  http://suricata.readthedocs.io/en/latest/capture-hardware/ebpf-xdp.html
+  https://suricata.readthedocs.io/en/suricata-5.0.2/capture-hardware/ebpf-xdp.html
 
   https://github.com/OISF/suricata
 
@@ -4459,7 +4568,7 @@ legacy cBPF:
   assembly for cases where programs are rather small and simple without needing the
   clang / LLVM toolchain.
 
-  https://github.com/solarflarecom/ebpf_asm
+  https://github.com/Xilinx-CNS/ebpf_asm
 
 ..
 
@@ -4499,7 +4608,7 @@ surrounding ecosystem in user space.
 
 All BPF update newsletters (01 - 12) can be found here:
 
-     https://cilium.io/blog/categories/BPF%20Newsletter
+     https://cilium.io/blog/categories/bpf%20newsletter/
 
 Podcasts
 --------
@@ -4511,8 +4620,8 @@ Incomplete list:
      Linux Networking Update from Netdev Conference,
      Thomas Graf,
      Software Gone Wild, Show 71,
-     http://blog.ipspace.net/2017/02/linux-networking-update-from-netdev.html
-     http://media.blubrry.com/ipspace/stream.ipspace.net/nuggets/podcast/Show_71-NetDev_Update.mp3
+     https://blog.ipspace.net/2017/02/linux-networking-update-from-netdev.html
+     https://www.ipspace.net/nuggets/podcast/Show_71-NetDev_Update.mp3
 
 4. Jan 2017,
      The IO Visor Project,
@@ -4525,8 +4634,8 @@ Incomplete list:
      Fast Linux Packet Forwarding,
      Thomas Graf,
      Software Gone Wild, Show 64,
-     http://blog.ipspace.net/2016/10/fast-linux-packet-forwarding-with.html
-     http://media.blubrry.com/ipspace/stream.ipspace.net/nuggets/podcast/Show_64-Cilium_with_Thomas_Graf.mp3
+     https://blog.ipspace.net/2016/10/fast-linux-packet-forwarding-with.html
+     https://www.ipspace.net/nuggets/podcast/Show_64-Cilium_with_Thomas_Graf.mp3
 
 2. Aug 2016,
      P4 on the Edge,
@@ -4540,7 +4649,7 @@ Incomplete list:
      Thomas Graf,
      OVS Orbit, Episode 4,
      https://ovsorbit.org/#e4
-     https://ovsorbit.benpfaff.org/episode-4.mp3
+     https://ovsorbit.org/episode-4.mp3
 
 Blog posts
 ----------
@@ -4560,7 +4669,7 @@ The following (incomplete) list includes blog posts around BPF, XDP and related 
 32. May 2017,
      Monitoring the Control Plane,
      Gary Berger,
-     http://firstclassfunc.com/2017/05/monitoring-the-control-plane/
+     https://www.firstclassfunc.com/2018/07/monitoring-the-control-plane/
 
 31. Apr 2017,
      USENIX/LISA 2016 Linux bcc/BPF Tools,
@@ -4570,7 +4679,7 @@ The following (incomplete) list includes blog posts around BPF, XDP and related 
 30. Apr 2017,
      Liveblog: Cilium for Network and Application Security with BPF and XDP,
      Scott Lowe,
-     http://blog.scottlowe.org//2017/04/18/black-belt-cilium/
+     https://blog.scottlowe.org/2017/04/18/black-belt-cilium/
 
 29. Apr 2017,
      eBPF, part 1: Past, Present, and Future,
@@ -4645,7 +4754,7 @@ The following (incomplete) list includes blog posts around BPF, XDP and related 
 15. Sep 2016,
      Suricata bypass feature,
      Eric Leblond,
-     https://www.stamus-networks.com/2016/09/28/suricata-bypass-feature/
+     https://www.stamus-networks.com/blog/2016/09/28/suricata-bypass-feature
 
 14. Aug 2016,
      Introducing the p0f BPF compiler,
@@ -4722,6 +4831,11 @@ The following (incomplete) list includes blog posts around BPF, XDP and related 
      Marek Majkowski,
      https://blog.cloudflare.com/bpf-the-forgotten-bytecode/
 
+Books
+-----
+
+BPF Performance Tools (Gregg, Addison Wesley, 2019)
+
 Talks
 -----
 
@@ -4750,7 +4864,7 @@ related to BPF and XDP:
      Polytechnique Montreal,
      Trace Aggregation and Collection with eBPF,
      Suchakra Sharma,
-     http://step.polymtl.ca/~suchakra/eBPF-5May2017.pdf
+     https://nova.polymtl.ca/~suchakra/eBPF-5May2017.pdf
 
 40. Apr 2017,
      DockerCon, Austin,
@@ -4762,25 +4876,25 @@ related to BPF and XDP:
      NetDev 2.1, Montreal,
      XDP Mythbusters,
      David S. Miller,
-     https://www.netdevconf.org/2.1/slides/apr7/miller-XDP-MythBusters.pdf
+     https://netdevconf.info/2.1/slides/apr7/miller-XDP-MythBusters.pdf
 
 38. Apr 2017,
      NetDev 2.1, Montreal,
      Droplet: DDoS countermeasures powered by BPF + XDP,
      Huapeng Zhou, Doug Porter, Ryan Tierney, Nikita Shirokov,
-     https://www.netdevconf.org/2.1/slides/apr6/zhou-netdev-xdp-2017.pdf
+     https://netdevconf.info/2.1/slides/apr6/zhou-netdev-xdp-2017.pdf
 
 37. Apr 2017,
      NetDev 2.1, Montreal,
      XDP in practice: integrating XDP in our DDoS mitigation pipeline,
      Gilberto Bertin,
-     https://www.netdevconf.org/2.1/slides/apr6/bertin_Netdev-XDP.pdf
+     https://netdevconf.info/2.1/slides/apr6/bertin_Netdev-XDP.pdf
 
 36. Apr 2017,
      NetDev 2.1, Montreal,
      XDP for the Rest of Us,
      Andy Gospodarek, Jesper Dangaard Brouer,
-     https://www.netdevconf.org/2.1/slides/apr7/gospodarek-Netdev2.1-XDP-for-the-Rest-of-Us_Final.pdf
+     https://netdevconf.info/2.1/slides/apr7/gospodarek-Netdev2.1-XDP-for-the-Rest-of-Us_Final.pdf
 
 35. Mar 2017,
      SCALE15x, Pasadena,
@@ -4791,13 +4905,13 @@ related to BPF and XDP:
 34. Mar 2017,
      XDP Inside and Out,
      David S. Miller,
-     https://github.com/iovisor/bpf-docs/raw/master/XDP_Inside_and_Out.pdf
+     https://raw.githubusercontent.com/iovisor/bpf-docs/master/XDP_Inside_and_Out.pdf
 
 33. Mar 2017,
      OpenSourceDays, Copenhagen,
      XDP - eXpress Data Path, Used for DDoS protection,
      Jesper Dangaard Brouer,
-     https://github.com/iovisor/bpf-docs/raw/master/XDP_Inside_and_Out.pdf
+     http://people.netfilter.org/hawk/presentations/OpenSourceDays2017/XDP_DDoS_protecting_osd2017.pdf
 
 32. Mar 2017,
      source{d}, Infrastructure 2017, Madrid,
@@ -4809,7 +4923,7 @@ related to BPF and XDP:
      FOSDEM 2017, Brussels,
      Stateful packet processing with eBPF, an implementation of OpenState interface,
      Quentin Monnet,
-     https://fosdem.org/2017/schedule/event/stateful_ebpf/
+     https://archive.fosdem.org/2017/schedule/event/stateful_ebpf/
 
 30. Feb 2017,
      FOSDEM 2017, Brussels,
@@ -4821,7 +4935,7 @@ related to BPF and XDP:
      FOSDEM 2017, Brussels,
      Cilium - BPF & XDP for containers,
      Thomas Graf,
-     https://fosdem.org/2017/schedule/event/cilium/
+     https://archive.fosdem.org/2017/schedule/event/cilium/
 
 28. Jan 2017,
      linuxconf.au, Hobart,
@@ -4839,13 +4953,13 @@ related to BPF and XDP:
      Linux Plumbers, Santa Fe,
      Cilium: Networking & Security for Containers with BPF & XDP,
      Thomas Graf,
-     http://www.slideshare.net/ThomasGraf5/clium-container-networking-with-bpf-xdp
+     https://www.slideshare.net/ThomasGraf5/clium-container-networking-with-bpf-xdp
 
 25. Nov 2016,
      OVS Conference, Santa Clara,
      Offloading OVS Flow Processing using eBPF,
      William (Cheng-Chun) Tu,
-     http://openvswitch.org/support/ovscon2016/7/1120-tu.pdf
+     http://www.openvswitch.org/support/ovscon2016/7/1120-tu.pdf
 
 24. Oct 2016,
      One.com, Copenhagen,
@@ -4857,31 +4971,31 @@ related to BPF and XDP:
      Docker Distributed Systems Summit, Berlin,
      Cilium: Networking & Security for Containers with BPF & XDP,
      Thomas Graf,
-     http://www.slideshare.net/Docker/cilium-bpf-xdp-for-containers-66969823
+     https://www.slideshare.net/Docker/cilium-bpf-xdp-for-containers-66969823
 
 22. Oct 2016,
      NetDev 1.2, Tokyo,
      Data center networking stack,
      Tom Herbert,
-     http://netdevconf.org/1.2/session.html?tom-herbert
+     https://netdevconf.info/1.2/session.html?tom-herbert
 
 21. Oct 2016,
      NetDev 1.2, Tokyo,
      Fast Programmable Networks & Encapsulated Protocols,
      David S. Miller,
-     http://netdevconf.org/1.2/session.html?david-miller-keynote
+     https://netdevconf.info/1.2/session.html?david-miller-keynote
 
 20. Oct 2016,
      NetDev 1.2, Tokyo,
      XDP workshop - Introduction, experience, and future development,
      Tom Herbert,
-     http://netdevconf.org/1.2/session.html?herbert-xdp-workshop
+     https://netdevconf.info/1.2/session.html?herbert-xdp-workshop
 
 19. Oct 2016,
      NetDev1.2, Tokyo,
      The adventures of a Suricate in eBPF land,
      Eric Leblond,
-     http://netdevconf.org/1.2/slides/oct6/10_suricata_ebpf.pdf
+     https://netdevconf.info/1.2/slides/oct6/10_suricata_ebpf.pdf
 
 18. Oct 2016,
      NetDev1.2, Tokyo,
@@ -4894,19 +5008,19 @@ related to BPF and XDP:
      Advanced programmability and recent updates with tc’s cls_bpf,
      Daniel Borkmann,
      http://borkmann.ch/talks/2016_netdev2.pdf
-     http://www.netdevconf.org/1.2/papers/borkmann.pdf
+     https://netdevconf.info/1.2/papers/borkmann.pdf
 
 16. Oct 2016,
      NetDev 1.2, Tokyo,
      eBPF/XDP hardware offload to SmartNICs,
      Jakub Kicinski, Nic Viljoen,
-     http://netdevconf.org/1.2/papers/eBPF_HW_OFFLOAD.pdf
+     https://netdevconf.info/1.2/papers/eBPF_HW_OFFLOAD.pdf
 
 15. Aug 2016,
      LinuxCon, Toronto,
      What Can BPF Do For You?,
      Brenden Blanco,
-     https://events.linuxfoundation.org/sites/events/files/slides/iovisor-lc-bof-2016.pdf
+     https://events.static.linuxfound.org/sites/events/files/slides/iovisor-lc-bof-2016.pdf
 
 14. Aug 2016,
      LinuxCon, Toronto,
@@ -4923,13 +5037,13 @@ related to BPF and XDP:
      Linux Meetup, Santa Clara,
      eXpress Data Path,
      Brenden Blanco,
-     http://www.slideshare.net/IOVisor/express-data-path-linux-meetup-santa-clara-july-2016
+     https://www.slideshare.net/IOVisor/express-data-path-linux-meetup-santa-clara-july-2016
 
 11. Jul 2016,
      Linux Meetup, Santa Clara,
      CETH for XDP,
      Yan Chan, Yunsong Lu,
-     http://www.slideshare.net/IOVisor/ceth-for-xdp-linux-meetup-santa-clara-july-2016
+     https://www.slideshare.net/IOVisor/ceth-for-xdp-linux-meetup-santa-clara-july-2016
 
 10. May 2016,
      P4 workshop, Stanford,
@@ -4946,14 +5060,14 @@ related to BPF and XDP:
 8. Mar 2016,
     eXpress Data Path,
     Tom Herbert, Alexei Starovoitov,
-    https://github.com/iovisor/bpf-docs/raw/master/Express_Data_Path.pdf
+    https://raw.githubusercontent.com/iovisor/bpf-docs/master/Express_Data_Path.pdf
 
 7. Feb 2016,
     NetDev1.1, Seville,
     On getting tc classifier fully programmable with cls_bpf,
     Daniel Borkmann,
     http://borkmann.ch/talks/2016_netdev.pdf
-    http://www.netdevconf.org/1.1/proceedings/papers/On-getting-tc-classifier-fully-programmable-with-cls-bpf.pdf
+    https://netdevconf.info/1.1/proceedings/papers/On-getting-tc-classifier-fully-programmable-with-cls-bpf.pdf
 
 6. Jan 2016,
     FOSDEM 2016, Brussels,
@@ -4965,31 +5079,31 @@ related to BPF and XDP:
     LinuxCon Europe, Dublin,
     eBPF on the Mainframe,
     Michael Holzheu,
-    https://events.linuxfoundation.org/sites/events/files/slides/ebpf_on_the_mainframe_lcon_2015.pdf
+    https://events.static.linuxfound.org/sites/events/files/slides/ebpf_on_the_mainframe_lcon_2015.pdf
 
 4. Aug 2015,
     Tracing Summit, Seattle,
     LLTng's Trace Filtering and beyond (with some eBPF goodness, of course!),
     Suchakra Sharma,
-    https://github.com/iovisor/bpf-docs/raw/master/ebpf_excerpt_20Aug2015.pdf
+    https://raw.githubusercontent.com/iovisor/bpf-docs/master/ebpf_excerpt_20Aug2015.pdf
 
 3. Jun 2015,
     LinuxCon Japan, Tokyo,
     Exciting Developments in Linux Tracing,
     Elena Zannoni,
-    https://events.linuxfoundation.org/sites/events/files/slides/tracing-linux-ezannoni-linuxcon-ja-2015_0.pdf
+    https://events.static.linuxfound.org/sites/events/files/slides/tracing-linux-ezannoni-linuxcon-ja-2015_0.pdf
 
 2. Feb 2015,
     Collaboration Summit, Santa Rosa,
     BPF: In-kernel Virtual Machine,
     Alexei Starovoitov,
-    https://events.linuxfoundation.org/sites/events/files/slides/bpf_collabsummit_2015feb20.pdf
+    https://events.static.linuxfound.org/sites/events/files/slides/bpf_collabsummit_2015feb20.pdf
 
 1. Feb 2015,
     NetDev 0.1, Ottawa,
     BPF: In-kernel Virtual Machine,
     Alexei Starovoitov,
-    http://netdevconf.org/0.1/sessions/15.html
+    https://netdevconf.info/0.1/sessions/15.html
 
 0. Feb 2014,
     DevConf.cz, Brno,

@@ -1,42 +1,39 @@
-/*
- *  Copyright (C) 2017 Authors of Cilium
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
-#define SKIP_CALLS_MAP
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2017-2020 Authors of Cilium */
+
+#include <bpf/ctx/xdp.h>
+#include <bpf/api.h>
 
 #include <node_config.h>
 #include <netdev_config.h>
 #include <filter_config.h>
 
-#include <bpf/api.h>
+#define SKIP_POLICY_MAP 1
 
-#include <stdint.h>
-#include <stdio.h>
+/* Controls the inclusion of the CILIUM_CALL_HANDLE_ICMP6_NS section in the
+ * bpf_lxc object file.
+ */
+#define SKIP_ICMPV6_NS_HANDLING
 
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
+/* Controls the inclusion of the CILIUM_CALL_SEND_ICMP6_TIME_EXCEEDED section
+ * in the bpf_lxc object file. This is needed for all callers of
+ * ipv6_local_delivery, which calls into the IPv6 L3 handling.
+ */
+#define SKIP_ICMPV6_HOPLIMIT_HANDLING
 
-#include "lib/utils.h"
+/* Controls the inclusion of the CILIUM_CALL_SEND_ICMP6_ECHO_REPLY section in
+ * the bpf_lxc object file.
+ */
+#define SKIP_ICMPV6_ECHO_HANDLING
+
 #include "lib/common.h"
 #include "lib/maps.h"
-#include "lib/xdp.h"
 #include "lib/eps.h"
 #include "lib/events.h"
+#include "lib/nodeport.h"
 
-#ifndef HAVE_LPM_MAP_TYPE
+#ifdef ENABLE_PREFILTER
+#ifndef HAVE_LPM_TRIE_MAP_TYPE
 # undef CIDR4_LPM_PREFILTER
 # undef CIDR6_LPM_PREFILTER
 #endif
@@ -84,103 +81,190 @@ struct bpf_elf_map __section_maps CIDR6_LMAP_NAME = {
 };
 #endif /* CIDR6_LPM_PREFILTER */
 #endif /* CIDR6_FILTER */
+#endif /* ENABLE_PREFILTER */
 
-static __always_inline int check_v4_endpoint(struct xdp_md *xdp,
-					     struct iphdr *ipv4_hdr)
+static __always_inline __maybe_unused int
+bpf_xdp_exit(struct __ctx_buff *ctx, const int verdict)
 {
-	if (lookup_ip4_endpoint(ipv4_hdr))
-		return XDP_PASS;
+	if (verdict == CTX_ACT_OK) {
+		__u32 meta_xfer = ctx_load_meta(ctx, XFER_MARKER);
 
-	return XDP_DROP;
+		/* We transfer data from XFER_MARKER. This specifically
+		 * does not break packet trains in GRO.
+		 */
+		if (meta_xfer) {
+			if (!ctx_adjust_meta(ctx, -(int)sizeof(meta_xfer))) {
+				__u32 *data_meta = ctx_data_meta(ctx);
+				__u32 *data = ctx_data(ctx);
+
+				if (!ctx_no_room(data_meta + 1, data))
+					data_meta[0] = meta_xfer;
+			}
+		}
+	}
+
+	return verdict;
 }
 
-static __always_inline int check_v4(struct xdp_md *xdp)
+#ifdef ENABLE_IPV4
+#ifdef ENABLE_NODEPORT_ACCELERATION
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_FROM_LXC)
+int tail_lb_ipv4(struct __ctx_buff *ctx)
 {
-	void *data_end = xdp_data_end(xdp);
-	void *data = xdp_data(xdp);
+	int ret = CTX_ACT_OK;
+
+	if (!bpf_skip_nodeport(ctx)) {
+		ret = nodeport_lb4(ctx, 0);
+		if (IS_ERR(ret))
+			return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP,
+						      METRIC_INGRESS);
+	}
+
+	return bpf_xdp_exit(ctx, ret);
+}
+
+static __always_inline int check_v4_lb(struct __ctx_buff *ctx)
+{
+	ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_LXC);
+	return send_drop_notify_error(ctx, 0, DROP_MISSED_TAIL_CALL, CTX_ACT_DROP,
+				      METRIC_INGRESS);
+}
+#else
+static __always_inline int check_v4_lb(struct __ctx_buff *ctx __maybe_unused)
+{
+	return CTX_ACT_OK;
+}
+#endif /* ENABLE_NODEPORT_ACCELERATION */
+
+#ifdef ENABLE_PREFILTER
+static __always_inline int check_v4(struct __ctx_buff *ctx)
+{
+	void *data_end = ctx_data_end(ctx);
+	void *data = ctx_data(ctx);
 	struct iphdr *ipv4_hdr = data + sizeof(struct ethhdr);
 	struct lpm_v4_key pfx __maybe_unused;
 
-	if (xdp_no_room(ipv4_hdr + 1, data_end))
-		return XDP_DROP;
+	if (ctx_no_room(ipv4_hdr + 1, data_end))
+		return CTX_ACT_DROP;
 
 #ifdef CIDR4_FILTER
-	__builtin_memcpy(pfx.lpm.data, &ipv4_hdr->saddr, sizeof(pfx.addr));
+	memcpy(pfx.lpm.data, &ipv4_hdr->saddr, sizeof(pfx.addr));
 	pfx.lpm.prefixlen = 32;
 
 #ifdef CIDR4_LPM_PREFILTER
 	if (map_lookup_elem(&CIDR4_LMAP_NAME, &pfx))
-		return XDP_DROP;
-	else
+		return CTX_ACT_DROP;
 #endif /* CIDR4_LPM_PREFILTER */
-		return map_lookup_elem(&CIDR4_HMAP_NAME, &pfx) ?
-		       XDP_DROP : check_v4_endpoint(xdp, ipv4_hdr);
+	return map_lookup_elem(&CIDR4_HMAP_NAME, &pfx) ?
+		CTX_ACT_DROP : check_v4_lb(ctx);
 #else
-	return check_v4_endpoint(xdp, ipv4_hdr);
+	return check_v4_lb(ctx);
 #endif /* CIDR4_FILTER */
 }
-
-static __always_inline int check_v6_endpoint(struct xdp_md *xdp,
-					     struct ipv6hdr *ipv6_hdr)
+#else
+static __always_inline int check_v4(struct __ctx_buff *ctx)
 {
-	if (lookup_ip6_endpoint(ipv6_hdr))
-		return XDP_PASS;
+	return check_v4_lb(ctx);
+}
+#endif /* ENABLE_PREFILTER */
+#endif /* ENABLE_IPV4 */
 
-	return XDP_DROP;
+#ifdef ENABLE_IPV6
+#ifdef ENABLE_NODEPORT
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_FROM_LXC)
+int tail_lb_ipv6(struct __ctx_buff *ctx)
+{
+	int ret = CTX_ACT_OK;
+
+	if (!bpf_skip_nodeport(ctx)) {
+		ret = nodeport_lb6(ctx, 0);
+		if (IS_ERR(ret))
+			return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP,
+						      METRIC_INGRESS);
+	}
+
+	return bpf_xdp_exit(ctx, ret);
 }
 
-static __always_inline int check_v6(struct xdp_md *xdp)
+static __always_inline int check_v6_lb(struct __ctx_buff *ctx)
 {
-	void *data_end = xdp_data_end(xdp);
-	void *data = xdp_data(xdp);
+	ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_LXC);
+	return send_drop_notify_error(ctx, 0, DROP_MISSED_TAIL_CALL, CTX_ACT_DROP,
+				      METRIC_INGRESS);
+}
+#else
+static __always_inline int check_v6_lb(struct __ctx_buff *ctx __maybe_unused)
+{
+	return CTX_ACT_OK;
+}
+#endif /* ENABLE_NODEPORT */
+
+#ifdef ENABLE_PREFILTER
+static __always_inline int check_v6(struct __ctx_buff *ctx)
+{
+	void *data_end = ctx_data_end(ctx);
+	void *data = ctx_data(ctx);
 	struct ipv6hdr *ipv6_hdr = data + sizeof(struct ethhdr);
 	struct lpm_v6_key pfx __maybe_unused;
 
-	if (xdp_no_room(ipv6_hdr + 1, data_end))
-		return XDP_DROP;
+	if (ctx_no_room(ipv6_hdr + 1, data_end))
+		return CTX_ACT_DROP;
 
 #ifdef CIDR6_FILTER
-	__builtin_memcpy(pfx.lpm.data, &ipv6_hdr->saddr, sizeof(pfx.addr));
+	memcpy(pfx.lpm.data, &ipv6_hdr->saddr, sizeof(pfx.addr));
 	pfx.lpm.prefixlen = 128;
 
 #ifdef CIDR6_LPM_PREFILTER
 	if (map_lookup_elem(&CIDR6_LMAP_NAME, &pfx))
-		return XDP_DROP;
-	else
+		return CTX_ACT_DROP;
 #endif /* CIDR6_LPM_PREFILTER */
-		return map_lookup_elem(&CIDR6_HMAP_NAME, &pfx) ?
-		       XDP_DROP : check_v6_endpoint(xdp, ipv6_hdr);
+	return map_lookup_elem(&CIDR6_HMAP_NAME, &pfx) ?
+		CTX_ACT_DROP : check_v6_lb(ctx);
 #else
-	return check_v6_endpoint(xdp, ipv6_hdr);
+	return check_v6_lb(ctx);
 #endif /* CIDR6_FILTER */
 }
-
-static __always_inline int check_filters(struct xdp_md *xdp)
+#else
+static __always_inline int check_v6(struct __ctx_buff *ctx)
 {
-	void *data_end = xdp_data_end(xdp);
-	void *data = xdp_data(xdp);
-	struct ethhdr *eth = data;
+	return check_v6_lb(ctx);
+}
+#endif /* ENABLE_PREFILTER */
+#endif /* ENABLE_IPV6 */
+
+static __always_inline int check_filters(struct __ctx_buff *ctx)
+{
+	int ret = CTX_ACT_OK;
 	__u16 proto;
 
-	if (xdp_no_room(eth + 1, data_end))
-		return XDP_DROP;
+	if (!validate_ethertype(ctx, &proto))
+		return CTX_ACT_OK;
 
-	proto = eth->h_proto;
-	if (proto == bpf_htons(ETH_P_IP))
-		return check_v4(xdp);
-	else if (proto == bpf_htons(ETH_P_IPV6))
-		return check_v6(xdp);
-	else
-		/* Pass the rest to stack, we might later do more
-		 * fine-grained filtering here.
-		 */
-		return XDP_PASS;
+	ctx_store_meta(ctx, XFER_MARKER, 0);
+	bpf_skip_nodeport_clear(ctx);
+
+	switch (proto) {
+#ifdef ENABLE_IPV4
+	case bpf_htons(ETH_P_IP):
+		ret = check_v4(ctx);
+		break;
+#endif /* ENABLE_IPV4 */
+#ifdef ENABLE_IPV6
+	case bpf_htons(ETH_P_IPV6):
+		ret = check_v6(ctx);
+		break;
+#endif /* ENABLE_IPV6 */
+	default:
+		break;
+	}
+
+	return bpf_xdp_exit(ctx, ret);
 }
 
 __section("from-netdev")
-int xdp_start(struct xdp_md *xdp)
+int bpf_xdp_entry(struct __ctx_buff *ctx)
 {
-	return check_filters(xdp);
+	return check_filters(ctx);
 }
 
 BPF_LICENSE("GPL");

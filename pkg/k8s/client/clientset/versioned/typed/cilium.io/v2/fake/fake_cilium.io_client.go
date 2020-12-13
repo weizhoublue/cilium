@@ -1,4 +1,4 @@
-// Copyright 2017-2019 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,12 +26,32 @@ type FakeCiliumV2 struct {
 	*testing.Fake
 }
 
+func (c *FakeCiliumV2) CiliumClusterwideNetworkPolicies() v2.CiliumClusterwideNetworkPolicyInterface {
+	return &FakeCiliumClusterwideNetworkPolicies{c}
+}
+
 func (c *FakeCiliumV2) CiliumEndpoints(namespace string) v2.CiliumEndpointInterface {
 	return &FakeCiliumEndpoints{c, namespace}
 }
 
+func (c *FakeCiliumV2) CiliumExternalWorkloads() v2.CiliumExternalWorkloadInterface {
+	return &FakeCiliumExternalWorkloads{c}
+}
+
+func (c *FakeCiliumV2) CiliumIdentities() v2.CiliumIdentityInterface {
+	return &FakeCiliumIdentities{c}
+}
+
+func (c *FakeCiliumV2) CiliumLocalRedirectPolicies(namespace string) v2.CiliumLocalRedirectPolicyInterface {
+	return &FakeCiliumLocalRedirectPolicies{c, namespace}
+}
+
 func (c *FakeCiliumV2) CiliumNetworkPolicies(namespace string) v2.CiliumNetworkPolicyInterface {
 	return &FakeCiliumNetworkPolicies{c, namespace}
+}
+
+func (c *FakeCiliumV2) CiliumNodes() v2.CiliumNodeInterface {
+	return &FakeCiliumNodes{c}
 }
 
 // RESTClient returns a RESTClient that is used to communicate

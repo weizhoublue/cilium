@@ -1,23 +1,25 @@
+# Copyright 2017-2020 Authors of Cilium
+# SPDX-License-Identifier: Apache-2.0
+
 include ../../Makefile.defs
 
-all: cilium-cni
+TARGET := cilium-cni
 
-TARGET=cilium-cni
+.PHONY: all $(TARGET) clean install
+
+all: $(TARGET)
+
+$(TARGET):
+	@$(ECHO_GO)
+	$(QUIET)$(GO_BUILD) -o $@
 
 clean:
 	@$(ECHO_CLEAN)
-	$(QUIET)$(GO) clean
 	-$(QUIET)rm -f $(TARGET)
-
-SOURCES := $(shell find ../../api/v1/models ../../common ../../pkg/client ../../pkg/endpoint . -name '*.go')
-
-$(TARGET): $(SOURCES)
-	@$(ECHO_GO)
-	# Compile without cgo to allow use of cilium-cni on non-glibc platforms - see GH-5055
-	$(QUIET)CGO_ENABLED=0 $(GO) build $(GOBUILD) -o $(TARGET) ./cilium-cni.go
+	$(QUIET)$(GO_CLEAN)
 
 install:
-	$(INSTALL) -m 0755 -d $(DESTDIR)$(CNICONFDIR)
-	$(INSTALL) -m 0644 05-cilium-cni.conf $(DESTDIR)$(CNICONFDIR)
-	$(INSTALL) -m 0755 -d $(DESTDIR)$(CNIBINDIR)
-	$(INSTALL) -m 0755 $(TARGET) $(DESTDIR)$(CNIBINDIR)
+	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(CNICONFDIR)
+	$(QUIET)$(INSTALL) -m 0644 05-cilium-cni.conf $(DESTDIR)$(CNICONFDIR)
+	$(QUIET)$(INSTALL) -m 0755 -d $(DESTDIR)$(CNIBINDIR)
+	$(QUIET)$(INSTALL) -m 0755 $(TARGET) $(DESTDIR)$(CNIBINDIR)

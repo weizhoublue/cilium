@@ -16,8 +16,8 @@ package endpoint
 
 import "fmt"
 
-// LockAlive returns error if endpoint was removed, locks underlying mutex otherwise
-func (e *Endpoint) LockAlive() error {
+// lockAlive returns error if endpoint was removed, locks underlying mutex otherwise
+func (e *Endpoint) lockAlive() error {
 	e.mutex.Lock()
 	if e.IsDisconnecting() {
 		e.mutex.Unlock()
@@ -27,12 +27,12 @@ func (e *Endpoint) LockAlive() error {
 }
 
 // Unlock unlocks endpoint mutex
-func (e *Endpoint) Unlock() {
+func (e *Endpoint) unlock() {
 	e.mutex.Unlock()
 }
 
-// RLockAlive returns error if endpoint was removed, read locks underlying mutex otherwise
-func (e *Endpoint) RLockAlive() error {
+// rlockAlive returns error if endpoint was removed, read locks underlying mutex otherwise
+func (e *Endpoint) rlockAlive() error {
 	e.mutex.RLock()
 	if e.IsDisconnecting() {
 		e.mutex.RUnlock()
@@ -41,26 +41,26 @@ func (e *Endpoint) RLockAlive() error {
 	return nil
 }
 
-// RUnlock read unlocks endpoint mutex
-func (e *Endpoint) RUnlock() {
+// runlock read unlocks endpoint mutex
+func (e *Endpoint) runlock() {
 	e.mutex.RUnlock()
 }
 
-// UnconditionalLock should be used only for locking endpoint for
+// unconditionalLock should be used only for locking endpoint for
 // - setting its state to StateDisconnected
 // - handling regular Lock errors
 // - reporting endpoint status (like in LogStatus method)
 // Use Lock in all other cases
-func (e *Endpoint) UnconditionalLock() {
+func (e *Endpoint) unconditionalLock() {
 	e.mutex.Lock()
 }
 
-// UnconditionalRLock should be used only for reporting endpoint state
-func (e *Endpoint) UnconditionalRLock() {
+// unconditionalRLock should be used only for reporting endpoint state
+func (e *Endpoint) unconditionalRLock() {
 	e.mutex.RLock()
 }
 
-// LogDisconnectedMutexAction gets the logger and logs given error with context
-func (e *Endpoint) LogDisconnectedMutexAction(err error, context string) {
+// logDisconnectedMutexAction gets the logger and logs given error with context
+func (e *Endpoint) logDisconnectedMutexAction(err error, context string) {
 	e.getLogger().WithError(err).Error(context)
 }

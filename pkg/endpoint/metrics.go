@@ -18,9 +18,8 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/datapath/loader"
+	loaderMetrics "github.com/cilium/cilium/pkg/datapath/loader/metrics"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/spanstat"
 
@@ -62,7 +61,7 @@ type regenerationStatistics struct {
 	proxyConfiguration     spanstat.SpanStat
 	proxyPolicyCalculation spanstat.SpanStat
 	proxyWaitForAck        spanstat.SpanStat
-	datapathRealization    loader.SpanStat
+	datapathRealization    loaderMetrics.SpanStat
 	mapSync                spanstat.SpanStat
 	prepareBuild           spanstat.SpanStat
 }
@@ -71,15 +70,14 @@ type regenerationStatistics struct {
 // Prometheus.
 func (s *regenerationStatistics) SendMetrics() {
 	endpointPolicyStatus.Update(s.endpointID, s.policyStatus)
-	metrics.EndpointCountRegenerating.Dec()
 
 	if !s.success {
 		// Endpoint regeneration failed, increase on failed metrics
-		metrics.EndpointRegenerationCount.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
+		metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
 		return
 	}
 
-	metrics.EndpointRegenerationCount.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
+	metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
 
 	sendMetrics(s, metrics.EndpointRegenerationTimeStats)
 }
@@ -95,7 +93,7 @@ func (s *regenerationStatistics) GetMap() map[string]*spanstat.SpanStat {
 		"proxyWaitForAck":        &s.proxyWaitForAck,
 		"mapSync":                &s.mapSync,
 		"prepareBuild":           &s.prepareBuild,
-		logfields.BuildDuration:  &s.totalTime,
+		"total":                  &s.totalTime,
 	}
 	for k, v := range s.datapathRealization.GetMap() {
 		result[k] = v
@@ -122,7 +120,7 @@ func (ps *policyRegenerationStatistics) GetMap() map[string]*spanstat.SpanStat {
 		"waitingForIdentityCache":    &ps.waitingForIdentityCache,
 		"waitingForPolicyRepository": &ps.waitingForPolicyRepository,
 		"policyCalculation":          &ps.policyCalculation,
-		logfields.BuildDuration:      &ps.totalTime,
+		"total":                      &ps.totalTime,
 	}
 }
 
@@ -157,10 +155,13 @@ func (epPolicyMaps *endpointPolicyStatusMap) Remove(endpointID uint16) {
 // UpdateMetrics update the policy enforcement metrics statistics for the endpoints.
 func (epPolicyMaps *endpointPolicyStatusMap) UpdateMetrics() {
 	policyStatus := map[models.EndpointPolicyEnabled]float64{
-		models.EndpointPolicyEnabledNone:    0,
-		models.EndpointPolicyEnabledEgress:  0,
-		models.EndpointPolicyEnabledIngress: 0,
-		models.EndpointPolicyEnabledBoth:    0,
+		models.EndpointPolicyEnabledNone:         0,
+		models.EndpointPolicyEnabledEgress:       0,
+		models.EndpointPolicyEnabledIngress:      0,
+		models.EndpointPolicyEnabledBoth:         0,
+		models.EndpointPolicyEnabledAuditEgress:  0,
+		models.EndpointPolicyEnabledAuditIngress: 0,
+		models.EndpointPolicyEnabledAuditBoth:    0,
 	}
 
 	epPolicyMaps.mutex.Lock()

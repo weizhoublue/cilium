@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/fsnotify.v1"
+	"github.com/fsnotify/fsnotify"
 )
 
 // clusterLifecycle is the interface to implement in order to receive cluster
@@ -52,7 +52,7 @@ func createConfigDirectoryWatcher(path string, lifecycle clusterLifecycle) (*con
 		watcher:   watcher,
 		path:      path,
 		lifecycle: lifecycle,
-		stop:      make(chan struct{}, 0),
+		stop:      make(chan struct{}),
 	}, nil
 }
 
@@ -80,7 +80,7 @@ func (cdw *configDirectoryWatcher) watch() error {
 		// lrwxrwxrwx. 1 root root 12 Jul 21 16:32 test7 -> ..data/test7
 		//
 		// Ignore all backing files and only read the symlinks
-		if strings.HasPrefix(f.Name(), "..") {
+		if strings.HasPrefix(f.Name(), "..") || f.IsDir() {
 			continue
 		}
 
@@ -99,10 +99,13 @@ func (cdw *configDirectoryWatcher) watch() error {
 			case event := <-cdw.watcher.Events:
 				name := filepath.Base(event.Name)
 				log.WithField(fieldClusterName, name).Debugf("Received fsnotify event: %+v", event)
-				switch event.Op {
-				case fsnotify.Create, fsnotify.Write, fsnotify.Chmod:
+				switch {
+				case event.Op&fsnotify.Create == fsnotify.Create,
+					event.Op&fsnotify.Write == fsnotify.Write,
+					event.Op&fsnotify.Chmod == fsnotify.Chmod:
 					cdw.lifecycle.add(name, event.Name)
-				case fsnotify.Remove, fsnotify.Rename:
+				case event.Op&fsnotify.Remove == fsnotify.Remove,
+					event.Op&fsnotify.Rename == fsnotify.Rename:
 					cdw.lifecycle.remove(name)
 				}
 

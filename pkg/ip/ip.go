@@ -1,4 +1,4 @@
-// Copyright 2017 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,16 +31,17 @@ const (
 // CountIPsInCIDR takes a RFC4632/RFC4291-formatted IPv4/IPv6 CIDR and
 // determines how many IP addresses reside within that CIDR.
 // Returns 0 if the input CIDR cannot be parsed.
-func CountIPsInCIDR(cidr string) int {
-	_, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return 0
-	}
+func CountIPsInCIDR(ipnet *net.IPNet) *big.Int {
 	subnet, size := ipnet.Mask.Size()
 	if subnet == size {
-		return 1
+		return big.NewInt(1)
 	}
-	return 1<<uint(size-subnet) - 1
+	return big.NewInt(0).
+		Sub(
+			big.NewInt(2).Exp(big.NewInt(2),
+				big.NewInt(int64(size-subnet)), nil),
+			big.NewInt(1),
+		)
 }
 
 var (
@@ -65,10 +66,7 @@ func (s NetsByMask) Less(i, j int) bool {
 	iPrefixSize, _ := s[i].Mask.Size()
 	jPrefixSize, _ := s[j].Mask.Size()
 	if iPrefixSize == jPrefixSize {
-		if bytes.Compare(s[i].IP, s[j].IP) < 0 {
-			return true
-		}
-		return false
+		return bytes.Compare(s[i].IP, s[j].IP) < 0
 	}
 	return iPrefixSize < jPrefixSize
 }
@@ -196,7 +194,6 @@ func getNetworkPrefix(ipNet *net.IPNet) *net.IP {
 }
 
 func removeCIDR(allowCIDR, removeCIDR *net.IPNet) ([]*net.IPNet, error) {
-	var allows []*net.IPNet
 	var allowIsIpv4, removeIsIpv4 bool
 	var allowBitLen int
 
@@ -242,6 +239,7 @@ func removeCIDR(allowCIDR, removeCIDR *net.IPNet) ([]*net.IPNet, error) {
 	// Create CIDR prefixes with mask size of Y+1, Y+2 ... X where Y is the mask
 	// length of the CIDR prefix B from which we are excluding a CIDR prefix A
 	// with mask length X.
+	allows := make([]*net.IPNet, 0, removeSize-allowSize)
 	for i := (allowBitLen - allowSize - 1); i >= (allowBitLen - removeSize); i-- {
 		// The mask for each CIDR prefix is simply the ith bit flipped, and then
 		// zero'ing out all subsequent bits (the host identifier part of the
@@ -734,8 +732,7 @@ func KeepUniqueIPs(ips []net.IP) []net.IP {
 
 	returnIPs := ips[:0] // len==0 but cap==cap(ips)
 	for readIdx, ip := range ips {
-		if len(returnIPs) == 0 ||
-			bytes.Compare(returnIPs[len(returnIPs)-1], ips[readIdx]) != 0 {
+		if len(returnIPs) == 0 || !returnIPs[len(returnIPs)-1].Equal(ips[readIdx]) {
 			returnIPs = append(returnIPs, ip)
 		}
 	}
@@ -745,17 +742,49 @@ func KeepUniqueIPs(ips []net.IP) []net.IP {
 
 var privateIPBlocks []*net.IPNet
 
-func init() {
+func initPrivatePrefixes() {
 	// We only care about global scope prefixes here.
 	for _, cidr := range []string{
-		"10.0.0.0/8",     // RFC1918
-		"172.16.0.0/12",  // RFC1918
-		"192.168.0.0/16", // RFC1918
-		"fc00::/7",       // IPv6 ULA
+		"0.0.0.0/8",       // RFC1122 - IPv4 Host on this network
+		"10.0.0.0/8",      // RFC1918 - IPv4 Private-Use Networks
+		"100.64.0.0/10",   // RFC6598 - IPv4 Shared address space
+		"127.0.0.0/8",     // RFC1122 - IPv4 Loopback
+		"169.254.0.0/16",  // RFC3927 - IPv4 Link-Local
+		"172.16.0.0/12",   // RFC1918 - IPv4 Private-Use Networks
+		"192.0.0.0/24",    // RFC6890 - IPv4 IETF Assignments
+		"192.0.2.0/24",    // RFC5737 - IPv4 TEST-NET-1
+		"192.168.0.0/16",  // RFC1918 - IPv4 Private-Use Networks
+		"198.18.0.0/15",   // RFC2544 - IPv4 Interconnect Benchmarks
+		"198.51.100.0/24", // RFC5737 - IPv4 TEST-NET-2
+		"203.0.113.0/24",  // RFC5737 - IPv4 TEST-NET-3
+		"224.0.0.0/4",     // RFC5771 - IPv4 Multicast
+		"::/128",          // RFC4291 - IPv6 Unspecified
+		"::1/128",         // RFC4291 - IPv6 Loopback
+		"100::/64",        // RFC6666 - IPv6 Discard-Only Prefix
+		"2001:2::/48",     // RFC5180 - IPv6 Benchmarking
+		"2001:db8::/48",   // RFC3849 - IPv6 Documentation
+		"fc00::/7",        // RFC4193 - IPv6 Unique-Local
+		"fe80::/10",       // RFC4291 - IPv6 Link-Local
+		"ff00::/8",        // RFC4291 - IPv6 Multicast
 	} {
 		_, block, _ := net.ParseCIDR(cidr)
 		privateIPBlocks = append(privateIPBlocks, block)
 	}
+}
+
+func init() {
+	initPrivatePrefixes()
+}
+
+// IsExcluded returns whether a given IP is must be excluded
+// due to coming from blacklisted device.
+func IsExcluded(excludeList []net.IP, ip net.IP) bool {
+	for _, e := range excludeList {
+		if e.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsPublicAddr returns whether a given global IP is from
@@ -793,4 +822,9 @@ func IPToPrefix(ip net.IP) *net.IPNet {
 		Mask: net.CIDRMask(bits, bits),
 	}
 	return prefix
+}
+
+// IsIPv4 returns true if the given IP is an IPv4
+func IsIPv4(ip net.IP) bool {
+	return ip.To4() != nil
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package logger
 import (
 	"net"
 
+	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
 )
@@ -24,30 +25,36 @@ import (
 // EndpointInfoSource returns information about an endpoint being proxied.
 // The read lock must be held when calling any method.
 type EndpointInfoSource interface {
-	UnconditionalRLock()
-	RUnlock()
 	GetID() uint64
 	GetIPv4Address() string
 	GetIPv6Address() string
-	GetIdentity() identity.NumericIdentity
+	GetIdentityLocked() identity.NumericIdentity
 	GetLabels() []string
 	GetLabelsSHA() string
 	HasSidecarProxy() bool
+	// ConntrackName assumes that the caller has *not* acquired any mutexes
+	// that may be associated with this EndpointInfoSource. It is (unfortunately)
+	// up to the caller to know when to use this vs. ConntrackNameLocked, which
+	// assumes that the caller has acquired any needed mutexes of the
+	// implementation.
 	ConntrackName() string
+	ConntrackNameLocked() string
+	GetNamedPortLocked(ingress bool, name string, proto uint8) uint16
+	GetProxyInfoByFields() (uint64, string, string, []string, string, uint64, error)
 }
 
 // getEndpointInfo returns a consistent snapshot of the given source.
 // The source's read lock must not be held.
 func getEndpointInfo(source EndpointInfoSource) *accesslog.EndpointInfo {
-	source.UnconditionalRLock()
-	defer source.RUnlock()
+
+	id, ipv4, ipv6, labels, labelsSHA256, identity, _ := source.GetProxyInfoByFields()
 	return &accesslog.EndpointInfo{
-		ID:           source.GetID(),
-		IPv4:         source.GetIPv4Address(),
-		IPv6:         source.GetIPv6Address(),
-		Labels:       source.GetLabels(),
-		LabelsSHA256: source.GetLabelsSHA(),
-		Identity:     uint64(source.GetIdentity()),
+		ID:           id,
+		IPv4:         ipv4,
+		IPv6:         ipv6,
+		Labels:       labels,
+		LabelsSHA256: labelsSHA256,
+		Identity:     identity,
 	}
 }
 
@@ -63,7 +70,11 @@ type EndpointUpdater interface {
 
 	// UpdateProxyStatistics updates the Endpoint's proxy statistics to account
 	// for a new observed flow with the given characteristics.
-	UpdateProxyStatistics(l7Protocol string, port uint16, ingress, request bool, verdict accesslog.FlowVerdict)
+	UpdateProxyStatistics(l4Protocol string, port uint16, ingress, request bool, verdict accesslog.FlowVerdict)
+
+	// OnDNSPolicyUpdateLocked is called when the Endpoint's DNS policy has been updated.
+	// 'rules' is a fresh copy of the DNS rules passed to the callee.
+	OnDNSPolicyUpdateLocked(rules restore.DNSRules)
 }
 
 // EndpointInfoRegistry provides endpoint information lookup by endpoint IP

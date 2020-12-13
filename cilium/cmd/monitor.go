@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ package cmd
 
 import (
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,13 +25,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cilium/cilium/monitor/listener"
+	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/monitor"
+	"github.com/cilium/cilium/pkg/monitor/agent/listener"
 	"github.com/cilium/cilium/pkg/monitor/format"
 	"github.com/cilium/cilium/pkg/monitor/payload"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -46,12 +49,15 @@ var (
 programs attached to endpoints and devices. This includes:
   * Dropped packet notifications
   * Captured packet traces
+  * Policy verdict notifications
   * Debugging information`,
 		Run: func(cmd *cobra.Command, args []string) {
 			runMonitor(args)
 		},
 	}
-	printer = format.NewMonitorFormatter(format.INFO)
+	printer    = format.NewMonitorFormatter(format.INFO)
+	socketPath = ""
+	verbosity  = []bool{}
 )
 
 func init() {
@@ -61,17 +67,27 @@ func init() {
 	monitorCmd.Flags().Var(&printer.FromSource, "from", "Filter by source endpoint id")
 	monitorCmd.Flags().Var(&printer.ToDst, "to", "Filter by destination endpoint id")
 	monitorCmd.Flags().Var(&printer.Related, "related-to", "Filter by either source or destination endpoint id")
-	monitorCmd.Flags().BoolVarP(&printer.Verbose, "verbose", "v", false, "Enable verbose output")
+	monitorCmd.Flags().BoolSliceVarP(&verbosity, "verbose", "v", nil, "Enable verbose output (-v, -vv)")
+	monitorCmd.Flags().Lookup("verbose").NoOptDefVal = "false"
 	monitorCmd.Flags().BoolVarP(&printer.JSONOutput, "json", "j", false, "Enable json output. Shadows -v flag")
+	monitorCmd.Flags().BoolVarP(&printer.Numeric, "numeric", "n", false, "Display all security identities as numeric values")
+	monitorCmd.Flags().StringVar(&socketPath, "monitor-socket", "", "Configure monitor socket path")
+	viper.BindEnv("monitor-socket", "CILIUM_MONITOR_SOCK")
+	viper.BindPFlags(monitorCmd.Flags())
 }
 
 func setVerbosity() {
 	if printer.JSONOutput {
 		printer.Verbosity = format.JSON
-	} else if printer.Verbose {
-		printer.Verbosity = format.DEBUG
 	} else {
-		printer.Verbosity = format.INFO
+		switch len(verbosity) {
+		case 1:
+			printer.Verbosity = format.DEBUG
+		case 2:
+			printer.Verbosity = format.VERBOSE
+		default:
+			printer.Verbosity = format.INFO
+		}
 	}
 }
 
@@ -88,8 +104,18 @@ func setupSigHandler() {
 
 // openMonitorSock attempts to open a version specific monitor socket It
 // returns a connection, with a version, or an error.
-func openMonitorSock() (conn net.Conn, version listener.Version, err error) {
+func openMonitorSock(path string) (conn net.Conn, version listener.Version, err error) {
 	errors := make([]string, 0)
+
+	// try the user-provided socket
+	if path != "" {
+		conn, err = net.Dial("unix", path)
+		if err == nil {
+			version = listener.Version1_2
+			return conn, version, nil
+		}
+		errors = append(errors, path+": "+err.Error())
+	}
 
 	// try the 1.2 socket
 	conn, err = net.Dial("unix", defaults.MonitorSockPath1_2)
@@ -98,18 +124,11 @@ func openMonitorSock() (conn net.Conn, version listener.Version, err error) {
 	}
 	errors = append(errors, defaults.MonitorSockPath1_2+": "+err.Error())
 
-	// try the 1.1 socket
-	conn, err = net.Dial("unix", defaults.MonitorSockPath1_0)
-	if err == nil {
-		return conn, listener.Version1_0, nil
-	}
-	errors = append(errors, defaults.MonitorSockPath1_0+": "+err.Error())
-
 	return nil, listener.VersionUnsupported, fmt.Errorf("Cannot find or open a supported node-monitor socket. %s", strings.Join(errors, ","))
 }
 
 // consumeMonitorEvents handles and prints events on a monitor connection. It
-// calls getMonitorParsed to construct a monitor-version appropraite parser.
+// calls getMonitorParsed to construct a monitor-version appropriate parser.
 // It closes conn on return, and returns on error, including io.EOF
 func consumeMonitorEvents(conn net.Conn, version listener.Version) error {
 	defer conn.Close()
@@ -142,20 +161,6 @@ type eventParserFunc func() (*payload.Payload, error)
 // appropriate for the monitor API version passed in.
 func getMonitorParser(conn net.Conn, version listener.Version) (parser eventParserFunc, err error) {
 	switch version {
-	case listener.Version1_0:
-		var (
-			meta payload.Meta
-			pl   payload.Payload
-		)
-		// This implements the older API. Always encode a Meta and Payload object,
-		// both with full gob type information
-		return func() (*payload.Payload, error) {
-			if err := payload.ReadMetaPayload(conn, &meta, &pl); err != nil {
-				return nil, err
-			}
-			return &pl, nil
-		}, nil
-
 	case listener.Version1_2:
 		var (
 			pl  payload.Payload
@@ -175,12 +180,68 @@ func getMonitorParser(conn net.Conn, version listener.Version) (parser eventPars
 	}
 }
 
+func endpointsExist(endpoints format.Uint16Flags, existingEndpoints []*models.Endpoint) bool {
+	endpointsFound := format.Uint16Flags{}
+	for _, ep := range existingEndpoints {
+		if endpoints.Has(uint16(ep.ID)) {
+			endpointsFound = append(endpointsFound, uint16(ep.ID))
+		}
+	}
+
+	if len(endpointsFound) < len(endpoints) {
+		for _, endpoint := range endpoints {
+			if !endpointsFound.Has(endpoint) {
+				fmt.Fprintf(os.Stderr, "endpoint %d not found\n", endpoint)
+			}
+		}
+	}
+
+	return len(endpointsFound) > 0
+}
+
+func validateEndpointsFilters() {
+	if !(len(printer.FromSource) > 0) ||
+		!(len(printer.ToDst) > 0) ||
+		!(len(printer.Related) > 0) {
+		return
+	}
+
+	existingEndpoints, err := client.EndpointList()
+	if err != nil {
+		Fatalf("cannot get endpoint list: %s\n", err)
+	}
+
+	validFilter := false
+	if len(printer.FromSource) > 0 {
+		if endpointsExist(printer.FromSource, existingEndpoints) {
+			validFilter = true
+		}
+	}
+	if len(printer.ToDst) > 0 {
+		if endpointsExist(printer.ToDst, existingEndpoints) {
+			validFilter = true
+		}
+	}
+
+	if len(printer.Related) > 0 {
+		if endpointsExist(printer.Related, existingEndpoints) {
+			validFilter = true
+		}
+	}
+
+	// exit if all filters are not not found
+	if !validFilter {
+		os.Exit(1)
+	}
+}
+
 func runMonitor(args []string) {
 	if len(args) > 0 {
 		fmt.Println("Error: arguments not recognized")
 		os.Exit(1)
 	}
 
+	validateEndpointsFilters()
 	setVerbosity()
 	setupSigHandler()
 	if resp, err := client.Daemon.GetHealthz(nil); err == nil {
@@ -195,7 +256,7 @@ func runMonitor(args []string) {
 	// On other errors, exit
 	// always wait connTimeout when retrying
 	for ; ; time.Sleep(connTimeout) {
-		conn, version, err := openMonitorSock()
+		conn, version, err := openMonitorSock(viper.GetString("monitor-socket"))
 		if err != nil {
 			log.WithError(err).Error("Cannot open monitor socket")
 			return
@@ -206,7 +267,7 @@ func runMonitor(args []string) {
 		case err == nil:
 		// no-op
 
-		case err == io.EOF, err == io.ErrUnexpectedEOF:
+		case err == io.EOF, errors.Is(err, io.ErrUnexpectedEOF):
 			log.WithError(err).Warn("connection closed")
 			continue
 

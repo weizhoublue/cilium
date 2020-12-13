@@ -46,7 +46,7 @@ func (b *ControllerSuite) TestUpdateRemoveController(c *C) {
 
 func (b *ControllerSuite) TestStopFunc(c *C) {
 	stopFuncRan := false
-	waitChan := make(chan bool)
+	waitChan := make(chan struct{})
 
 	mngr := Manager{}
 	mngr.UpdateController("test", ControllerParams{
@@ -121,7 +121,7 @@ func (b *ControllerSuite) TestRunController(c *C) {
 	mngr := NewManager()
 	o := &testObj{}
 
-	ctrl := mngr.UpdateController("test", ControllerParams{
+	ctrl := mngr.updateController("test", ControllerParams{
 		DoFunc: func(ctx context.Context) error {
 			// after two failed attempts, start succeeding
 			if o.cnt >= 2 {

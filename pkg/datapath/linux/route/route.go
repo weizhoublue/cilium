@@ -19,8 +19,8 @@ import (
 	"net"
 
 	"github.com/cilium/cilium/pkg/logging/logfields"
-	"github.com/sirupsen/logrus"
 
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -44,10 +44,6 @@ func (r *Route) LogFields() logrus.Fields {
 		"local":             r.Local,
 		logfields.Interface: r.Device,
 	}
-}
-
-func (r *Route) getLogger() *logrus.Entry {
-	return log.WithFields(r.LogFields())
 }
 
 // ByMask is used to sort an array of routes by mask, narrow first.

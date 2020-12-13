@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,13 +33,13 @@ var nodeListCmd = &cobra.Command{
 	Aliases: []string{"ls"},
 	Short:   "List nodes",
 	Run: func(cmd *cobra.Command, args []string) {
-		resp, err := client.Daemon.GetHealthz(nil)
+		resp, err := client.Daemon.GetClusterNodes(nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", pkg.Hint(err))
 			os.Exit(1)
 		}
 
-		cluster := resp.Payload.Cluster
+		cluster := resp.Payload.NodesAdded
 		if cluster == nil {
 			return
 		}
@@ -48,11 +48,12 @@ var nodeListCmd = &cobra.Command{
 			if err := command.PrintOutput(cluster); err != nil {
 				os.Exit(1)
 			}
-		} else {
-			w := tabwriter.NewWriter(os.Stdout, 2, 0, 3, ' ', 0)
-			formatStatusResponse(w, cluster)
-			w.Flush()
+			return
 		}
+
+		w := tabwriter.NewWriter(os.Stdout, 2, 0, 3, ' ', 0)
+		formatStatusResponse(w, cluster)
+		w.Flush()
 	},
 }
 
@@ -61,10 +62,11 @@ func init() {
 	command.AddJSONOutput(nodeListCmd)
 }
 
-func formatStatusResponse(w io.Writer, cluster *models.ClusterStatus) {
-	nodesOutput := []string{"Name\tIPv4 Address\tEndpoint CIDR\tIPv6 Address\tEndpoint CIDR\n"}
+func formatStatusResponse(w io.Writer, nodes []*models.NodeElement) {
+	nodesOutputHeader := "Name\tIPv4 Address\tEndpoint CIDR\tIPv6 Address\tEndpoint CIDR\n"
+	nodesOutput := make([]string, len(nodes))
 
-	for _, node := range cluster.Nodes {
+	for _, node := range nodes {
 		ipv4, ipv4Range, ipv6, ipv6Range := "", "", "", ""
 		if node.PrimaryAddress != nil {
 			if node.PrimaryAddress.IPV4 != nil {
@@ -83,6 +85,7 @@ func formatStatusResponse(w io.Writer, cluster *models.ClusterStatus) {
 
 	if len(nodesOutput) > 1 {
 		tab := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+		fmt.Fprint(tab, nodesOutputHeader)
 		sort.Strings(nodesOutput)
 		for _, s := range nodesOutput {
 			fmt.Fprint(tab, s)

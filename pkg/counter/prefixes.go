@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -45,12 +45,43 @@ func NewPrefixLengthCounter(maxUniquePrefixes6, maxUniquePrefixes4 int) *PrefixL
 	}
 }
 
+// This is a bit ugly, but there's not a great way to define an IPNet without
+// parsing strings, etc.
+func createIPNet(ones, bits int) *net.IPNet {
+	return &net.IPNet{
+		Mask: net.CIDRMask(ones, bits),
+	}
+}
+
+// DefaultPrefixLengthCounter creates a default prefix length counter that
+// already counts the minimum and maximum prefix lengths for IP hosts and
+// default routes (ie, /32 and /0). As with NewPrefixLengthCounter, inesrtions
+// are limited to the specified maximum number of unique prefix lengths.
+func DefaultPrefixLengthCounter(maxUniquePrefixes6, maxUniquePrefixes4 int) *PrefixLengthCounter {
+	counter := NewPrefixLengthCounter(maxUniquePrefixes6, maxUniquePrefixes4)
+
+	defaultPrefixes := []*net.IPNet{
+		// IPv4
+		createIPNet(0, net.IPv4len*8),             // world
+		createIPNet(net.IPv4len*8, net.IPv4len*8), // hosts
+
+		// IPv6
+		createIPNet(0, net.IPv6len*8),             // world
+		createIPNet(net.IPv6len*8, net.IPv6len*8), // hosts
+	}
+	if _, err := counter.Add(defaultPrefixes); err != nil {
+		panic(fmt.Errorf("Failed to create default prefix lengths: %s", err))
+	}
+
+	return counter
+}
+
 // checkLimits checks whether the specified new count of prefixes would exceed
 // the specified limit on the maximum number of unique keys, and returns an
 // error if it would exceed the limit.
 func checkLimits(current, newCount, max int) error {
 	if newCount > max {
-		return fmt.Errorf("Adding specified prefixes would result in too many prefix lengths (current: %d, result: %d, max: %d)",
+		return fmt.Errorf("adding specified prefixes would result in too many prefix lengths (current: %d, result: %d, max: %d)",
 			current, newCount, max)
 	}
 	return nil
@@ -84,7 +115,7 @@ func (p *PrefixLengthCounter) Add(prefixes []*net.IPNet) (bool, error) {
 				newV6Prefixes = true
 			}
 		default:
-			return false, fmt.Errorf("Unsupported IPAddr bitlength %d", bits)
+			return false, fmt.Errorf("unsupported IPAddr bitlength %d", bits)
 		}
 	}
 

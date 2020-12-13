@@ -1,12 +1,11 @@
 package sts
 
-import request "github.com/aws/aws-sdk-go-v2/aws"
+import (
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+)
 
 func init() {
-	initRequest = func(c *STS, r *request.Request) {
-		switch r.Operation.Name {
-		case opAssumeRoleWithSAML, opAssumeRoleWithWebIdentity:
-			r.Handlers.Sign.Clear() // these operations are unsigned
-		}
+	initClient = func(c *Client) {
+		c.Retryer = retry.AddWithErrorCodes(c.Retryer, ErrCodeIDPCommunicationErrorException)
 	}
 }

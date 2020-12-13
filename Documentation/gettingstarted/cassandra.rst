@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _gs_cassandra:
 
@@ -26,7 +26,7 @@ Deploy the Demo Application
 
 Now that we have Cilium deployed and ``kube-dns`` operating correctly we can
 deploy our demo Cassandra application.  Since our first
-`HTTP-aware Cilium  Star Wars demo <https://www.cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you>`_
+`HTTP-aware Cilium  Star Wars demo <https://cilium.io/blog/2017/5/4/demo-may-the-force-be-with-you/>`_
 showed how the Galactic Empire used HTTP-aware security policies to protect the Death Star from the
 Rebel Alliance, this Cassandra demo is Star Wars-themed as well.
 
@@ -112,7 +112,7 @@ the Cassandra cluster identified by the 'cassandra-svc' DNS name:
 
 ::
 
-    $ kubectl exec -it $OUTPOST_POD cqlsh -- cassandra-svc
+    $ kubectl exec -it $OUTPOST_POD -- cqlsh cassandra-svc
     Connected to Test Cluster at cassandra-svc:9042.
     [cqlsh 5.0.1 | Cassandra 3.11.3 | CQL spec 3.4.4 | Native protocol v4]
     Use HELP for help.
@@ -246,7 +246,7 @@ Use another window to confirm that the *empire-hq* pod still has full access to 
 
 ::
 
-    $ kubectl exec -it $HQ_POD cqlsh -- cassandra-svc
+    $ kubectl exec -it $HQ_POD -- cqlsh cassandra-svc
     Connected to Test Cluster at cassandra-svc:9042.
     [cqlsh 5.0.1 | Cassandra 3.11.3 | CQL spec 3.4.4 | Native protocol v4]
     Use HELP for help.
@@ -287,7 +287,7 @@ whether requests are forwarded or denied.   First, use "kubectl exec" to access 
 ::
 
   $ CILIUM_POD=$(kubectl get pods -n kube-system -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}')
-  $ kubectl exec -it -n kube-system $CILIUM_POD /bin/bash
+  $ kubectl exec -it -n kube-system $CILIUM_POD -- /bin/bash
   root@minikube:~#
 
 Next, start Cilium monitor, and limit the output to only "l7" type messages using the "-t" flag:
@@ -323,8 +323,9 @@ Clean Up
 You have now installed Cilium, deployed a demo app, and tested
 L7 Cassandra-aware network security policies.  To clean up, run:
 
-::
+.. parsed-literal::
 
-    $ minikube delete
+   $ kubectl delete -f \ |SCM_WEB|\/examples/kubernetes-cassandra/cass-sw-app.yaml
+   $ kubectl delete cnp secure-empire-cassandra
 
 After this, you can re-run the tutorial from Step 1.

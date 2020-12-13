@@ -19,13 +19,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
-	"github.com/cilium/cilium/common"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/elf"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
@@ -35,49 +34,48 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	once sync.Once
+const templateWatcherQueueSize = 10
 
-	// templateCache is the cache of pre-compiled datapaths.
-	templateCache            *objectCache
-	templateWatcherQueueSize = 10
-
-	ignoredELFPrefixes = []string{
-		"2/",                   // Calls within the endpoint
-		"HOST_IP",              // Global
-		"ROUTER_IP",            // Global
-		"SNAT_IPV6_EXTERNAL",   // Global
-		"cilium_ct",            // All CT maps, including local
-		"cilium_encrypt_state", // Global
-		"cilium_events",        // Global
-		"cilium_ipcache",       // Global
-		"cilium_lb",            // Global
-		"cilium_lxc",           // Global
-		"cilium_metrics",       // Global
-		"cilium_policy",        // Global
-		"cilium_proxy",         // Global
-		"cilium_snat",          // All SNAT maps
-		"cilium_tunnel",        // Global
-		"from-container",       // Prog name
-		"to-container",         // Prog name
-	}
-)
-
-// Init initializes the datapath cache with base program hashes derived from
-// the LocalNodeConfiguration.
-func Init(dp datapath.Datapath, nodeCfg *datapath.LocalNodeConfiguration) {
-	once.Do(func() {
-		templateCache = NewObjectCache(dp, nodeCfg)
-		ignorePrefixes := ignoredELFPrefixes
-		if !option.Config.EnableIPv4 {
-			ignorePrefixes = append(ignorePrefixes, "LXC_IPV4")
-		}
-		if !option.Config.EnableIPv6 {
-			ignorePrefixes = append(ignorePrefixes, "LXC_IP_")
-		}
-		elf.IgnoreSymbolPrefixes(ignorePrefixes)
-	})
-	templateCache.Update(nodeCfg)
+var ignoredELFPrefixes = []string{
+	"2/",                         // Calls within the endpoint
+	"HOST_IP",                    // Global
+	"IPV6_NODEPORT",              // Global
+	"ROUTER_IP",                  // Global
+	"SNAT_IPV6_EXTERNAL",         // Global
+	"cilium_call_policy",         // Global
+	"cilium_ct",                  // All CT maps, including local
+	"cilium_encrypt_state",       // Global
+	"cilium_events",              // Global
+	"cilium_ipcache",             // Global
+	"cilium_lb",                  // Global
+	"cilium_lxc",                 // Global
+	"cilium_metrics",             // Global
+	"cilium_nodeport_neigh",      // All nodeport neigh maps
+	"cilium_policy",              // All policy maps
+	"cilium_proxy",               // Global
+	"cilium_signals",             // Global
+	"cilium_snat",                // All SNAT maps
+	"cilium_tunnel",              // Global
+	"cilium_ipv4_frag_datagrams", // Global
+	"cilium_ipmasq",              // Global
+	"cilium_throttle",            // Global
+	"from-container",             // Prog name
+	"to-container",               // Prog name
+	"from-netdev",                // Prog name
+	"from-host",                  // Prog name
+	"to-netdev",                  // Prog name
+	"to-host",                    // Prog name
+	".BTF",                       // Debug
+	".BTF.ext",                   // Debug
+	".debug_ranges",              // Debug
+	".debug_info",                // Debug
+	".debug_line",                // Debug
+	".debug_frame",               // Debug
+	".debug_loc",                 // Debug
+	// Endpoint IPv6 address. It's possible for the template object to have
+	// these symbols while the endpoint doesn't, if IPv6 was just enabled and
+	// the endpoint restored.
+	"LXC_IP_",
 }
 
 // RestoreTemplates populates the object cache from templates on the filesystem
@@ -101,7 +99,7 @@ func RestoreTemplates(stateDir string) error {
 // filesystem where its corresponding BPF object file exists.
 type objectCache struct {
 	lock.Mutex
-	datapath.Datapath
+	datapath.ConfigWriter
 
 	workingDirectory string
 	baseHash         *datapathHash
@@ -118,9 +116,9 @@ type objectCache struct {
 	compileQueue map[string]*serializer.FunctionQueue
 }
 
-func newObjectCache(dp datapath.Datapath, nodeCfg *datapath.LocalNodeConfiguration, workingDir string) *objectCache {
+func newObjectCache(c datapath.ConfigWriter, nodeCfg *datapath.LocalNodeConfiguration, workingDir string) *objectCache {
 	oc := &objectCache{
-		Datapath:            dp,
+		ConfigWriter:        c,
 		workingDirectory:    workingDir,
 		newTemplates:        make(chan string, templateWatcherQueueSize),
 		templateWatcherDone: make(chan struct{}),
@@ -139,14 +137,14 @@ func newObjectCache(dp datapath.Datapath, nodeCfg *datapath.LocalNodeConfigurati
 
 // NewObjectCache creates a new cache for datapath objects, basing the hash
 // upon the configuration of the datapath and the specified node configuration.
-func NewObjectCache(dp datapath.Datapath, nodeCfg *datapath.LocalNodeConfiguration) *objectCache {
-	return newObjectCache(dp, nodeCfg, option.Config.StateDir)
+func NewObjectCache(c datapath.ConfigWriter, nodeCfg *datapath.LocalNodeConfiguration) *objectCache {
+	return newObjectCache(c, nodeCfg, option.Config.StateDir)
 }
 
 // Update may be called to update the base hash for configuration of datapath
 // configuration that applies across the node.
 func (o *objectCache) Update(nodeCfg *datapath.LocalNodeConfiguration) {
-	newHash := hashDatapath(o.Datapath, nodeCfg, nil, nil)
+	newHash := hashDatapath(o.ConfigWriter, nodeCfg, nil, nil)
 
 	o.Lock()
 	defer o.Unlock()
@@ -204,9 +202,14 @@ func (o *objectCache) delete(hash string) {
 // build attempts to compile and cache a datapath template object file
 // corresponding to the specified endpoint configuration.
 func (o *objectCache) build(ctx context.Context, cfg *templateCfg, hash string) error {
+	isHost := cfg.IsHost()
 	templatePath := filepath.Join(o.workingDirectory, defaults.TemplatesDir, hash)
 	headerPath := filepath.Join(templatePath, common.CHeaderFileName)
-	objectPath := filepath.Join(templatePath, endpointObj)
+	epObj := endpointObj
+	if isHost {
+		epObj = hostEndpointObj
+	}
+	objectPath := filepath.Join(templatePath, epObj)
 
 	if err := os.MkdirAll(templatePath, defaults.StateDirRights); err != nil {
 		return &os.PathError{
@@ -225,7 +228,7 @@ func (o *objectCache) build(ctx context.Context, cfg *templateCfg, hash string) 
 		}
 	}
 
-	if err = o.Datapath.WriteEndpointConfig(f, cfg); err != nil {
+	if err = o.ConfigWriter.WriteEndpointConfig(f, cfg); err != nil {
 		return &os.PathError{
 			Op:   "failed to write template header",
 			Path: headerPath,
@@ -233,9 +236,9 @@ func (o *objectCache) build(ctx context.Context, cfg *templateCfg, hash string) 
 		}
 	}
 
-	cfg.stats.bpfCompilation.Start()
-	err = compileTemplate(ctx, templatePath)
-	cfg.stats.bpfCompilation.End(err == nil)
+	cfg.stats.BpfCompilation.Start()
+	err = compileTemplate(ctx, templatePath, isHost)
+	cfg.stats.BpfCompilation.End(err == nil)
 	if err != nil {
 		return &os.PathError{
 			Op:   "failed to compile template program",
@@ -246,7 +249,7 @@ func (o *objectCache) build(ctx context.Context, cfg *templateCfg, hash string) 
 
 	log.WithFields(logrus.Fields{
 		logfields.Path:               objectPath,
-		logfields.BPFCompilationTime: cfg.stats.bpfCompilation.Total(),
+		logfields.BPFCompilationTime: cfg.stats.BpfCompilation.Total(),
 	}).Info("Compiled new BPF template")
 
 	o.insert(hash, objectPath)
@@ -261,7 +264,7 @@ func (o *objectCache) build(ctx context.Context, cfg *templateCfg, hash string) 
 //
 // Returns the path to the compiled template datapath object and whether the
 // object was compiled, or an error.
-func (o *objectCache) fetchOrCompile(ctx context.Context, cfg datapath.EndpointConfiguration, stats *SpanStat) (path string, compiled bool, err error) {
+func (o *objectCache) fetchOrCompile(ctx context.Context, cfg datapath.EndpointConfiguration, stats *metrics.SpanStat) (path string, compiled bool, err error) {
 	var hash string
 	hash, err = o.baseHash.sumEndpoint(o, cfg, false)
 	if err != nil {
@@ -270,10 +273,10 @@ func (o *objectCache) fetchOrCompile(ctx context.Context, cfg datapath.EndpointC
 
 	// Capture the time spent waiting for the template to compile.
 	if stats != nil {
-		stats.bpfWaitForELF.Start()
+		stats.BpfWaitForELF.Start()
 		defer func() {
 			// Wrap to ensure that "err" is compared upon return.
-			stats.bpfWaitForELF.End(err == nil)
+			stats.BpfWaitForELF.End(err == nil)
 		}()
 	}
 
@@ -288,6 +291,9 @@ func (o *objectCache) fetchOrCompile(ctx context.Context, cfg datapath.EndpointC
 			err := o.build(ctx, templateCfg, hash)
 			if err != nil {
 				scopedLog.WithError(err).Error("BPF template object creation failed")
+				o.Lock()
+				delete(o.compileQueue, hash)
+				o.Unlock()
 			}
 			return err
 		}, serializer.NoRetry)
@@ -338,7 +344,7 @@ func (o *objectCache) watchTemplatesDirectory(ctx context.Context) error {
 			if !open {
 				break
 			}
-			if event.Op&fsnotify.Remove != 0 {
+			if event.Op&fsnotify.Remove == fsnotify.Remove {
 				log.WithField(logfields.Path, event.Name).Debug("Detected template removal")
 				templateHash := filepath.Base(filepath.Dir(event.Name))
 				o.delete(templateHash)
@@ -351,10 +357,4 @@ func (o *objectCache) watchTemplatesDirectory(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-}
-
-// EndpointHash hashes the specified endpoint configuration with the current
-// datapath hash cache and returns the hash as string.
-func EndpointHash(cfg datapath.EndpointConfiguration) (string, error) {
-	return templateCache.baseHash.sumEndpoint(templateCache, cfg, true)
 }

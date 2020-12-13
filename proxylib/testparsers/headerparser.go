@@ -42,38 +42,40 @@ type HeaderRule struct {
 
 // Matches returns true if the HeaderRule matches
 func (rule *HeaderRule) Matches(data interface{}) bool {
-	log.Infof("headerparser checking rule %v", *rule)
+	log.Debugf("headerparser checking rule %v", *rule)
 
 	// Trim whitespace from both ends
 	bs := bytes.TrimSpace(data.([]byte))
 
 	if len(rule.hasPrefix) > 0 && !bytes.HasPrefix(bs, rule.hasPrefix) {
-		log.Infof("headerparser HasPrefix %s does not match %s", bs, rule.hasPrefix)
+		log.Debugf("headerparser HasPrefix %s does not match %s", bs, rule.hasPrefix)
 		return false
 	}
 
 	if len(rule.contains) > 0 && !bytes.Contains(bs, rule.contains) {
-		log.Infof("headerparser Contains %s does not match %s", bs, rule.contains)
+		log.Debugf("headerparser Contains %s does not match %s", bs, rule.contains)
 		return false
 	}
 
 	if len(rule.hasSuffix) > 0 && !bytes.HasSuffix(bs, rule.hasSuffix) {
-		log.Infof("headerparser HasSuffix %s does not match %s", bs, rule.hasSuffix)
+		log.Debugf("headerparser HasSuffix %s does not match %s", bs, rule.hasSuffix)
 		return false
 	}
-	log.Info("headerparser rule matched!")
+	log.Debug("headerparser rule matched!")
 
 	return true
 }
 
 // L7HeaderRuleParser parses protobuf L7 rules to and array of HeaderRules
 func L7HeaderRuleParser(rule *cilium.PortNetworkPolicyRule) []L7NetworkPolicyRule {
-	var rules []L7NetworkPolicyRule
 	l7Rules := rule.GetL7Rules()
 	if l7Rules == nil {
-		return rules
+		return nil
 	}
-	for _, l7Rule := range l7Rules.GetL7Rules() {
+
+	allowRules := l7Rules.GetL7AllowRules()
+	rules := make([]L7NetworkPolicyRule, 0, len(allowRules))
+	for _, l7Rule := range allowRules {
 		var hr HeaderRule
 		for k, v := range l7Rule.Rule {
 			switch k {
@@ -87,7 +89,7 @@ func L7HeaderRuleParser(rule *cilium.PortNetworkPolicyRule) []L7NetworkPolicyRul
 				ParseError(fmt.Sprintf("Unsupported key: %s", k), rule)
 			}
 		}
-		log.Infof("Parsed HeaderRule pair: %v", hr)
+		log.Debugf("Parsed HeaderRule pair: %v", hr)
 		rules = append(rules, &hr)
 	}
 	return rules
@@ -102,7 +104,7 @@ const (
 )
 
 func init() {
-	log.Info("init(): Registering headerParserFactory")
+	log.Debug("init(): Registering headerParserFactory")
 	RegisterParserFactory(parserName, headerParserFactory)
 	RegisterL7RuleParser(parserName, L7HeaderRuleParser)
 }
@@ -111,8 +113,8 @@ type HeaderParser struct {
 	connection *Connection
 }
 
-func (p *HeaderParserFactory) Create(connection *Connection) Parser {
-	log.Infof("HeaderParserFactory: Create: %v", connection)
+func (p *HeaderParserFactory) Create(connection *Connection) interface{} {
+	log.Debugf("HeaderParserFactory: Create: %v", connection)
 	return &HeaderParser{connection: connection}
 }
 
@@ -124,9 +126,9 @@ func (p *HeaderParser) OnData(reply, endStream bool, data [][]byte) (OpType, int
 	line_len := len(line)
 
 	if !reply {
-		log.Infof("HeaderParser: Request: %s", line)
+		log.Debugf("HeaderParser: Request: %s", line)
 	} else {
-		log.Infof("HeaderParser: Response: %s", line)
+		log.Debugf("HeaderParser: Response: %s", line)
 	}
 
 	if !ok {
