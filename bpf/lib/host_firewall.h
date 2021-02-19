@@ -340,6 +340,7 @@ ipv4_host_policy_ingress(struct __ctx_buff *ctx, __u32 *src_id)
 		return DROP_INVALID;
 
 	/* Retrieve destination identity. */
+    // 查询 test_cilium_ipcache ， 看目的 endpoint 的 Identity 信息
 	info = lookup_ip4_remote_endpoint(ip4->daddr);
 	if (info && info->sec_label)
 		dst_id = info->sec_label;
@@ -367,6 +368,7 @@ ipv4_host_policy_ingress(struct __ctx_buff *ctx, __u32 *src_id)
 		return ret;
 
 	/* Retrieve source identity. */
+     // 查询 test_cilium_ipcache ， 看 源 endpoint 的 Identity 信息
 	info = lookup_ip4_remote_endpoint(ip4->saddr);
 	if (info && info->sec_label)
 		*src_id = info->sec_label;
@@ -374,6 +376,7 @@ ipv4_host_policy_ingress(struct __ctx_buff *ctx, __u32 *src_id)
 		   ip4->saddr, *src_id);
 
 	/* Perform policy lookup */
+    // 查询 policy map（cilium_policy_***），看是否 源和目的 endpoint 是否能够通信
 	verdict = policy_can_access_ingress(ctx, *src_id, dst_id, tuple.dport,
 					    tuple.nexthdr,
 					    is_untracked_fragment,
@@ -394,6 +397,7 @@ ipv4_host_policy_ingress(struct __ctx_buff *ctx, __u32 *src_id)
 					   verdict, policy_match_type, audited);
 
 		/* Create new entry for connection in conntrack map. */
+        // 创建 链路追踪 表项
 		ct_state_new.src_sec_id = *src_id;
 		ct_state_new.node_port = ct_state.node_port;
 		ret = ct_create4(get_ct_map4(&tuple), &CT_MAP_ANY4, &tuple,
@@ -417,6 +421,7 @@ ipv4_host_policy_ingress(struct __ctx_buff *ctx, __u32 *src_id)
 	/* This change is necessary for packets redirected from the lxc device to
 	 * the host device.
 	 */
+    // setting skb->pkt_type to type
 	ctx_change_type(ctx, PACKET_HOST);
 	return CTX_ACT_OK;
 }

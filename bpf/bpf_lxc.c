@@ -494,6 +494,7 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx,
 
 		svc = lb4_lookup_service(&key, is_defined(ENABLE_NODEPORT));
 		if (svc) {
+            // 查询链路追踪表 ，  完成 tuple 中 目的endpoint 的DNAT 解析 
 			ret = lb4_local(get_ct_map4(&tuple), ctx, l3_off, l4_off,
 					&csum_off, &key, &tuple, svc, &ct_state_new,
 					ip4->saddr, has_l4_header, false);
@@ -522,6 +523,7 @@ skip_service_lookup:
 	 * POLICY_SKIP if the packet is a reply packet to an existing incoming
 	 * connection.
 	 */
+    // 查询链路追踪信息
 	ret = ct_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, CT_EGRESS,
 			 &ct_state, &monitor);
 	if (ret < 0)
@@ -532,6 +534,7 @@ skip_service_lookup:
 	/* Check it this is return traffic to an ingress proxy. */
 	if ((ret == CT_REPLY || ret == CT_RELATED) && ct_state.proxy_redirect) {
 		/* Stack will do a socket match and deliver locally. */
+        //  把 容器发出的流量， 重定向给 L7 代理
 		return ctx_redirect_to_proxy4(ctx, &tuple, 0, false);
 	}
 
@@ -556,6 +559,7 @@ skip_service_lookup:
 	 * within the cluster, it must match policy or be dropped. If it's
 	 * bound for the host/outside, perform the CIDR policy check.
 	 */
+    //实施egress policy
 	verdict = policy_can_egress4(ctx, &tuple, SECLABEL, *dstID,
 				     &policy_match_type, &audited);
 
@@ -581,6 +585,7 @@ ct_recreate4:
 		/* We could avoid creating related entries for legacy ClusterIP
 		 * handling here, but turns out that verifier cannot handle it.
 		 */
+        // 创建 链路追踪项 ， 以将来 追踪回复包，可用于 做unNat
 		ret = ct_create4(get_ct_map4(&tuple), &CT_MAP_ANY4, &tuple, ctx,
 				 CT_EGRESS, &ct_state_new, verdict > 0);
 		if (IS_ERR(ret))
@@ -606,6 +611,7 @@ ct_recreate4:
 		 * is local to the node. We'll redirect to bpf_host egress to
 		 * perform the reverse DNAT.
 		 */
+        // 如果 当初访问 一个本地的endpoint 的 nodePort , 那么，此处 对 回复包 做unNat
 		if (ct_state.node_port) {
 			ctx->tc_index |= TC_INDEX_F_SKIP_RECIRCULATION;
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_NODEPORT_REVNAT);
@@ -613,6 +619,7 @@ ct_recreate4:
 		}
 # ifdef ENABLE_DSR
 		if (ct_state.dsr) {
+            //进行 dsr 的相关 nat
 			ret = xlate_dsr_v4(ctx, &tuple, l4_off, has_l4_header);
 			if (ret != 0)
 				return ret;
@@ -674,6 +681,7 @@ ct_recreate4:
 			}
 #endif /* ENABLE_ROUTING */
 			policy_clear_mark(ctx);
+            //  直接重定向到 本地 相关 endpoint的 lxc
 			return ipv4_local_delivery(ctx, l3_off, SECLABEL, ip4,
 						   ep, METRIC_EGRESS, false);
 		}
@@ -703,6 +711,7 @@ ct_recreate4:
 	}
 #endif
 	if (is_defined(ENABLE_REDIRECT_FAST))
+        // 向本节点外部转发
 		return redirect_direct_v4(ctx, l3_off, ip4);
 
 	goto pass_to_stack;
@@ -1139,7 +1148,7 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 	 */
 	is_untracked_fragment = ipv4_is_fragment(ip4);
 #endif
-
+    // 查询链路追踪 ， tuple 取出追踪项
 	ret = ct_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, CT_INGRESS, &ct_state,
 			 &monitor);
 	if (ret < 0)
@@ -1160,6 +1169,7 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 				  0, ifindex, 0, monitor);
 		if (tuple_out)
 			*tuple_out = tuple;
+        // 函数返回后，将会 重定向给 proxy
 		return POLICY_ACT_PROXY_REDIRECT;
 	}
 
@@ -1173,6 +1183,7 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 		     !ct_state.loopback)) {
 		int ret2;
 
+        // 已经建立链接的， 做反向的 unNat
 		ret2 = lb4_rev_nat(ctx, l3_off, l4_off, &csum_off,
 				   &ct_state, &tuple,
 				   REV_NAT_F_TUPLE_SADDR, has_l4_header);
@@ -1180,6 +1191,7 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 			return ret2;
 	}
 
+    // 实施 endpoint的 ingress policy
 	verdict = policy_can_access_ingress(ctx, src_label, SECLABEL,
 					    tuple.dport, tuple.nexthdr,
 					    is_untracked_fragment,
@@ -1209,6 +1221,7 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 	{
 		bool dsr = false;
 
+        // 创建 dsr 相关的 nat 转换记录（？ 将来，endpoint回复数据时，自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
 		ret = handle_dsr_v4(ctx, &dsr);
 		if (ret != 0)
 			return ret;
@@ -1328,6 +1341,7 @@ int tail_ipv4_to_endpoint(struct __ctx_buff *ctx)
 	ret = ipv4_policy(ctx, 0, src_identity, &reason, NULL,
 			  &proxy_port, true);
 	if (ret == POLICY_ACT_PROXY_REDIRECT)
+        // 把 数据包 重定向给 L7 proxy 
 		ret = ctx_redirect_to_proxy_hairpin(ctx, proxy_port);
 out:
 	if (IS_ERR(ret))
@@ -1451,6 +1465,8 @@ int handle_to_container(struct __ctx_buff *ctx)
 
 	bpf_clear_meta(ctx);
 
+    // return from_proxy ? 
+    // identity = source identity
 	if (inherit_identity_from_host(ctx, &identity))
 		trace = TRACE_FROM_PROXY;
 
@@ -1473,6 +1489,9 @@ int handle_to_container(struct __ctx_buff *ctx)
 #endif /* ENABLE_IPV6 */
 #ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
+        //数据包重定向给 L7 代理
+        //实施 ingress policy
+        // nodePort：从数据包的 ip option中提取出 初始ip和nodePort ，创建 dsr 相关的 nat 转换记录（？ 将来，endpoint回复数据时，自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
 		invoke_tailcall_if(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6)),
 				   CILIUM_CALL_IPV4_TO_ENDPOINT, tail_ipv4_to_endpoint);
 		break;

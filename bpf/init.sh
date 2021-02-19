@@ -14,31 +14,49 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# BPF template files directory
 LIB=$1
-RUNDIR=$2
+# StateDir is the directory where runtime state of endpoints is stored
+RUNDIR=$2 
+# internal IPv4 node address
 IP4_HOST=$3
+# internal IPv6 node address
 IP6_HOST=$4
+# Tunnel mode
 MODE=$5
 # Only set if MODE = "direct", "ipvlan", "flannel"
 NATIVE_DEVS=$6
+# cilium_net
 HOST_DEV1=$7
+# cilium_host
 HOST_DEV2=$8
 XDP_DEV=$9
 XDP_MODE=${10}
 MTU=${11}
 IPSEC=${12}
 ENCRYPT_DEV=${13}
+# true / false , HostReachableServices
 HOSTLB=${14}
+# true / false , HostReachableServicesUDP
 HOSTLB_UDP=${15}
+# true / false  , HostReachableServicesPeer
 HOSTLB_PEER=${16}
+# "/var/run/cilium/cgroupv2"
 CGROUP_ROOT=${17}
+# "/sys/fs/bpf"
 BPFFS_ROOT=${18}
+# true / false
 NODE_PORT=${19}
+#true / false ， Reject application bind(2) requests to service ports in the NodePort range
 NODE_PORT_BIND=${20}
+# "v2"
 MCPU=${21}
+# all ipv4 address 
 NODE_PORT_IPV4_ADDRS=${22}
+# all ipv6 address 
 NODE_PORT_IPV6_ADDRS=${23}
 NR_CPUS=${24}
+# true / false . EndpointRoutes
 ENDPOINT_ROUTES=${25}
 
 ID_HOST=1
@@ -227,8 +245,11 @@ function rnd_mac_addr()
 
 function bpf_compile()
 {
+	# 某个 c 程序路径
 	IN=$1
+	#编译出的 .o 文件
 	OUT=$2
+	#obj
 	TYPE=$3
 	EXTRA_OPTS=$4
 
@@ -251,6 +272,7 @@ function xdp_unload()
 	DEV=$1
 	MODE=$2
 
+	#关闭所有xdp程序
 	ip link set dev $DEV $MODE off 2> /dev/null || true
 }
 
@@ -271,6 +293,7 @@ function xdp_load()
 	rm -f "$CILIUM_BPF_MNT/xdp/globals/$CIDR_MAP" 2> /dev/null || true
 	cilium-map-migrate -s $OUT
 	set +e
+	# 加载指定 obj 的 section
 	ip -force link set dev $DEV $MODE obj $OUT sec $SEC
 	RETCODE=$?
 	set -e
@@ -281,8 +304,10 @@ function xdp_load()
 function bpf_unload()
 {
 	DEV=$1
+	# egress
 	WHERE=$2
 
+	# 删除 tc 程序
 	tc filter del dev $DEV $WHERE 2> /dev/null || true
 }
 
@@ -301,10 +326,12 @@ function bpf_load()
 
 	OPTS="${OPTS} -DNODE_MAC=${NODE_MAC} -DCALLS_MAP=${CALLS_MAP}"
 	bpf_compile $IN $OUT obj "$OPTS"
+	#添加 clsact
 	tc qdisc replace dev $DEV clsact || true
 	[ -z "$(tc filter show dev $DEV $WHERE | grep -v 'pref 1 bpf chain 0 $\|pref 1 bpf chain 0 handle 0x1')" ] || tc filter del dev $DEV $WHERE
 	cilium-map-migrate -s $OUT
 	set +e
+	#添加tc ebpf
 	tc filter replace dev $DEV $WHERE prio 1 handle 1 bpf da obj $OUT sec $SEC
 	RETCODE=$?
 	set -e
@@ -314,12 +341,16 @@ function bpf_load()
 
 function bpf_load_cgroups()
 {
+			bpf_load_cgroups "$COPTS" bpf_sock.c bpf_sock.o sockaddr connect6 $CALLS_MAP $CGROUP_ROOT $BPFFS_ROOT
+
+
 	OPTS=$1
 	IN=$2
 	OUT=$3
 	PROG_TYPE=$4
 	WHERE=$5
 	CALLS_MAP=$6
+	# "/var/run/cilium/cgroupv2"
 	CGRP=$7
 	BPFMNT=$8
 
@@ -338,6 +369,7 @@ function bpf_load_cgroups()
 
 	if [ "$RETCODE" -eq "0" ]; then
 		set +e
+		#load prog from pinned file 
 		bpftool cgroup attach $CGRP $WHERE pinned $TMP_FILE
 		RETCODE=$?
 		set -e

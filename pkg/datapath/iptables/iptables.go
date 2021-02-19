@@ -991,6 +991,7 @@ func (m *IptablesManager) InstallRules(ifName string) error {
 	localDeliveryInterface := getDeliveryInterface(ifName)
 
 	if option.Config.EnableIPv4 {
+		// add some accept rule in filter of FORWARD
 		if err := m.installForwardChainRules(ifName, localDeliveryInterface, ciliumForwardChain); err != nil {
 			return fmt.Errorf("cannot install forward chain rules to %s: %s", transientChain.name, err)
 		}

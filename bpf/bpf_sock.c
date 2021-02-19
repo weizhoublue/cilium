@@ -82,6 +82,7 @@ void ctx_set_port(struct bpf_sock_addr *ctx, __be16 dport)
 static __always_inline __maybe_unused bool
 ctx_in_hostns(void *ctx __maybe_unused, __u64 *cookie)
 {
+    // 判断 数据包是否 是 host 网络ns 发出
 #ifdef BPF_HAVE_NETNS_COOKIE
 	__u64 own_cookie = get_netns_cookie(ctx);
 
@@ -336,8 +337,10 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	 * service entries via wildcarded lookup for NodePort and
 	 * HostPort services.
 	 */
+    // 通过 精细查询 ，看是否能够命中 clusterIp service
 	svc = lb4_lookup_service(&key, true);
 	if (!svc)
+        // 通过 通配 查询 service ，看是否能够命中 nodePort service
 		svc = sock4_wildcard_lookup_full(&key, in_hostns);
 	if (!svc)
 		return -ENXIO;
@@ -348,6 +351,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	 * IP address. But do the service translation if the IP
 	 * is from the host.
 	 */
+    // 如果 service是 基于 external ip 的nodePort , 那么不做 dnat 解析，希望 是由集群外部的 loadbalancer 自己来做
 	if (sock4_skip_xlate(svc, orig_key.address))
 		return -EPERM;
 
@@ -407,6 +411,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 		return -ENOMEM;
 	}
 
+    // dnat 解析 service
 	ctx->user_ip4 = backend->address;
 	ctx_set_port(ctx, backend->port);
 
@@ -446,6 +451,7 @@ static __always_inline int __sock4_bind(struct bpf_sock *ctx,
 	 * LoadBalancer or ExternalIP service. We must reject this
 	 * bind() call to avoid accidentally hijacking its traffic.
 	 */
+    // 拒绝 绑定service相关的ip和端口，防止 service流量被本应用劫持
 	if (svc && (lb4_svc_is_nodeport(svc) ||
 		    lb4_svc_is_external_ip(svc) ||
 		    lb4_svc_is_loadbalancer(svc)))
@@ -457,6 +463,7 @@ static __always_inline int __sock4_bind(struct bpf_sock *ctx,
 __section("post_bind4")
 int sock4_bind(struct bpf_sock *ctx)
 {
+    // 拒绝 绑定service相关的ip和端口，防止 service流量被本应用劫持
 	if (__sock4_bind(ctx, ctx) < 0)
 		return SYS_REJECT;
 
@@ -511,6 +518,7 @@ int sock4_sendmsg(struct bpf_sock_addr *ctx)
 __section("recvmsg4")
 int sock4_recvmsg(struct bpf_sock_addr *ctx)
 {
+    // 如果当初 connect时，做过service解析，那么，此处 ，在sock中把 service 的vip 替换回去，让应用 无感知 nat 的发送
 	__sock4_xlate_rev(ctx, ctx);
 	return SYS_PROCEED;
 }

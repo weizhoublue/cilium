@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//  在物理网卡上 进行 带宽限制的map
 package bwmap
 
 import (

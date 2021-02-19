@@ -261,6 +261,7 @@ func NewDaemon(ctx context.Context, epMgr *endpointmanager.EndpointManager, dp d
 		return nil, nil, fmt.Errorf("invalid daemon configuration: %s", err)
 	}
 
+	// cni bin 的配置
 	if option.Config.ReadCNIConfiguration != "" {
 		netConf, err = cnitypes.ReadNetConf(option.Config.ReadCNIConfiguration)
 		if err != nil {
@@ -278,6 +279,8 @@ func NewDaemon(ctx context.Context, epMgr *endpointmanager.EndpointManager, dp d
 		log.WithError(err).Fatal("Unable to configure API rate limiting")
 	}
 
+	// 初始化 ebpf 的 各种用途的 maps
+	// CT是链路追踪表
 	ctmap.InitMapInfo(option.Config.CTMapEntriesGlobalTCP, option.Config.CTMapEntriesGlobalAny,
 		option.Config.EnableIPv4, option.Config.EnableIPv6,
 	)
@@ -317,6 +320,7 @@ func NewDaemon(ctx context.Context, epMgr *endpointmanager.EndpointManager, dp d
 		metrics.Identity.Add(float64(num))
 	}
 
+	// 用于发现其他 node
 	nd := nodediscovery.NewNodeDiscovery(nodeMngr, mtuConfig, netConf)
 
 	d := Daemon{
@@ -333,8 +337,10 @@ func NewDaemon(ctx context.Context, epMgr *endpointmanager.EndpointManager, dp d
 		apiLimiterSet:     apiLimiterSet,
 	}
 
+	// 初始化 开k8s 的 service
 	d.svc = service.NewService(&d)
 
+	// 初始化 policy 相关
 	d.identityAllocator = cache.NewCachingIdentityAllocator(&d)
 	d.policy = policy.NewPolicyRepository(d.identityAllocator.GetIdentityCache(),
 		certificatemanager.NewManager(option.Config.CertDirectory, k8s.Client()))
@@ -372,6 +378,7 @@ func NewDaemon(ctx context.Context, epMgr *endpointmanager.EndpointManager, dp d
 	if option.Config.FlannelUninstallOnExit {
 		cleaner.cleanupFuncs.Add(func() {
 			for _, ep := range d.endpointManager.GetEndpoints() {
+				// 删除 endpoint 的 主机侧的  veth 上的 tc ebpf
 				ep.DeleteBPFProgramLocked()
 			}
 		})
@@ -435,6 +442,7 @@ func NewDaemon(ctx context.Context, epMgr *endpointmanager.EndpointManager, dp d
 	// daemon's proxy into each endpoint.
 	bootstrapStats.proxyStart.Start()
 	// FIXME: Make the port range configurable.
+	// 启动 L7 / envoy 等代理
 	if option.Config.EnableL7Proxy {
 		d.l7Proxy = proxy.StartProxySupport(10000, 20000, option.Config.RunDir,
 			&d, option.Config.AgentLabels, d.datapath, d.endpointManager)

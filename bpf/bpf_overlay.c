@@ -171,6 +171,7 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 		return DROP_INVALID;
 #ifdef ENABLE_NODEPORT
 	if (!bpf_skip_nodeport(ctx)) {
+        // 实施nodePort 转发
 		int ret = nodeport_lb4(ctx, *identity);
 
 		if (ret < 0)
@@ -222,6 +223,7 @@ not_esp:
 #endif
 
 	/* Lookup IPv4 address in list of local endpoints */
+    // 如果目的ip 是本地endpoint，则转发
 	ep = lookup_ip4_endpoint(ip4);
 	if (ep) {
 		/* Let through packets to the node-ip so they are processed by
@@ -328,6 +330,7 @@ int to_overlay(struct __ctx_buff *ctx)
 {
 	int ret;
 
+    // 为什么这个函数 只处理 ipv6 ？而且不是进行隧道封装
 	ret = encap_remap_v6_host_address(ctx, true);
 	if (unlikely(ret < 0))
 		goto out;
@@ -353,6 +356,7 @@ int to_overlay(struct __ctx_buff *ctx)
 		ret = CTX_ACT_OK;
 		goto out;
 	}
+    // 若nodeport转发，实施snat
 	ret = nodeport_nat_fwd(ctx);
 #endif
 out:

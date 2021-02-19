@@ -171,6 +171,7 @@ func bpftoolLoad(bpfObject string, bpfFsFile string) error {
 
 // #rm $bpfObject
 func bpftoolUnload(bpfObject string) {
+	// "/sys/fs/bpf" + bpfObject
 	bpffs := filepath.Join(bpf.GetMapRoot(), bpfObject)
 
 	os.Remove(bpffs)
@@ -377,6 +378,7 @@ func SockmapEnable() error {
 // all the programs and maps associated with it. Here "unload" just means
 // deleting the file associated with the map.
 func SockmapDisable() {
+	//  "tc/globals" +  "cilium_sock_ops"
 	mapName := filepath.Join(mapPrefix, sockMap)
 	bpftoolDetach(eSockops)
 	bpftoolUnload(eSockops)

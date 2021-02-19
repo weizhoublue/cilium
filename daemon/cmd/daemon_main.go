@@ -117,6 +117,7 @@ var (
 			// Open socket for using gops to get stacktraces of the agent.
 			addr := fmt.Sprintf("127.0.0.1:%d", viper.GetInt(option.GopsPort))
 			addrField := logrus.Fields{"address": addr}
+			// 启动 gops ， 用于调试 
 			if err := gops.Listen(gops.Options{
 				Addr:                   addr,
 				ReuseSocketAddrAndPort: true,
@@ -132,6 +133,7 @@ var (
 		},
 	}
 
+	// in metrics.go file
 	bootstrapStats = bootstrapStatistics{}
 )
 
@@ -1383,10 +1385,13 @@ func runDaemon() {
 	iptablesManager.Init()
 
 	if k8s.IsEnabled() {
+		// bootstrapStats 启动一些 metric 统计， 测量花费的时间
 		bootstrapStats.k8sInit.Start()
+		// 获取 k8s client , 检测k8s 的版本兼容性等 , 并且，k8s client 还有心跳 来维护其 可用性
 		if err := k8s.Init(option.Config); err != nil {
 			log.WithError(err).Fatal("Unable to initialize Kubernetes subsystem")
 		}
+		// 计时结束
 		bootstrapStats.k8sInit.End(true)
 	}
 
@@ -1420,6 +1425,7 @@ func runDaemon() {
 
 	bootstrapStats.enableConntrack.Start()
 	log.Info("Starting connection tracking garbage collector")
+	// 链路追踪 map 的 gc
 	gc.Enable(option.Config.EnableIPv4, option.Config.EnableIPv6,
 		restoredEndpoints.restored, d.endpointManager)
 	bootstrapStats.enableConntrack.End(true)
@@ -1454,6 +1460,7 @@ func runDaemon() {
 	}
 
 	if option.Config.EnableIPMasqAgent {
+		// node masquerade 启动
 		ipmasqAgent, err := ipmasq.NewIPMasqAgent(option.Config.IPMasqAgentConfigPath)
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create ip-masq-agent")
@@ -1553,6 +1560,8 @@ func runDaemon() {
 	}
 }
 
+
+// 注册 cilium  api 的各个 handler
 func (d *Daemon) instantiateAPI() *restapi.CiliumAPIAPI {
 	swaggerSpec, err := loads.Analyzed(server.SwaggerJSON, "")
 	if err != nil {

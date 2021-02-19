@@ -31,9 +31,11 @@ import (
 
 var (
 	// Path to where bpffs is mounted
+	// "/sys/fs/bpf"
 	mapRoot = defaults.DefaultMapRoot
 
 	// Prefix for all maps (default: tc/globals)
+	// "tc/globals"
 	mapPrefix = defaults.DefaultMapPrefix
 
 	// Set to true on first get request to detect misorder
@@ -143,6 +145,7 @@ func mountFS(printWarning bool) error {
 		return fmt.Errorf("%s is a file which is not a directory", mapRoot)
 	}
 
+	// mout bpf fs
 	if err := unix.Mount(mapRoot, mapRoot, "bpf", 0, ""); err != nil {
 		return fmt.Errorf("failed to mount %s: %s", mapRoot, err)
 	}

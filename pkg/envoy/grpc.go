@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// 启动 xds server ，实现动态配置 envoy
 package envoy
 
 import (
@@ -24,7 +25,12 @@ import (
 	"github.com/cilium/cilium/pkg/envoy/xds"
 
 	"github.com/cilium/proxy/go/cilium/api"
+
+	// Envoy with Cilium filters
+	// GRPC service
+	// https://github.com/cilium/proxy/tree/master/go/envoy/service/discovery/v3
 	envoy_service_discovery "github.com/cilium/proxy/go/envoy/service/discovery/v3"
+	// grpc service https://github.com/cilium/proxy/blob/master/go/envoy/service/listener/v3/lds.pb.go
 	envoy_service_listener "github.com/cilium/proxy/go/envoy/service/listener/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"

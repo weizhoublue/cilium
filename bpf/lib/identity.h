@@ -40,6 +40,7 @@ static __always_inline bool inherit_identity_from_host(struct __ctx_buff *ctx,
 	 * and/or the connection be reset otherwise.
 	 */
 	if (magic == MARK_MAGIC_PROXY_INGRESS) {
+        // source identity
 		*identity = get_identity(ctx);
 		ctx->tc_index |= TC_INDEX_F_SKIP_INGRESS_PROXY;
 		from_proxy = true;

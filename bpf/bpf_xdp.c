@@ -246,6 +246,7 @@ static __always_inline int check_filters(struct __ctx_buff *ctx)
 	switch (proto) {
 #ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
+        // 对相关的cidr  ， 实施 prefilter 数据包过滤
 		ret = check_v4(ctx);
 		break;
 #endif /* ENABLE_IPV4 */

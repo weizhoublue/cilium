@@ -72,6 +72,7 @@ encap_remap_v6_host_address(struct __ctx_buff *ctx __maybe_unused,
 	validate_ethertype(ctx, &proto);
 	if (proto != bpf_htons(ETH_P_IPV6))
 		return 0;
+    //数据包中提取出ipv6 3层头
 	if (!revalidate_data(ctx, &data, &data_end, &ip6))
 		return DROP_INVALID;
 	/* For requests routed via tunnel with external v6 node IP
@@ -80,20 +81,24 @@ encap_remap_v6_host_address(struct __ctx_buff *ctx __maybe_unused,
 	 * address instead.
 	 */
 	if (egress) {
+        // 准备 本地主机的ip
 		BPF_V6(host_ip, HOST_IP);
 		which = (union v6addr *)&ip6->saddr;
 	} else {
 		BPF_V6(host_ip, ROUTER_IP);
 		which = (union v6addr *)&ip6->daddr;
 	}
+    // 如果 ipv6 地址已经是对的了，完成处理
 	if (ipv6_addrcmp(which, &host_ip))
 		return 0;
+        
 	nexthdr = ip6->nexthdr;
 	ret = ipv6_hdrlen(ctx, ETH_HLEN, &nexthdr);
 	if (ret < 0)
 		return ret;
 	off = ((void *)ip6 - data) + ret;
 	if (egress) {
+        // 准备 本地主机的ipv6 ip
 		BPF_V6(host_ip, ROUTER_IP);
 		noff = ETH_HLEN + offsetof(struct ipv6hdr, saddr);
 	} else {

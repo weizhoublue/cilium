@@ -213,6 +213,8 @@ __ctx_redirect_to_proxy(struct __ctx_buff *ctx, void *tuple __maybe_unused,
 #ifdef ENABLE_TPROXY
 	if (proxy_port && !from_host) {
 #ifdef ENABLE_IPV4
+        // 如果数据包是属于未建立socket的，则 分配新的socket，转发给 L7 代理 ； 
+        // 如果是已经建立socket的（说明已经同代理 建立链接了），则根据5元祖信息，把数据包传递给 相应的socket，从而转发给代理
 		if (ipv4)
 			result = ctx_redirect_to_proxy_ingress4(ctx, tuple, proxy_port);
 #endif /* ENABLE_IPV4 */
@@ -315,6 +317,8 @@ ctx_redirect_to_proxy_first(struct __ctx_buff *ctx, __be16 proxy_port)
 		ret = extract_tuple6(ctx, &tuple);
 		if (ret < 0)
 			return ret;
+        // 如果数据包是属于未建立socket的，则转发给 L7 代理 ； 
+        // 如果是已经建立socket的（说明被代理转发了），则根据5元祖信息，把数据包传递给 相应的socket
 		ret = ctx_redirect_to_proxy_ingress6(ctx, &tuple, proxy_port);
 		break;
 	}
@@ -326,6 +330,8 @@ ctx_redirect_to_proxy_first(struct __ctx_buff *ctx, __be16 proxy_port)
 		ret = extract_tuple4(ctx, &tuple);
 		if (ret < 0)
 			return ret;
+        // 如果数据包是属于未建立socket的，则 分配新的socket，转发给 L7 代理 ； 
+        // 如果是已经建立socket的（说明已经同代理 建立链接了），则根据5元祖信息，把数据包传递给 相应的socket，从而转发给代理
 		ret = ctx_redirect_to_proxy_ingress4(ctx, &tuple, proxy_port);
 		break;
 	}

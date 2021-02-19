@@ -408,6 +408,7 @@ func newMap(path string) *PolicyMap {
 // OpenOrCreate opens (or creates) a policy map at the specified path, which
 // is used to govern which peer identities can communicate with the endpoint
 // protected by this map.
+// pkg/endpoint/bpf.go:805:		e.policyMap, _, err = policymap.OpenOrCreate(e.policyMapPath())
 func OpenOrCreate(path string) (*PolicyMap, bool, error) {
 	m := newMap(path)
 	isNewMap, err := m.OpenOrCreate()
@@ -436,8 +437,8 @@ func InitMapInfo(maxEntries int) {
 
 // InitCallMap creates the policy call map in the kernel.
 func InitCallMap() error {
-	policyCallMap := bpf.NewMap(PolicyCallMapName,
-		bpf.MapTypeProgArray,
+	policyCallMap := bpf.NewMap(PolicyCallMapName, //cilium_call_policy
+		bpf.MapTypeProgArray, // map type
 		&CallKey{},
 		int(unsafe.Sizeof(CallKey{})),
 		&CallValue{},

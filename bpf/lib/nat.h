@@ -339,6 +339,7 @@ static __always_inline int snat_v4_rewrite_egress(struct __ctx_buff *ctx,
 			switch (tuple->nexthdr) {
 			case IPPROTO_TCP:
 			case IPPROTO_UDP:
+                // Overwrites a TCP or UDP port with new value and fixes up the checksum
 				ret = l4_modify_port(ctx, off,
 						     offsetof(struct tcphdr, source),
 						     &csum, state->to_sport,
@@ -445,6 +446,7 @@ static __always_inline bool snat_v4_can_skip(const struct ipv4_nat_target *targe
 	return false;
 }
 
+// 记录 dsr 的nat 记录，保留 client 最初访问的 ip和nodePort号，将来好 恢复，直接dsr 返回给client 
 static __always_inline __maybe_unused int snat_v4_create_dsr(struct __ctx_buff *ctx,
 							     __be32 to_saddr,
 							     __be16 to_sport)

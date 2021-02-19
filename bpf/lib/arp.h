@@ -83,6 +83,7 @@ arp_respond(struct __ctx_buff *ctx, union macaddr *smac, __be32 sip,
 
 	cilium_dbg_capture(ctx, DBG_CAPTURE_DELIVERY,
 			   ctx_get_ifindex(ctx));
+    // 从接收的网卡 发出 arp响应
 	return ctx_redirect(ctx, ctx_get_ifindex(ctx), direction);
 
 error:

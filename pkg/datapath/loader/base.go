@@ -84,7 +84,9 @@ const (
 	preFilterHeaderFileName = "filter_config.h"
 )
 
+//生成  ./netdev_config.h
 func (l *Loader) writeNetdevHeader(dir string, o datapath.BaseProgramOwner) error {
+	// "./netdev_config.h"
 	headerPath := filepath.Join(dir, netdevHeaderFileName)
 	log.WithField(logfields.Path, headerPath).Debug("writing configuration")
 
@@ -364,6 +366,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	sysctl.ApplySettings(sysSettings)
 
 	// Datapath initialization
+	// setup cilium_net and cilium_host on host
 	hostDev1, hostDev2, err := setupBaseDevice(devices, mode, deviceMTU)
 	if err != nil {
 		return err

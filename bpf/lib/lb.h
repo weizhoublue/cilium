@@ -432,6 +432,7 @@ static __always_inline int __lb6_rev_nat(struct __ctx_buff *ctx, int l4_off,
 	cilium_dbg_lb(ctx, DBG_LB6_REVERSE_NAT, nat->address.p4, nat->port);
 
 	if (nat->port) {
+        // 端口号 unNat
 		ret = reverse_map_l4_port(ctx, tuple->nexthdr, nat->port, l4_off, csum_off);
 		if (IS_ERR(ret))
 			return ret;
@@ -1310,6 +1311,7 @@ lb4_update_affinity_by_netns(const struct lb4_service *svc __maybe_unused,
 #endif
 }
 
+// 查询链路追踪表 ，  完成 tuple 中 目的endpoint 的DNAT 解析 
 static __always_inline int lb4_local(const void *map, struct __ctx_buff *ctx,
 				     int l3_off, int l4_off,
 				     struct csum_offset *csum_off,
@@ -1330,6 +1332,7 @@ static __always_inline int lb4_local(const void *map, struct __ctx_buff *ctx,
 		.client_ip = saddr,
 	};
 #endif
+    //查询链路追踪表 状态
 	ret = ct_lookup4(map, tuple, ctx, l4_off, CT_SERVICE, state, &monitor);
 	switch (ret) {
 	case CT_NEW:
@@ -1345,6 +1348,7 @@ static __always_inline int lb4_local(const void *map, struct __ctx_buff *ctx,
 #endif
 		if (backend_id == 0) {
 			/* No CT entry has been found, so select a svc endpoint */
+            //随机选择，或者 mglev 选择一个后端 endpoint
 			backend_id = lb4_select_backend_id(ctx, key, tuple, svc);
 			backend = lb4_lookup_backend(ctx, backend_id);
 			if (backend == NULL)
@@ -1354,6 +1358,7 @@ static __always_inline int lb4_local(const void *map, struct __ctx_buff *ctx,
 		state->backend_id = backend_id;
 		state->rev_nat_index = svc->rev_nat_index;
 
+        // 创建新的链路追踪表项
 		ret = ct_create4(map, NULL, tuple, ctx, CT_SERVICE, state, false);
 		/* Fail closed, if the conntrack entry create fails drop
 		 * service lookup.
@@ -1453,7 +1458,7 @@ update_state:
 
 	if (!state->loopback)
 #endif
-		tuple->daddr = backend->address;
+		tuple->daddr = backend->address; // 完成 DNAT 解析
 
 	return skip_xlate ? CTX_ACT_OK :
 	       lb4_xlate(ctx, &new_daddr, &new_saddr, &saddr,

@@ -112,6 +112,7 @@ static __always_inline int ipv4_local_delivery(struct __ctx_buff *ctx, int l3_of
 
 	cilium_dbg(ctx, DBG_LOCAL_DELIVERY, ep->lxc_id, seclabel);
 
+    // 更新3层ttl ， 2层mac
 	ret = ipv4_l3(ctx, l3_off, (__u8 *) &router_mac, (__u8 *) &lxc_mac, ip4);
 	if (ret != CTX_ACT_OK)
 		return ret;
@@ -136,6 +137,7 @@ static __always_inline int ipv4_local_delivery(struct __ctx_buff *ctx, int l3_of
 	ctx_store_meta(ctx, CB_IFINDEX, ep->ifindex);
 	ctx_store_meta(ctx, CB_FROM_HOST, from_host ? 1 : 0);
 
+    // tail_call(ctx, map, slot); 直接重定向到 本地 另一个endpoint的 lxc 
 	tail_call_dynamic(ctx, &POLICY_CALL_MAP, ep->lxc_id);
 	return DROP_MISSED_TAIL_CALL;
 #endif

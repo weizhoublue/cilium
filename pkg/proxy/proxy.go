@@ -112,6 +112,7 @@ type Proxy struct {
 
 // StartProxySupport starts the servers to support L7 proxies: xDS GRPC server
 // and access log server.
+// called by daemon/cmd/daemon.go:447 : proxy.StartProxySupport(10000, 20000, option.Config.RunDir, &d, option.Config.AgentLabels, d.datapath, d.endpointManager)
 func StartProxySupport(minPort uint16, maxPort uint16, stateDir string,
 	accessLogNotifier logger.LogRecordNotifier, accessLogMetadata []string,
 	datapathUpdater DatapathUpdater, mgr EndpointLookup) *Proxy {
@@ -263,6 +264,7 @@ func (p *Proxy) ackProxyPort(pp *ProxyPort) error {
 		// if the proxy is not currently configured.
 
 		// Remove old rules, if any and for different port
+		// 删除 iptables 中的 tproxy 代理规则
 		if pp.rulesPort != 0 && pp.rulesPort != pp.proxyPort {
 			scopedLog.Infof("Removing old proxy port rules for %s:%d", pp.name, pp.rulesPort)
 			p.datapathUpdater.RemoveProxyRules(pp.rulesPort, pp.ingress, pp.name)
@@ -417,6 +419,7 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 	var revertStack revert.RevertStack
 	revertFunc = revertStack.Revert
 
+	// 如果已经存在 If the redirect is already in place
 	if redir, ok := p.redirects[id]; ok {
 		redir.mutex.Lock()
 
@@ -463,7 +466,9 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 		return 0, err, nil, nil
 	}
 
+	// 生成一个 实例
 	redir := newRedirect(localEndpoint, pp, l4.GetPort())
+	// pkg/policy/l4.go
 	redir.updateRules(l4)
 	// Rely on create*Redirect to update rules, unlike the update case above.
 

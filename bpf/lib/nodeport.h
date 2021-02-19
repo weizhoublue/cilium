@@ -427,6 +427,7 @@ int tail_nodeport_ipv6_dsr(struct __ctx_buff *ctx)
 		return DROP_INVALID;
 
 	if (nodeport_lb_hairpin())
+        // if enable ENABLE_NODEPORT_HAIRPIN
 		dmac = map_lookup_elem(&NODEPORT_NEIGH6, &ip6->daddr);
 	if (dmac) {
 		union macaddr mac = NATIVE_DEV_MAC_BY_IFINDEX(fib_params.l.ifindex);
@@ -926,6 +927,7 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 		return true;
 	}
 #else
+    // IPV4_NODEPORT=${v4_addrs[$XDP_DEV]}"
 	if (ip4->saddr == IPV4_NODEPORT) {
 		*addr = IPV4_NODEPORT;
 		return true;
@@ -958,7 +960,7 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 			      IPV4_SNAT_EXCLUSION_DST_CIDR_LEN))
 		return false;
 #endif
-
+    // 查询 源ip 是否是某个 endpoint 的
 	ep = __lookup_ip4_endpoint(ip4->saddr);
 	if (ep && !(ep->flags & ENDPOINT_F_HOST)) {
 		struct remote_endpoint_info *info;
@@ -1011,6 +1013,7 @@ static __always_inline int nodeport_nat_ipv4_fwd(struct __ctx_buff *ctx)
 	};
 	int ret = CTX_ACT_OK;
 
+    // 是否需要 snat
 	if (snat_v4_needed(ctx, &target.addr, &from_endpoint))
 		ret = snat_v4_process(ctx, NAT_DIR_EGRESS, &target,
 				      from_endpoint);
@@ -1115,6 +1118,7 @@ static __always_inline int dsr_set_opt4(struct __ctx_buff *ctx,
 	ip4->tot_len = bpf_htons(bpf_ntohs(ip4->tot_len) + 0x8);
 	iph_new = *(__u32 *)ip4;
 
+    //在ipv4的 option 中 添加了 最初请求的 源端口 和源ip
 	opt[0] = bpf_htonl(DSR_IPV4_OPT_32 | svc_port);
 	opt[1] = bpf_htonl(svc_addr);
 
@@ -1125,6 +1129,7 @@ static __always_inline int dsr_set_opt4(struct __ctx_buff *ctx,
 			    ctx_adjust_room_dsr_flags()))
 		return DROP_INVALID;
 
+    //在ip4报头后，插入 option
 	if (ctx_store_bytes(ctx, ETH_HLEN + sizeof(*ip4),
 			    &opt, sizeof(opt), 0) < 0)
 		return DROP_INVALID;
@@ -1163,11 +1168,13 @@ static __always_inline int handle_dsr_v4(struct __ctx_buff *ctx, bool *dsr)
 					   &opt2, sizeof(opt2)) < 0)
 				return DROP_INVALID;
 
+            // 当初，client访问 nodePort 的初始 ip 和 nodePort端口
 			opt2 = bpf_ntohl(opt2);
 			dport = opt1 & DSR_IPV4_DPORT_MASK;
 			address = opt2;
 			*dsr = true;
 
+            // 创建 dsr 相关的 nat 转换记录（？ 将来，endpoint回复数据时，自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
 			if (snat_v4_create_dsr(ctx, address, dport) < 0)
 				return DROP_INVALID;
 		}
@@ -1188,8 +1195,10 @@ static __always_inline int xlate_dsr_v4(struct __ctx_buff *ctx,
 	nat_tup.sport = tuple->dport;
 	nat_tup.dport = tuple->sport;
 
+    // __snat_lookup(&SNAT_MAPPING_IPV4, tuple)
 	entry = snat_v4_lookup(&nat_tup);
 	if (entry)
+        // Overwrites a TCP or UDP port with new value and fixes up the checksum
 		ret = snat_v4_rewrite_egress(ctx, &nat_tup, entry, l4_off, has_l4_header);
 	return ret;
 }
@@ -1208,6 +1217,7 @@ int tail_nodeport_ipv4_dsr(struct __ctx_buff *ctx)
 	struct iphdr *ip4;
 	int ret;
 
+    // 从ctx中，获取出  data=2层数据部分的头，data_end=2层数据部分的尾，ip4=3层报头
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
@@ -1216,6 +1226,7 @@ int tail_nodeport_ipv4_dsr(struct __ctx_buff *ctx)
 			    ctx_load_meta(ctx, CB_ADDR_V4),
 			    ctx_load_meta(ctx, CB_HINT));
 #elif DSR_ENCAP_MODE == DSR_ENCAP_NONE
+    //在ipv4的 option 中 添加了 service的 目的端口 和 ip
 	ret = dsr_set_opt4(ctx, ip4,
 			   ctx_load_meta(ctx, CB_ADDR_V4),
 			   ctx_load_meta(ctx, CB_PORT));
@@ -1228,10 +1239,12 @@ int tail_nodeport_ipv4_dsr(struct __ctx_buff *ctx)
 		return DROP_INVALID;
 
 	if (nodeport_lb_hairpin())
+        //查询之前是否有 目的mac的 记录
 		dmac = map_lookup_elem(&NODEPORT_NEIGH4, &ip4->daddr);
 	if (dmac) {
 		union macaddr mac = NATIVE_DEV_MAC_BY_IFINDEX(fib_params.l.ifindex);
 
+        //目的mac 写入 数据包
 		if (eth_store_daddr_aligned(ctx, dmac->addr, 0) < 0)
 			return DROP_WRITE_ERROR;
 		if (eth_store_saddr_aligned(ctx, mac.addr, 0) < 0)
@@ -1240,11 +1253,13 @@ int tail_nodeport_ipv4_dsr(struct __ctx_buff *ctx)
 		fib_params.l.ipv4_src = ip4->saddr;
 		fib_params.l.ipv4_dst = ip4->daddr;
 
+        //从内核 arp 表中查询 目的mac
 		ret = fib_lookup(ctx, &fib_params.l, sizeof(fib_params),
 				 BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_OUTPUT);
 		if (ret != 0)
 			return DROP_NO_FIB;
 		if (nodeport_lb_hairpin())
+            // 存储查询结果，下次使用
 			map_update_elem(&NODEPORT_NEIGH4, &ip4->daddr,
 					fib_params.l.dmac, 0);
 		if (eth_store_daddr(ctx, fib_params.l.dmac, 0) < 0)
@@ -1252,7 +1267,7 @@ int tail_nodeport_ipv4_dsr(struct __ctx_buff *ctx)
 		if (eth_store_saddr(ctx, fib_params.l.smac, 0) < 0)
 			return DROP_WRITE_ERROR;
 	}
-
+    //从相关接口 转发出
 	return ctx_redirect(ctx, fib_params.l.ifindex, 0);
 }
 #endif /* ENABLE_DSR */
@@ -1302,6 +1317,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 		}
 	}
 #endif
+    // 进行 SNAT
 	ret = snat_v4_process(ctx, dir, &target, false);
 	if (IS_ERR(ret)) {
 		/* In case of no mapping, recircle back to main path. SNAT is very
@@ -1336,6 +1352,9 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 	}
 
 	if (nodeport_lb_hairpin())
+        // if enable HAIRPING
+        // haripin模式下，数据包 完成 snat后， 直接由 接收网卡 发出，所以，我们在此解析目的mac
+        //在之前缓存信息中，看是否能查询到目的mac
 		dmac = map_lookup_elem(&NODEPORT_NEIGH4, &ip4->daddr);
 	if (dmac) {
 		union macaddr mac = NATIVE_DEV_MAC_BY_IFINDEX(fib_params.l.ifindex);
@@ -1351,7 +1370,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 	} else {
 		fib_params.l.ipv4_src = ip4->saddr;
 		fib_params.l.ipv4_dst = ip4->daddr;
-
+        //在内核中，进行邻居表 查询 目的 mac
 		ret = fib_lookup(ctx, &fib_params.l, sizeof(fib_params),
 				 BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_OUTPUT);
 		if (ret != 0) {
@@ -1359,6 +1378,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 			goto drop_err;
 		}
 		if (nodeport_lb_hairpin())
+            //缓存邻居
 			map_update_elem(&NODEPORT_NEIGH4, &ip4->daddr,
 					fib_params.l.dmac, 0);
 
@@ -1372,6 +1392,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 		}
 	}
 out_send: __maybe_unused
+    //从相应的网卡 发出数据包
 	return ctx_redirect(ctx, fib_params.l.ifindex, 0);
 drop_err:
 	return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP,
@@ -1398,6 +1419,7 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 	bool backend_local;
 	__u32 monitor = 0;
 
+    // 从数据包中 获取出 ip4=3层报头
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
@@ -1407,6 +1429,7 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 
 	l4_off = l3_off + ipv4_hdrlen(ip4);
 
+    // 根据数据包，生成出 struct lb4_key key 信息 （访问的service 的 ip 和端口）
 	ret = lb4_extract_key(ctx, ip4, l4_off, &key, &csum_off, CT_EGRESS);
 	if (IS_ERR(ret)) {
 		if (ret == DROP_NO_SERVICE)
@@ -1424,6 +1447,7 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 		if (!lb4_src_range_ok(svc, ip4->saddr))
 			return DROP_NOT_IN_SRC_RANGE;
 
+        // 查询链路追踪表 ，  完成 tuple 中 目的endpoint 的DNAT 解析 ， 
 		ret = lb4_local(get_ct_map4(&tuple), ctx, l3_off, l4_off,
 				&csum_off, &key, &tuple, svc, &ct_state_new,
 				ip4->saddr, ipv4_has_l4_header(ip4), skip_xlate);
@@ -1442,13 +1466,15 @@ skip_service_lookup:
 		if (nodeport_uses_dsr4(&tuple))
 			return CTX_ACT_OK;
 #endif
-
+        // 告诉后续的处理程序，
 		ctx_store_meta(ctx, CB_NAT, NAT_DIR_INGRESS);
 		ctx_store_meta(ctx, CB_SRC_IDENTITY, src_identity);
+        // 进行转发
 		ep_tail_call(ctx, CILIUM_CALL_IPV4_NODEPORT_NAT);
 		return DROP_MISSED_TAIL_CALL;
 	}
 
+    //根据DNAT后的 endpoint ip， 查询是否 本地endpoint
 	backend_local = __lookup_ip4_endpoint(tuple.daddr);
 	if (!backend_local && lb4_svc_is_hostport(svc))
 		return DROP_INVALID;
@@ -1457,8 +1483,10 @@ skip_service_lookup:
 	 * need to track in here.
 	 */
 	if (backend_local || !nodeport_uses_dsr4(&tuple)) {
+        // 如果 back endpoint 是本地 
 		struct ct_state ct_state = {};
 
+        // 查询链路追踪表 
 		ret = ct_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off,
 				 CT_EGRESS, &ct_state, &monitor);
 		switch (ret) {
@@ -1511,9 +1539,11 @@ redo_local:
 
 		if (!revalidate_data(ctx, &data, &data_end, &ip4))
 			return DROP_INVALID;
+        // 设置数据包的 源mac
 		if (eth_load_saddr(ctx, smac.addr, 0) < 0)
 			return DROP_INVALID;
 
+        //把client 的源mac  记录到 邻接表map 
 		mac = map_lookup_elem(&NODEPORT_NEIGH4, &ip4->saddr);
 		if (!mac || eth_addrcmp(mac, &smac)) {
 			ret = map_update_elem(&NODEPORT_NEIGH4, &ip4->saddr,
@@ -1523,20 +1553,25 @@ redo_local:
 		}
 	}
 
+    // 如果访问的 是 其它宿主机上的endpoint 的 nodePort
 	if (!backend_local) {
 		edt_set_aggregate(ctx, 0);
-		if (nodeport_uses_dsr4(&tuple)) {
+		if (nodeport_uses_dsr4(&tuple)) { // true or false
 #if DSR_ENCAP_MODE == DSR_ENCAP_IPIP
+    // 如果是以 IPIP 隧道封装来 实现DSR
 			ctx_store_meta(ctx, CB_HINT,
 				       ((__u32)tuple.sport << 16) | tuple.dport);
 			ctx_store_meta(ctx, CB_ADDR_V4, tuple.daddr);
 #elif DSR_ENCAP_MODE == DSR_ENCAP_NONE
-			ctx_store_meta(ctx, CB_PORT, key.dport);
-			ctx_store_meta(ctx, CB_ADDR_V4, key.address);
+    // 如果是以 直接路由 来 实现DSR
+			ctx_store_meta(ctx, CB_PORT, key.dport);//service 的端口
+			ctx_store_meta(ctx, CB_ADDR_V4, key.address); //service的ip
 #endif /* DSR_ENCAP_MODE */
+            // DSR 模式的 NodePort转发
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_NODEPORT_DSR);
 		} else {
 			ctx_store_meta(ctx, CB_NAT, NAT_DIR_EGRESS);
+            // SNAT 方式的 nodePort转发（从相关网卡 发出）
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_NODEPORT_NAT);
 		}
 		return DROP_MISSED_TAIL_CALL;
@@ -1544,6 +1579,7 @@ redo_local:
 
 	ctx_set_xfer(ctx, XFER_PKT_NO_SVC);
 
+    // 如果是 nodePort 访问本地的 endpoint ， 则继续后续的 转发处理
 	return CTX_ACT_OK;
 }
 
@@ -1581,6 +1617,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 			 &monitor);
 
 	if (ret == CT_REPLY && ct_state.node_port == 1 && ct_state.rev_nat_index != 0) {
+        // unNat
 		ret2 = lb4_rev_nat(ctx, l3_off, l4_off, &csum_off,
 				   &ct_state, &tuple,
 				   REV_NAT_F_TUPLE_SADDR, ipv4_has_l4_header(ip4));
@@ -1616,7 +1653,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 			}
 		}
 #endif
-
+        // mac 写入数据包
 		dmac = map_lookup_elem(&NODEPORT_NEIGH4, &ip4->daddr);
 		if (dmac) {
 			union macaddr mac = NATIVE_DEV_MAC_BY_IFINDEX(*ifindex);

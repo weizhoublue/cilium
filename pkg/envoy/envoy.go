@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// 本文件，是启动一个 envoy 进程
+
 package envoy
 
 import (
@@ -80,6 +82,7 @@ func mapLogLevel(level logrus.Level) string {
 	return envoyLevelMap[level]
 }
 
+// envoy 的 admin interface ， 我们向envoy 来获取和修改 配置
 type admin struct {
 	adminURL string
 	unixPath string
@@ -129,12 +132,13 @@ func (a *admin) quit() error {
 	return a.transact("quitquitquit")
 }
 
+// 管理 启动的 envoy 进程
 // Envoy manages a running Envoy proxy instance via the
 // ListenerDiscoveryService and RouteDiscoveryService gRPC APIs.
 type Envoy struct {
 	stopCh chan struct{}
 	errCh  chan error
-	admin  *admin
+	admin  *admin // envoy  admin interface
 }
 
 // GetEnvoyVersion returns the envoy binary version string
@@ -279,6 +283,7 @@ func StartEnvoy(stateDir, logPath string, baseID uint64) *Envoy {
 	return nil
 }
 
+// 管道，接收来自 envoy 的std err 和 out ，完成分析，并写出到 log
 // newEnvoyLogPiper creates a writer that parses and logs log messages written by Envoy.
 func newEnvoyLogPiper() io.WriteCloser {
 	reader, writer := io.Pipe()

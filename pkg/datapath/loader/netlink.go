@@ -293,6 +293,7 @@ func setupBaseDevice(nativeDevs []netlink.Link, mode baseDeviceMode, mtu int) (n
 
 		return ipvlan, ipvlan, nil
 	default:
+		// cilium_net and cilium_host
 		if err := setupVethPair(defaults.HostDevice, defaults.SecondHostDevice); err != nil {
 			return nil, nil, err
 		}

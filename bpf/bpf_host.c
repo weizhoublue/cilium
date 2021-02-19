@@ -261,6 +261,7 @@ skip_host_firewall:
 	dst = (union v6addr *) &ip6->daddr;
 	info = ipcache_lookup6(&IPCACHE_MAP, dst, V6_CACHE_KEY_LEN);
 	if (info != NULL && info->tunnel_endpoint != 0) {
+        //ipsec 处理
 		ret = encap_and_redirect_with_nodeid(ctx, info->tunnel_endpoint,
 							 info->key,
 							 secctx, TRACE_PAYLOAD_LEN);
@@ -451,6 +452,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	if (!from_host) {
 		if (ctx_get_xfer(ctx) != XFER_PKT_NO_SVC &&
 		    !bpf_skip_nodeport(ctx)) {
+            // 实现 nodePort 转发
 			ret = nodeport_lb4(ctx, secctx);
 			if (ret < 0)
 				return ret;
@@ -508,17 +510,20 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	/* Lookup IPv4 address in list of local endpoints and host IPs */
 	ep = lookup_ip4_endpoint(ip4);
 	if (ep) {
+        // 如果访问目的ip是本地endpoint
 		/* Let through packets to the node-ip so they are processed by
 		 * the local ip stack.
 		 */
 		if (ep->flags & ENDPOINT_F_HOST)
+            // ENDPOINT_F_HOST: Special endpoint representing local host
 #ifdef HOST_REDIRECT_TO_INGRESS
 			/* This is required for L7 proxy to send packets to the host. */
+            // 把数据包直接 重定向到 endpoint 的 lxc ingress
 			return redirect(HOST_IFINDEX, BPF_F_INGRESS);
 #else
 			return CTX_ACT_OK;
 #endif
-
+        // 转发出数据包
 		return ipv4_local_delivery(ctx, ETH_HLEN, secctx, ip4, ep,
 					   METRIC_INGRESS, from_host);
 	}
@@ -526,6 +531,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 #ifdef ENCAP_IFINDEX
 	info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
 	if (info != NULL && info->tunnel_endpoint != 0) {
+        // ipsec 处理
 		ret = encap_and_redirect_with_nodeid(ctx, info->tunnel_endpoint,
 						     info->key, secctx,
 						     TRACE_PAYLOAD_LEN);
@@ -808,7 +814,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 			/* Pass any unknown ARP requests to the Linux stack */
 			if (!arp_validate(ctx, &mac, &smac, &sip, &tip))
 				return CTX_ACT_OK;
-
+            // 如果arp请求 本网卡的ip，则从接收网卡 原路 发回 arp回复
 			return arp_respond(ctx, &mac, tip, &smac, sip,
 					   BPF_F_INGRESS);
 		}
@@ -817,6 +823,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 		int trace = TRACE_FROM_HOST;
 		bool from_proxy;
 
+        //识别流量 是从哪个 identity  发送来的， 是否来自 L7代理发出来的
 		from_proxy = inherit_identity_from_host(ctx, &identity);
 		if (from_proxy)
 			trace = TRACE_FROM_PROXY;
@@ -851,6 +858,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 		identity = resolve_srcid_ipv4(ctx, identity, &ipcache_srcid,
 					      from_host);
 		ctx_store_meta(ctx, CB_SRC_IDENTITY, identity);
+        // from  cilium_host
 		if (from_host) {
 # if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_MASQUERADE)
 			/* If we don't rely on BPF-based masquerading, we need
@@ -859,6 +867,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 			 */
 			ctx_store_meta(ctx, CB_IPCACHE_SRC_LABEL, ipcache_srcid);
 # endif
+            // 转发数据包
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_HOST);
 		} else {
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_LXC);
@@ -940,7 +949,7 @@ int from_host(struct __ctx_buff *ctx)
 	return handle_netdev(ctx, true);
 }
 
-/*
+/* 绑定到 宿主机上的一些物理网卡上，处理 host firewall 和 nodePort
  * to-netdev is attached as a tc egress filter to one or more physical devices
  * managed by Cilium (e.g., eth0). This program is only attached when:
  * - the host firewall is enabled, or
@@ -991,6 +1000,7 @@ int to_netdev(struct __ctx_buff *ctx __maybe_unused)
 		/* We need to pass the srcid from ipcache to host firewall. See
 		 * comment in ipv4_host_policy_egress() for details.
 		 */
+        // 实施 host policy 的 egress 过滤
 		ret = ipv4_host_policy_egress(ctx, src_id, ipcache_srcid);
 		break;
 	}
@@ -1006,6 +1016,7 @@ out:
 #endif /* ENABLE_HOST_FIREWALL */
 
 #if defined(ENABLE_BANDWIDTH_MANAGER)
+    // 实施 endpoint的带宽限制
 	ret = edt_sched_departure(ctx);
 	/* No send_drop_notify_error() here given we're rate-limiting. */
 	if (ret == CTX_ACT_DROP) {
@@ -1020,6 +1031,7 @@ out:
 	 (defined(ENABLE_DSR) && defined(ENABLE_DSR_HYBRID)) || \
 	 defined(ENABLE_MASQUERADE))
 	if ((ctx->mark & MARK_MAGIC_SNAT_DONE) != MARK_MAGIC_SNAT_DONE) {
+        //对于endpoint 访问集群外部流量，实施 snat
 		ret = nodeport_nat_fwd(ctx);
 		if (IS_ERR(ret))
 			return send_drop_notify_error(ctx, 0, ret,
@@ -1046,14 +1058,21 @@ int to_host(struct __ctx_buff *ctx)
 	__u32 srcID = 0;
 
 	if ((magic & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_ENCRYPT) {
+        // #define MARK_MAGIC_ENCRYPT		0x0E00
+        
 		ctx->mark = magic; /* CB_ENCRYPT_MAGIC */
 		srcID = ctx_load_meta(ctx, CB_ENCRYPT_IDENTITY);
 		set_identity_mark(ctx, srcID);
+        
 	} else if ((magic & 0xFFFF) == MARK_MAGIC_TO_PROXY) {
+        // #define MARK_MAGIC_TO_PROXY		0x0200
+        // TPROXY  代理，转发L7 流量
+        
 		/* Upper 16 bits may carry proxy port number */
 		__be16 port = magic >> 16;
 
 		ctx_store_meta(ctx, 0, CB_PROXY_MAGIC);
+        // 根据数据包5元祖信息，把数据包 传递给 L7代理的相应socket
 		ret = ctx_redirect_to_proxy_first(ctx, port);
 		if (IS_ERR(ret))
 			goto out;
@@ -1088,6 +1107,7 @@ int to_host(struct __ctx_buff *ctx)
 # endif
 # ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
+        // 如果数据包目的是本地宿主机ip，那么 host policy进行过滤
 		ret = ipv4_host_policy_ingress(ctx, &srcID);
 		break;
 # endif

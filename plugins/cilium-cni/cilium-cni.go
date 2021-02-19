@@ -316,6 +316,7 @@ func cmdAdd(args *skel.CmdArgs) (err error) {
 	}
 	logger.Debugf("CNI Args: %#v", cniArgs)
 
+ 	// 同 cilium agent 的 unix socket 建立通信，用于后续 申请 ip 
 	c, err = client.NewDefaultClientWithTimeout(defaults.ClientConnectTimeout)
 	if err != nil {
 		err = fmt.Errorf("unable to connect to Cilium daemon: %s", client.Hint(err))
