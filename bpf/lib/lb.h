@@ -1001,6 +1001,7 @@ static __always_inline int lb4_rev_nat(struct __ctx_buff *ctx, int l3_off, int l
 	struct lb4_reverse_nat *nat;
 
 	cilium_dbg_lb(ctx, DBG_LB4_REVERSE_NAT_LOOKUP, ct_state->rev_nat_index, 0);
+    // 查询 cilium_lb4_reverse_nat map
 	nat = map_lookup_elem(&LB4_REVERSE_NAT_MAP, &ct_state->rev_nat_index);
 	if (nat == NULL)
 		return 0;
@@ -1132,7 +1133,9 @@ lb4_select_backend_id(struct __ctx_buff *ctx,
 		      const struct ipv4_ct_tuple *tuple __maybe_unused,
 		      const struct lb4_service *svc)
 {
+    // 随机生成一个 slot
 	__u32 slot = (get_prandom_u32() % svc->count) + 1;
+    // 获取出该 slot 的 service后端endpoint
 	struct lb4_service *be = lb4_lookup_backend_slot(ctx, key, slot);
 
 	return be ? be->backend_id : 0;
@@ -1148,10 +1151,12 @@ lb4_select_backend_id(struct __ctx_buff *ctx __maybe_unused,
 	__u16 *backend_ids;
 	void *maglev_lut;
 
+    // 查询 cilium_lb4_maglev  map
 	maglev_lut = map_lookup_elem(&LB4_MAGLEV_MAP_OUTER, &index);
 	if (unlikely(!maglev_lut))
 		return 0;
 
+    // 通过 上一步的查询value，查询 cilium_lb4_maglev_inner map，获取出 后端 endpoint id
 	backend_ids = map_lookup_elem(maglev_lut, &zero);
 	if (unlikely(!backend_ids))
 		return 0;
@@ -1225,6 +1230,15 @@ __lb4_affinity_backend_id(const struct lb4_service *svc, bool netns_cookie,
 	};
 	struct lb_affinity_val *val;
 
+    // 查询 cilium_lb4_affinity
+     /*
+   type Affinity4Key struct {
+    	ClientID    uint64 `align:"client_id"`
+    	RevNATID    uint16 `align:"rev_nat_id"`
+    	NetNSCookie uint8  `align:"netns_cookie"`
+    	Pad1        uint8  `align:"pad1"`
+    	Pad2        uint32 `align:"pad2"`
+    }    */
 	val = map_lookup_elem(&LB4_AFFINITY_MAP, &key);
 	if (val != NULL) {
 		__u32 now = bpf_mono_now();
@@ -1238,12 +1252,14 @@ __lb4_affinity_backend_id(const struct lb4_service *svc, bool netns_cookie,
 		 * the upper bound from the time range.
 		 * Session is sticky for range [current, last_used + affinity_timeout)
 		 */
+        // 如果 affinity 超时
 		if (READ_ONCE(val->last_used) +
 		    bpf_sec_to_mono(svc->affinity_timeout) <= now) {
 			map_delete_elem(&LB4_AFFINITY_MAP, &key);
 			return 0;
 		}
 
+        // 查询 cilium_lb_affinity_match
 		if (!map_lookup_elem(&LB_AFFINITY_MATCH_MAP, &match)) {
 			map_delete_elem(&LB4_AFFINITY_MAP, &key);
 			return 0;
@@ -1335,17 +1351,25 @@ static __always_inline int lb4_local(const void *map, struct __ctx_buff *ctx,
     //查询链路追踪表 状态
 	ret = ct_lookup4(map, tuple, ctx, l4_off, CT_SERVICE, state, &monitor);
 	switch (ret) {
+    // 如果是新请求，则 根据 svc中的 BackendID， 解析 后端endpoint ip
 	case CT_NEW:
 #ifdef ENABLE_SESSION_AFFINITY
+        // 如果 被访问的 service 配置了 基于原ip亲和性，那么需要 dnat 到固定的后端 endpoint
+        //  svc->flags & SVC_FLAG_AFFINITY
 		if (lb4_svc_is_affinity(svc)) {
+            // 集群内，基于 addr 来 实现 亲和性
+            //查询 cilium_lb4_affinity, 看是否 获取到 之前的 记录，backend_id是之前转发的service后端endpoint
 			backend_id = lb4_affinity_backend_id_by_addr(svc, &client_id);
 			if (backend_id != 0) {
+                // 通过 backend_id 获取到后端 endpoint
+                // 通过backend_id， 查询 cilium_lb4_backends map, 尝试查询出 后端 endpoint ip地址
 				backend = lb4_lookup_backend(ctx, backend_id);
 				if (backend == NULL)
 					backend_id = 0;
 			}
 		}
 #endif
+        //如果 affinity没有解析出，那么 随机选择 一个 后端 endpoint
 		if (backend_id == 0) {
 			/* No CT entry has been found, so select a svc endpoint */
             //随机选择，或者 mglev 选择一个后端 endpoint
@@ -1359,6 +1383,7 @@ static __always_inline int lb4_local(const void *map, struct __ctx_buff *ctx,
 		state->rev_nat_index = svc->rev_nat_index;
 
         // 创建新的链路追踪表项
+        // 写入 cilium_ct_tcp4_* 或 cilium_ct_any4_*
 		ret = ct_create4(map, NULL, tuple, ctx, CT_SERVICE, state, false);
 		/* Fail closed, if the conntrack entry create fails drop
 		 * service lookup.
@@ -1460,6 +1485,7 @@ update_state:
 #endif
 		tuple->daddr = backend->address; // 完成 DNAT 解析
 
+    // 把 nat 的结果写入了数据包 
 	return skip_xlate ? CTX_ACT_OK :
 	       lb4_xlate(ctx, &new_daddr, &new_saddr, &saddr,
 			 tuple->nexthdr, l3_off, l4_off, csum_off, key,

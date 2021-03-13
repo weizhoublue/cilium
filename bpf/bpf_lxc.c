@@ -109,8 +109,10 @@ static __always_inline int ipv6_l3_from_lxc(struct __ctx_buff *ctx,
 		 * the CT entry for destination endpoints where we can't encode the
 		 * state in the address.
 		 */
+        // 进行 cluster ip 解析
 		svc = lb6_lookup_service(&key, is_defined(ENABLE_NODEPORT));
 		if (svc) {
+            // 数据包 完成 dnat 
 			ret = lb6_local(get_ct_map6(tuple), ctx, l3_off, l4_off,
 					&csum_off, &key, tuple, svc, &ct_state_new,
 					false);
@@ -360,6 +362,7 @@ pass_to_stack:
 		return ret;
 #endif
 
+    // 会把 source identity 嵌入 ipv6 报头中
 	if (ipv6_store_flowlabel(ctx, l3_off, SECLABEL_NB) < 0)
 		return DROP_WRITE_ERROR;
 
@@ -410,10 +413,12 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx, __u32 *dstID)
 	 * logical router address, neighbour advertisements to the router.
 	 * All remaining packets are subjected to forwarding into the container.
 	 */
+    // 处理icmpv6
 	if (unlikely(ip6->nexthdr == IPPROTO_ICMPV6)) {
 		if (data + sizeof(*ip6) + ETH_HLEN + sizeof(struct icmp6hdr) > data_end)
 			return DROP_INVALID;
-
+        // 对于任意的 邻居请求，尝试 代理答复，包括 网关和其它endpoint的邻居请求。否则 ，丢弃
+        // 对于 endpoint ip 的 icmp回显请求，直接代理答复
 		ret = icmp6_handle(ctx, ETH_HLEN, ip6, METRIC_EGRESS);
 		if (IS_ERR(ret))
 			return ret;
@@ -421,6 +426,7 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx, __u32 *dstID)
 
 	/* Perform L3 action on the frame */
 	tuple.nexthdr = ip6->nexthdr;
+    // 这个函数中，会在 ipv6 报头中 嵌入 源identity
 	return ipv6_l3_from_lxc(ctx, &tuple, ETH_HLEN, ip6, dstID);
 }
 
@@ -464,6 +470,7 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx,
 	__u8 audited = 0;
 	bool has_l4_header = false;
 
+    // 从数据包中，ip4 提取出了 3层头，data提取出了3层的 payload
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 	has_l4_header = ipv4_has_l4_header(ip4);
@@ -479,10 +486,23 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx,
 	l4_off = l3_off + ipv4_hdrlen(ip4);
 
 #ifndef ENABLE_HOST_SERVICES_FULL
+// 可能已经在 cgroup内完成了，所以，以下service 解析 可能已经不会执行
 	{
 		struct lb4_service *svc;
 		struct lb4_key key = {};
 
+        // 数据包 提取出了  源ip 和 目的端口  到 lb4_key key 结构体
+        //  生成key 后，是用来 匹配 cilium_lb4_services map 的
+        /*
+        type Service4Key struct {
+        	Address     types.IPv4 `align:"address"`
+        	Port        uint16     `align:"dport"`
+        	BackendSlot uint16     `align:"backend_slot"`
+        	Proto       uint8      `align:"proto"`
+        	Scope       uint8      `align:"scope"`
+        	Pad         pad2uint8  `align:"pad"`
+        }
+        */
 		ret = lb4_extract_key(ctx, ip4, l4_off, &key, &csum_off,
 				      CT_EGRESS);
 		if (IS_ERR(ret)) {
@@ -491,10 +511,13 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx,
 			else
 				return ret;
 		}
-
+        // 查询 cilium_lb4_services 或 cilium_lb4_services_v2 map 
+        // 查询出是否 有相应 的 map value（其中指明了 后端endpoint的 id ）
 		svc = lb4_lookup_service(&key, is_defined(ENABLE_NODEPORT));
 		if (svc) {
-            // 查询链路追踪表 ，  完成 tuple 中 目的endpoint 的DNAT 解析 
+            //  如果是新的 请求，完成 tuple 中 目的endpoint 的DNAT 解析 ，否则，可根据 链路追踪表 直接 dnat
+            // 解析 affinity 的 service，或者以 random or meglev方式解析 普通service
+            // 把 nat 的结果写入了数据包  
 			ret = lb4_local(get_ct_map4(&tuple), ctx, l3_off, l4_off,
 					&csum_off, &key, &tuple, svc, &ct_state_new,
 					ip4->saddr, has_l4_header, false);
@@ -507,6 +530,8 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx,
 skip_service_lookup:
 #endif /* !ENABLE_HOST_SERVICES_FULL */
 
+    // 如果以上逻辑 没生效，那么 ，以下的代码 重新实现 dnat 的逻辑
+    
 	/* The verifier wants to see this assignment here in case the above goto
 	 * skip_service_lookup is hit. However, in the case the packet
 	 * is _not_ TCP or UDP we should not be using proxy logic anyways. For
@@ -532,22 +557,31 @@ skip_service_lookup:
 	reason = ret;
 
 	/* Check it this is return traffic to an ingress proxy. */
+    //对于 已经建链的 数据，如果有L7 策略，则直接转发给 L7 代理
 	if ((ret == CT_REPLY || ret == CT_RELATED) && ct_state.proxy_redirect) {
 		/* Stack will do a socket match and deliver locally. */
-        //  把 容器发出的流量， 重定向给 L7 代理
+        // 支持 2中方式，把数据包 重定向给 L7 代理：
+        // 方式1：给数据包 打上 mark （随后，数据包经过宿主机的iptables的 tproxy规则，重定向给 L7 代理 ）
+        // 方式2：使用 ebpf sk_assign()调用，把数据 直接重定向给 cilium_host ingress，即定向给 L7 代理
 		return ctx_redirect_to_proxy4(ctx, &tuple, 0, false);
 	}
 
 	/* Determine the destination category for policy fallback. */
+    // 解析目的ip 的 identity
 	if (1) {
 		struct remote_endpoint_info *info;
 
+        // 查询 cilium_ipcache map
+        // 通过目的ip，查询 目的endpoint 的信息
 		info = lookup_ip4_remote_endpoint(orig_dip);
 		if (info != NULL && info->sec_label) {
+            //发送给集群内的
+            // 获取 目的endpoint 的 id 信息
 			*dstID = info->sec_label;
 			tunnel_endpoint = info->tunnel_endpoint;
 			encrypt_key = get_min_encrypt_key(info->key);
 		} else {
+            // 发送给集群外的
 			*dstID = WORLD_ID;
 		}
 
@@ -559,7 +593,8 @@ skip_service_lookup:
 	 * within the cluster, it must match policy or be dropped. If it's
 	 * bound for the host/outside, perform the CIDR policy check.
 	 */
-    //实施egress policy
+    //实施 l3/L4 egress policy
+    // 通过双方的identity 来查询 cilium_policy* map，看是否能够通信
 	verdict = policy_can_egress4(ctx, &tuple, SECLABEL, *dstID,
 				     &policy_match_type, &audited);
 
@@ -608,10 +643,11 @@ ct_recreate4:
 
 #ifdef ENABLE_NODEPORT
 		/* This handles reply traffic for the case where the nodeport EP
-		 * is local to the node. We'll redirect to bpf_host egress to
+		 * is local to the node. We'll redirect to bpf_host.c egress to
 		 * perform the reverse DNAT.
 		 */
-        // 如果 当初访问 一个本地的endpoint 的 nodePort , 那么，此处 对 回复包 做unNat
+        // 如果 当初别人 通过 nodePort 访问本endpoint，那么，现在本endpoint 进行了回复
+        // 此时，直接 tail call bpf_host.c 的 CILIUM_CALL_IPV4_FROM_LXC，完成unNat ，redirect 给 物理网卡 发出
 		if (ct_state.node_port) {
 			ctx->tc_index |= TC_INDEX_F_SKIP_RECIRCULATION;
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_NODEPORT_REVNAT);
@@ -619,7 +655,8 @@ ct_recreate4:
 		}
 # ifdef ENABLE_DSR
 		if (ct_state.dsr) {
-            //进行 dsr 的相关 nat
+            // 对于 nodePort DSR 的 回复包，当初最初的 client 源ip和端口 记录到了cilium_snat_v4_external map，
+            // 此时， 恢复  client 源ip和端口 到 数据包的 目的中，从而 dsr 返给client
 			ret = xlate_dsr_v4(ctx, &tuple, l4_off, has_l4_header);
 			if (ret != 0)
 				return ret;
@@ -628,6 +665,7 @@ ct_recreate4:
 #endif /* ENABLE_NODEPORT */
 
 		if (ct_state.rev_nat_index) {
+            // 查询 cilium_lb4_reverse_nat map，执行 unNat
 			ret = lb4_rev_nat(ctx, l3_off, l4_off, &csum_off,
 					  &ct_state, &tuple, 0, has_l4_header);
 			if (IS_ERR(ret))
@@ -645,6 +683,9 @@ ct_recreate4:
 		/* Trace the packet before it is forwarded to proxy */
 		send_trace_notify(ctx, TRACE_TO_PROXY, SECLABEL, 0,
 				  0, 0, reason, monitor);
+        // 支持 2中方式，把数据包 重定向给 L7 代理：
+        // 方式1：给数据包 打上 mark （随后，数据包经过宿主机的iptables的 tproxy规则，重定向给 L7 代理 ）
+        // 方式2：使用 ebpf sk_assign()调用，把数据 直接重定向给 cilium_host ingress，即定向给 L7 代理
 		return ctx_redirect_to_proxy4(ctx, &tuple, verdict, false);
 	}
 
@@ -669,6 +710,7 @@ ct_recreate4:
 		 *    host itself
 		 *  - The destination IP address belongs to endpoint itself.
 		 */
+        // 查询 cilium_lxc map ， 是否能够命中 本地的 其它endpoint 或则 本地host ip
 		ep = lookup_ip4_endpoint(ip4);
 		if (ep) {
 #ifdef ENABLE_ROUTING
@@ -681,7 +723,7 @@ ct_recreate4:
 			}
 #endif /* ENABLE_ROUTING */
 			policy_clear_mark(ctx);
-            //  直接重定向到 本地 相关 endpoint的 lxc
+            // 执行 policy ， 直接重定向到 本地 相关 endpoint的 lxc( 直接 基于 cilium_call_policy map 的 id ，执行 tail_call(ctx, POLICY_CALL_MAP, ep->lxc_id)  )
 			return ipv4_local_delivery(ctx, l3_off, SECLABEL, ip4,
 						   ep, METRIC_EGRESS, false);
 		}
@@ -694,6 +736,9 @@ ct_recreate4:
 		key.ip4 = orig_dip & IPV4_MASK;
 		key.family = ENDPOINT_KEY_IPV4;
 
+        // 直接 redirect 到 隧道接口的 egress
+        // 处理 vxlan隧道 和 ipsec
+        // ！！！ 会把 source identity 嵌入 vxlan 封装的 VNI  ！！！
 		ret = encap_and_redirect_lxc(ctx, tunnel_endpoint, encrypt_key,
 					     &key, SECLABEL, monitor);
 		if (ret == DROP_NO_TUNNEL_ENDPOINT)
@@ -711,7 +756,8 @@ ct_recreate4:
 	}
 #endif
 	if (is_defined(ENABLE_REDIRECT_FAST))
-        // 向本节点外部转发
+        // 向 本机外部转发
+        // redirect 到 相关物理网卡的  egress
 		return redirect_direct_v4(ctx, l3_off, ip4);
 
 	goto pass_to_stack;
@@ -720,9 +766,10 @@ ct_recreate4:
 to_host:
 	if (is_defined(HOST_REDIRECT_TO_INGRESS) ||
 	    (is_defined(ENABLE_HOST_FIREWALL) && *dstID == HOST_ID)) {
+        // 如果发送目的是 本机，则直接发送至 相关物理网卡的 ingress
 		if (is_defined(HOST_REDIRECT_TO_INGRESS)) {
 			union macaddr host_mac = HOST_IFINDEX_MAC;
-
+            // // 更新3层ttl ， 2层mac
 			ret = ipv4_l3(ctx, l3_off, (__u8 *)&router_mac.addr,
 				      (__u8 *)&host_mac.addr, ip4);
 			if (ret != CTX_ACT_OK)
@@ -758,6 +805,7 @@ pass_to_stack:
 		 * source identity can still be derived even if SNAT is
 		 * performed by a component such as portmap.
 		 */
+        // 数据包中 打上 identity mark ，方便后续处理
 		ctx->mark |= MARK_MAGIC_IDENTITY;
 		set_identity_mark(ctx, SECLABEL);
 #endif
@@ -815,7 +863,7 @@ int tail_handle_arp(struct __ctx_buff *ctx)
 	 */
 	if (tip == LXC_IPV4)
 		return CTX_ACT_OK;
-
+    // redirect to lxc egress
 	return arp_respond(ctx, &mac, tip, &smac, sip, 0);
 }
 #endif /* ENABLE_ARP_RESPONDER */
@@ -829,8 +877,12 @@ int handle_xgress(struct __ctx_buff *ctx)
 	int ret;
 
 	bpf_clear_meta(ctx);
+    // 每个 pod 都有一个 唯一的 LXC_ID
+    // LXC_ID 写入数据包的 ctx->queue_mapping (queue_mapping , 是实现 映射数据包 到 多队列网卡的某个队列 )
+    // 这样。在本地host上可以一直追踪 数据包的 identity
 	edt_set_aggregate(ctx, LXC_ID);
 
+    // 写入到 cilium_metrics 和 map cilium_events 中
 	send_trace_notify(ctx, TRACE_FROM_LXC, SECLABEL, 0, 0, 0, 0,
 			  TRACE_PAYLOAD_LEN);
 
@@ -842,6 +894,7 @@ int handle_xgress(struct __ctx_buff *ctx)
 	switch (proto) {
 #ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
+         // 这个函数中，会在 ipv6 报头中 嵌入 源identity
 		invoke_tailcall_if(__or(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6)),
 					is_defined(DEBUG)),
 				   CILIUM_CALL_IPV6_FROM_LXC, tail_handle_ipv6);
@@ -849,6 +902,7 @@ int handle_xgress(struct __ctx_buff *ctx)
 #endif /* ENABLE_IPV6 */
 #ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
+        // 这个函数，会尝试 在 数据包的vxlan 封装中，VNI 嵌入 source identity
 		invoke_tailcall_if(__or(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6)),
 					is_defined(DEBUG)),
 				   CILIUM_CALL_IPV4_FROM_LXC, tail_handle_ipv4);
@@ -859,6 +913,7 @@ int handle_xgress(struct __ctx_buff *ctx)
 		break;
 #elif defined(ENABLE_ARP_RESPONDER)
 	case bpf_htons(ETH_P_ARP):
+        // arp 代理 回复 完 容器arp请求网关（宿主机上的cilium_host），直接 redirect 给 lxc 的 egress
 		ep_tail_call(ctx, CILIUM_CALL_ARP);
 		ret = DROP_MISSED_TAIL_CALL;
 		break;
@@ -1183,7 +1238,7 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 		     !ct_state.loopback)) {
 		int ret2;
 
-        // 已经建立链接的， 做反向的 unNat
+        // 当初 本pod 访问 cluster ip 的回复包， 已经建立链接的， 做反向的 unNat
 		ret2 = lb4_rev_nat(ctx, l3_off, l4_off, &csum_off,
 				   &ct_state, &tuple,
 				   REV_NAT_F_TUPLE_SADDR, has_l4_header);
@@ -1221,7 +1276,10 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 	{
 		bool dsr = false;
 
-        // 创建 dsr 相关的 nat 转换记录（？ 将来，endpoint回复数据时，自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
+        // 访问nodePort时，node进行了 nodeport解析，当开启了 DSR 模式后，nodePort DNAT了数据包，并把“最初发起访问nodePort的client的 源ip和源端口”信息 添加到了数据包的 IPv4 报头的 option 中
+        // 此时，该数据包 进入了 容器的 lxc egress，我们进行如下处理：
+        // 从 IPv4 报头的 option 中 提取出 最初发起访问nodePort的client的 源ip和源端口，
+        // 创建 dsr 相关的 nat 转换记录到cilium_snat_v4_external map （ 将来，endpoint回复数据时，在 lxc ingress ebfp 就自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
 		ret = handle_dsr_v4(ctx, &dsr);
 		if (ret != 0)
 			return ret;
@@ -1233,6 +1291,7 @@ ipv4_policy(struct __ctx_buff *ctx, int ifindex, __u32 src_label, __u8 *reason,
 		ct_state_new.src_sec_id = src_label;
 		ct_state_new.node_port = ct_state.node_port;
 		ct_state_new.ifindex = ct_state.ifindex;
+        // 创建链路追踪表
 		ret = ct_create4(get_ct_map4(&tuple), &CT_MAP_ANY4, &tuple, ctx, CT_INGRESS,
 				 &ct_state_new, verdict > 0);
 		if (IS_ERR(ret))
@@ -1277,6 +1336,7 @@ int tail_ipv4_policy(struct __ctx_buff *ctx)
 	ctx_store_meta(ctx, CB_SRC_LABEL, 0);
 	ctx_store_meta(ctx, CB_FROM_HOST, 0);
 
+    // 实施了 L3/L4 的 ingress policy ，对nodePort dsr信息进行记录
 	ret = ipv4_policy(ctx, ifindex, src_label, &reason, &tuple,
 			  &proxy_port, from_host);
 	if (ret == POLICY_ACT_PROXY_REDIRECT)
@@ -1338,10 +1398,15 @@ int tail_ipv4_to_endpoint(struct __ctx_buff *ctx)
 #endif
 	ctx_store_meta(ctx, CB_SRC_LABEL, 0);
 
+    // 实施 L3/L4 ingress policy
+    // 里边也处理了 dsr nodePort
 	ret = ipv4_policy(ctx, 0, src_identity, &reason, NULL,
 			  &proxy_port, true);
+    // 返回结果 ret ： 如果流量不是从 ingress proxy 来的， 并且有L7过滤需要，则直接 把数据包  redirect to cilium_host ，转给envoy，实施pod 的 L7 ingress policy  ；
+    // 如果流量 是从 ingress proxy 过来的，说明已经做过一次过来了，则 流量可进入pod
 	if (ret == POLICY_ACT_PROXY_REDIRECT)
-        // 把 数据包 重定向给 L7 proxy 
+        // 如果需要， 把 数据包 重定向 代理，实施 L7 ingress policy .
+        // redicrt 转给  cilium_host 的egress
 		ret = ctx_redirect_to_proxy_hairpin(ctx, proxy_port);
 out:
 	if (IS_ERR(ret))
@@ -1491,7 +1556,7 @@ int handle_to_container(struct __ctx_buff *ctx)
 	case bpf_htons(ETH_P_IP):
         //数据包重定向给 L7 代理
         //实施 ingress policy
-        // nodePort：从数据包的 ip option中提取出 初始ip和nodePort ，创建 dsr 相关的 nat 转换记录（？ 将来，endpoint回复数据时，自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
+        //处理 dsr 转发的 nodePort流量：从数据包的 ip option中提取出 初始ip和nodePort ，创建 dsr 相关的 nat 转换记录（？ 将来，endpoint回复数据时，自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
 		invoke_tailcall_if(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6)),
 				   CILIUM_CALL_IPV4_TO_ENDPOINT, tail_ipv4_to_endpoint);
 		break;

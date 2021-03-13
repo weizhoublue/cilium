@@ -107,6 +107,9 @@ encap_remap_v6_host_address(struct __ctx_buff *ctx __maybe_unused,
 	}
 	sum = csum_diff(which, 16, &host_ip, 16, 0);
 	csum_l4_offset_and_flags(nexthdr, &csum);
+    // 进行 源/目的IP 的替换
+    // egress ， 源ip 替换为 HOST_IP
+    // ingress ， 目的ip 替换为 ROUTER_IP
 	if (ctx_store_bytes(ctx, noff, &host_ip, 16, 0) < 0)
 		return DROP_WRITE_ERROR;
 	if (csum.offset &&
@@ -132,12 +135,13 @@ __encap_with_nodeid(struct __ctx_buff *ctx, __u32 tunnel_endpoint,
 		seclabel = LOCAL_NODE_ID;
 
 	node_id = bpf_htonl(tunnel_endpoint);
-	key.tunnel_id = seclabel;
+	key.tunnel_id = seclabel; // 把vxlan的 VNI 当做了 endpoint identity 来用了
 	key.remote_ipv4 = node_id;
 	key.tunnel_ttl = 64;
 
 	cilium_dbg(ctx, DBG_ENCAP, node_id, seclabel);
 
+    //通过bpf_skb_get_tunnel_key， 给数据包 添加上一些 隧道的 相关 metadata  ， 便于后续进行隧道封装
 	ret = ctx_set_tunnel_key(ctx, &key, sizeof(key), BPF_F_ZERO_CSUM_TX);
 	if (unlikely(ret < 0))
 		return DROP_WRITE_ERROR;
@@ -198,9 +202,12 @@ encap_and_redirect_lxc(struct __ctx_buff *ctx, __u32 tunnel_endpoint,
 			return encap_and_redirect_ipsec(ctx, tunnel_endpoint,
 							encrypt_key, seclabel);
 #endif
+        // 给数据包添加一些 隧道的 metadata ，重定向给 隧道接口的 egress
 		return __encap_and_redirect_with_nodeid(ctx, tunnel_endpoint, seclabel, monitor);
 	}
-
+    // 如果没有 tunnel_endpoint 信息，自己查
+    
+    // 查询  cilium_tunnel_map map
 	tunnel = map_lookup_elem(&TUNNEL_MAP, key);
 	if (!tunnel)
 		return DROP_NO_TUNNEL_ENDPOINT;

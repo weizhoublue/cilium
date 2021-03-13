@@ -156,6 +156,7 @@ send_trace_notify(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst,
 			      ctx_len);
 	struct trace_notify msg;
 
+    // 写入到 cilium_metrics map 中
 	update_trace_metrics(ctx, obs_point, reason);
 
 	if (!emit_trace_notify(obs_point, monitor))
@@ -170,7 +171,8 @@ send_trace_notify(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst,
 		.reason		= reason,
 		.ifindex	= ifindex,
 	};
-
+    
+    // 写入了到 cilium_events map
 	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));
@@ -203,6 +205,7 @@ send_trace_notify4(struct __ctx_buff *ctx, __u8 obs_point, __u32 src, __u32 dst,
 		.orig_ip4	= orig_addr,
 	};
 
+    // 写入了到 cilium_events map
 	ctx_event_output(ctx, &EVENTS_MAP,
 			 (cap_len << 32) | BPF_F_CURRENT_CPU,
 			 &msg, sizeof(msg));

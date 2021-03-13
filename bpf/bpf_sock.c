@@ -177,7 +177,7 @@ static __always_inline int sock4_update_revnat(struct bpf_sock_addr *ctx,
 	val.address = orig_key->address;
 	val.port = orig_key->dport;
 	val.rev_nat_index = rev_nat_id;
-
+    //更新 cilium_lb4_reverse_sk map
 	tmp = map_lookup_elem(&LB4_REVERSE_NAT_SK_MAP, &key);
 	if (!tmp || memcmp(tmp, &val, sizeof(val)))
 		ret = map_update_elem(&LB4_REVERSE_NAT_SK_MAP, &key,
@@ -233,14 +233,17 @@ sock4_wildcard_lookup(struct lb4_key *key __maybe_unused,
 	if (in_hostns && is_v4_loopback(key->address))
 		goto wildcard_lookup;
 
+    // 如果 目的ip 是个主机的
 	info = ipcache_lookup4(&IPCACHE_MAP, key->address, V4_CACHE_KEY_LEN);
 	if (info != NULL && (info->sec_label == HOST_ID ||
 	    (include_remote_hosts && info->sec_label == REMOTE_NODE_ID)))
+        // 进行 nodePort 查询
 		goto wildcard_lookup;
 
 	return NULL;
 wildcard_lookup:
-	key->address = 0;
+	key->address = 0; 
+    // 查询  cilium_lb4_services map
 	return lb4_lookup_service(key, true);
 }
 #endif /* ENABLE_NODEPORT */
@@ -252,9 +255,12 @@ sock4_wildcard_lookup_full(struct lb4_key *key __maybe_unused,
 	struct lb4_service *svc = NULL;
 
 #ifdef ENABLE_NODEPORT
+    //
 	svc = sock4_wildcard_lookup(key, true, false, in_hostns);
 	if (svc && !lb4_svc_is_nodeport(svc))
+        // 如果不是nodePort
 		svc = NULL;
+        
 	if (!svc) {
 		svc = sock4_wildcard_lookup(key, false, true,
 					    in_hostns);
@@ -262,6 +268,7 @@ sock4_wildcard_lookup_full(struct lb4_key *key __maybe_unused,
 			svc = NULL;
 	}
 #endif /* ENABLE_NODEPORT */
+    // 返回 ndoePort service 信息
 	return svc;
 }
 
@@ -330,6 +337,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	bool backend_from_affinity = false;
 	__u32 backend_id = 0;
 
+    //判断是否支持 udp 或 tcp service
 	if (!udp_only && !sock_proto_enabled(ctx->protocol))
 		return -ENOTSUP;
 
@@ -363,6 +371,8 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 		 * below would then override the first created one if it
 		 * didn't make it into the lookup yet for the other CPU.
 		 */
+        // 为了防止 同一个pod内的多个进程  解析的backend 不一致，怎么进行查询，使用 先被解析的结果
+        // 基于pod的网络netns  cookie 进行查询，看是否 已经有 解析记录了，有就利用起来
 		backend_id = lb4_affinity_backend_id_by_netns(svc, &id);
 		backend_from_affinity = true;
 
@@ -383,6 +393,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 		backend_from_affinity = false;
 
 		key.backend_slot = (sock_select_slot(ctx_full) % svc->count) + 1;
+        // 查询 LB4_SERVICES_MAP map
 		backend_slot = __lb4_lookup_backend_slot(&key);
 		if (!backend_slot) {
 			update_metrics(0, METRIC_EGRESS, REASON_LB_NO_BACKEND_SLOT);
@@ -390,6 +401,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 		}
 
 		backend_id = backend_slot->backend_id;
+        // 查询 cilium_lb4_backends map
 		backend = __lb4_lookup_backend(backend_id);
 	}
 
@@ -398,13 +410,19 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 		return -ENOENT;
 	}
 
+    //如果pod 是 访问自身的service，只允许访问 同 service下的 其它 pod，不允许 pod访问自己
+    // allow service translation for pod traffic getting redirected to backend (across network namespaces),
+    // but skip service translation for backend to itself or another service backend within the same namespace.
+    // Currently only v4 and v4-in-v6, but no plain v6 is supported
 	if (lb4_svc_is_localredirect(svc) &&
 	    sock4_skip_xlate_if_same_netns(ctx_full, backend))
 		return -ENXIO;
 
 	if (lb4_svc_is_affinity(svc) && !backend_from_affinity)
+        // 更新 affinity
 		lb4_update_affinity_by_netns(svc, &id, backend_id);
 
+    //更新 cilium_lb4_reverse_sk map，用于后续 unNat
 	if (sock4_update_revnat(ctx_full, backend, &orig_key,
 				svc->rev_nat_index) < 0) {
 		update_metrics(0, METRIC_EGRESS, REASON_LB_REVNAT_UPDATE);
@@ -421,6 +439,7 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 __section("connect4")
 int sock4_connect(struct bpf_sock_addr *ctx)
 {
+    // udp_only==false
 	__sock4_xlate_fwd(ctx, ctx, false);
 	return SYS_PROCEED;
 }
@@ -439,12 +458,14 @@ static __always_inline int __sock4_bind(struct bpf_sock *ctx,
 	    !ctx_in_hostns(ctx_full, NULL))
 		return 0;
 
+    
 	svc = lb4_lookup_service(&key, true);
 	if (!svc)
 		/* Perform a wildcard lookup for the case where the caller
 		 * tries to bind to loopback or an address with host identity
 		 * (without remote hosts).
 		 */
+        // nodePort
 		svc = sock4_wildcard_lookup(&key, false, false, true);
 
 	/* If the sockaddr of this socket overlaps with a NodePort,
@@ -463,6 +484,10 @@ static __always_inline int __sock4_bind(struct bpf_sock *ctx,
 __section("post_bind4")
 int sock4_bind(struct bpf_sock *ctx)
 {
+	/* If the sockaddr of this socket overlaps with a NodePort,
+	 * LoadBalancer or ExternalIP service. We must reject this
+	 * bind() call to avoid accidentally hijacking its traffic.
+	 */    
     // 拒绝 绑定service相关的ip和端口，防止 service流量被本应用劫持
 	if (__sock4_bind(ctx, ctx) < 0)
 		return SYS_REJECT;
@@ -481,7 +506,8 @@ static __always_inline int __sock4_xlate_rev(struct bpf_sock_addr *ctx,
 		.address	= ctx->user_ip4,
 		.port		= ctx_dst_port(ctx),
 	};
-
+    
+    //查询 cilium_lb4_reverse_sk map，看是否有 当初记录的 unNat 信息
 	val = map_lookup_elem(&LB4_REVERSE_NAT_SK_MAP, &key);
 	if (val) {
 		struct lb4_service *svc;
@@ -511,6 +537,7 @@ static __always_inline int __sock4_xlate_rev(struct bpf_sock_addr *ctx,
 __section("sendmsg4")
 int sock4_sendmsg(struct bpf_sock_addr *ctx)
 {
+    // udp_only=true
 	__sock4_xlate_fwd(ctx, ctx, true);
 	return SYS_PROCEED;
 }
@@ -686,7 +713,9 @@ int sock6_xlate_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused,
 	union v6addr addr6;
 	int ret;
 
+    // 访问的目的ip
 	ctx_get_v6_address(ctx, &addr6);
+    // IPv4-mapped ipv6 address , 0:0:0:0:0:ffff:a.b.c.d/96
 	if (!is_v4_in_v6(&addr6))
 		return -ENXIO;
 
@@ -793,6 +822,8 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 	if (!svc)
 		svc = sock6_wildcard_lookup_full(&key, in_hostns);
 	if (!svc)
+        // 如果访问的是 IPv4-mapped ipv6 address (0:0:0:0:0:ffff:a.b.c.d/96), 
+        // 会转换出 ipv4地址后，尝试以i以pv4 service来解析，若成功，反算出目的ipv6 address，最终发出ipv6请求
 		return sock6_xlate_v4_in_v6(ctx, udp_only);
 
 	if (sock6_skip_xlate(svc, &orig_key.address))
@@ -917,7 +948,7 @@ static __always_inline int __sock6_xlate_rev(struct bpf_sock_addr *ctx)
 		return 0;
 	}
 #endif /* ENABLE_IPV6 */
-
+    // 尝试对 IPv4-mapped ipv6 address  case 进行 unNat
 	return sock6_xlate_rev_v4_in_v6(ctx);
 }
 

@@ -382,14 +382,15 @@ static __always_inline int __icmp6_handle_ns(struct __ctx_buff *ctx, int nh_off)
 
 	if (ipv6_addrcmp(&target, &router) == 0) {
 		union macaddr router_mac = NODE_MAC;
-
+        // 如果 容器 邻居请求了 自己的网关ip，则代理 答复
 		return send_icmp6_ndisc_adv(ctx, nh_off, &router_mac, true);
 	}
-
+    
+    // 查询 cilium_lxc map， 
 	ep = __lookup_ip6_endpoint(&target);
 	if (ep) {
 		union macaddr router_mac = NODE_MAC;
-
+        // 如果 容器 邻居请求了 其它 ip，则代理 答复
 		return send_icmp6_ndisc_adv(ctx, nh_off, &router_mac, false);
 	}
 
@@ -444,8 +445,11 @@ static __always_inline int icmp6_handle(struct __ctx_buff *ctx, int nh_off,
 
 	switch (type) {
 	case ICMP6_NS_MSG_TYPE:
+        // 对于 任何 邻居请求ns 消息，代理回复（如果代理失败，则丢弃包）
 		return icmp6_handle_ns(ctx, nh_off, direction);
+        
 	case ICMPV6_ECHO_REQUEST:
+        // 对于 endpoint ip 的 icmp回显请求，直接代理答复 
 		if (!ipv6_addrcmp((union v6addr *) &ip6->daddr, &router_ip))
 			return icmp6_send_echo_reply(ctx, nh_off, direction);
 		break;

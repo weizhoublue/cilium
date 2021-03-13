@@ -196,6 +196,7 @@ __ctx_redirect_to_proxy(struct __ctx_buff *ctx, void *tuple __maybe_unused,
 
 #ifdef ENABLE_TPROXY
 	if (!from_host)
+        // 打上 0x0200 的 mark ， 确保后续能够 命中 iptables 的 tproxy 规则 
 		ctx->mark |= MARK_MAGIC_TO_PROXY;
 	else
 #endif
@@ -206,6 +207,7 @@ __ctx_redirect_to_proxy(struct __ctx_buff *ctx, void *tuple __maybe_unused,
 	/* In this case, the DBG_CAPTURE_PROXY_POST will be sent from the
 	 * program attached to HOST_IFINDEX.
 	 */
+    // redirects the packet to the ingress TC filter configured on the bridge master device
 	return redirect(HOST_IFINDEX, BPF_F_INGRESS);
 #else
 	cilium_dbg(ctx, DBG_CAPTURE_PROXY_PRE, proxy_port, 0);
@@ -213,6 +215,7 @@ __ctx_redirect_to_proxy(struct __ctx_buff *ctx, void *tuple __maybe_unused,
 #ifdef ENABLE_TPROXY
 	if (proxy_port && !from_host) {
 #ifdef ENABLE_IPV4
+        // 在ebpf中，直接 通过 ebpf helper bpf_sk_assign()，把数据包 重定向给 L7 socket
         // 如果数据包是属于未建立socket的，则 分配新的socket，转发给 L7 代理 ； 
         // 如果是已经建立socket的（说明已经同代理 建立链接了），则根据5元祖信息，把数据包传递给 相应的socket，从而转发给代理
 		if (ipv4)

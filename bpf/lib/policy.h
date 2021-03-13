@@ -126,6 +126,7 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
 	/* L4 lookup can't be done on untracked fragments. */
 	if (!is_untracked_fragment) {
 		/* Start with L3/L4 lookup. */
+        // 查询 cilium_policy_* map
 		policy = map_lookup_elem(map, &key);
 		if (likely(policy)) {
 			cilium_dbg3(ctx, DBG_L4_CREATE, remoteID, localID,
@@ -135,6 +136,7 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
 			*match_type = POLICY_MATCH_L3_L4;
 			if (unlikely(policy->deny))
 				return DROP_POLICY_DENY;
+            // ??????
 			return policy->proxy_port;
 		}
 
@@ -174,6 +176,8 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
 		return CTX_ACT_OK;
 	}
 
+    //获取 ctx->cb[*]
+    // cb: Control buffer. Free for use by every layer. Put private vars here
 	if (ctx_load_meta(ctx, CB_POLICY))
 		return CTX_ACT_OK;
 

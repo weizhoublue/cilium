@@ -46,10 +46,13 @@ static __always_inline int edt_sched_departure(struct __ctx_buff *ctx)
 	    proto != bpf_htons(ETH_P_IPV6))
 		return CTX_ACT_OK;
 
+    // 取出 ctx->queue_mapping
+    // 注：在bpf/bpf_lxc.c:880:	edt_set_aggregate(ctx, LXC_ID) ，所以，在 lxc 发出时，即在ctx中 做了endpoint的identity标记
 	aggregate.id = edt_get_aggregate(ctx);
 	if (!aggregate.id)
 		return CTX_ACT_OK;
 
+    // 查询 cilium_throttle 表
 	info = map_lookup_elem(&THROTTLE_MAP, &aggregate);
 	if (!info)
 		return CTX_ACT_OK;
@@ -71,6 +74,7 @@ static __always_inline int edt_sched_departure(struct __ctx_buff *ctx)
 	 */
 	if (t_next - now >= info->t_horizon_drop)
 		return CTX_ACT_DROP;
+        
 	WRITE_ONCE(info->t_last, t_next);
 	ctx->tstamp = t_next;
 	return CTX_ACT_OK;

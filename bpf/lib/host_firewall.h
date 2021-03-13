@@ -253,6 +253,7 @@ ipv4_host_policy_egress(struct __ctx_buff *ctx, __u32 src_id,
 	void *data, *data_end;
 	struct iphdr *ip4;
 
+    // 因为是要处理 主机的egress ，所以 不处理 不是来自 host的流量
 	if (src_id != HOST_ID) {
 #  ifndef ENABLE_MASQUERADE
 		return whitelist_snated_egress_connections(ctx, ipcache_srcid);
@@ -261,7 +262,8 @@ ipv4_host_policy_egress(struct __ctx_buff *ctx, __u32 src_id,
 		return CTX_ACT_OK;
 #  endif
 	}
-
+    
+    // -- 以下开始处理 来自 host发出的流量
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
@@ -283,6 +285,7 @@ ipv4_host_policy_egress(struct __ctx_buff *ctx, __u32 src_id,
 		   ip4->daddr, dst_id);
 
 	/* Perform policy lookup. */
+    // 查询 cilium_policy map ， 看是否 相关host policy
 	verdict = policy_can_egress4(ctx, &tuple, src_id, dst_id,
 				     &policy_match_type, &audited);
 

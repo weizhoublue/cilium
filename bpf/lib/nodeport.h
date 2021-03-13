@@ -1067,8 +1067,8 @@ static __always_inline int dsr_set_ipip4(struct __ctx_buff *ctx,
 					    sizeof(*ip4)),
 		.ttl		= 64,
 		.protocol	= IPPROTO_IPIP,
-		.saddr		= rss_gen_src4(ip4->saddr, l4_hint),
-		.daddr		= backend_addr,
+		.saddr		= rss_gen_src4(ip4->saddr, l4_hint), // 本地 ip
+		.daddr		= backend_addr, // 后端endpoint ip
 	};
 
 	if (ctx_adjust_room(ctx, sizeof(*ip4), BPF_ADJ_ROOM_NET,
@@ -1168,13 +1168,14 @@ static __always_inline int handle_dsr_v4(struct __ctx_buff *ctx, bool *dsr)
 					   &opt2, sizeof(opt2)) < 0)
 				return DROP_INVALID;
 
-            // 当初，client访问 nodePort 的初始 ip 和 nodePort端口
+            // 当初，client访问 nodePort 的  原始目的ip 和 nodePort端口
 			opt2 = bpf_ntohl(opt2);
 			dport = opt1 & DSR_IPV4_DPORT_MASK;
 			address = opt2;
 			*dsr = true;
 
-            // 创建 dsr 相关的 nat 转换记录（？ 将来，endpoint回复数据时，自动把 ip和端口恢复，这样就能直接dsr 回复给client ）
+            // 创建 dsr 相关的 nat 转换记录, 存入 cilium_snat_v4_external map
+            // 将来，endpoint回复数据时，自动把 最初client的  ip和端口恢复，这样就能直接dsr 回复给client ）
 			if (snat_v4_create_dsr(ctx, address, dport) < 0)
 				return DROP_INVALID;
 		}
@@ -1196,9 +1197,11 @@ static __always_inline int xlate_dsr_v4(struct __ctx_buff *ctx,
 	nat_tup.dport = tuple->sport;
 
     // __snat_lookup(&SNAT_MAPPING_IPV4, tuple)
+    // 查询 cilium_snat_v4_external map
 	entry = snat_v4_lookup(&nat_tup);
 	if (entry)
         // Overwrites a TCP or UDP port with new value and fixes up the checksum
+        // 修改数据包， dnat了4层端口，还snat了源IP（不是dsr模式么？怎么还改源ip）
 		ret = snat_v4_rewrite_egress(ctx, &nat_tup, entry, l4_off, has_l4_header);
 	return ret;
 }
@@ -1222,11 +1225,14 @@ int tail_nodeport_ipv4_dsr(struct __ctx_buff *ctx)
 		return DROP_INVALID;
 
 #if DSR_ENCAP_MODE == DSR_ENCAP_IPIP
+    // 以 ipip 封装 方式来实现 dsr
+    // 在数据包的3层外，再套一个 3层报头（ snat的本地ip ->  后端的endpoint ip ）
 	ret = dsr_set_ipip4(ctx, ip4,
 			    ctx_load_meta(ctx, CB_ADDR_V4),
 			    ctx_load_meta(ctx, CB_HINT));
 #elif DSR_ENCAP_MODE == DSR_ENCAP_NONE
-    //在ipv4的 option 中 添加了 service的 目的端口 和 ip
+    // 以直接路由方式来实现 dsr
+    //在ipv4的 option 中 添加了  最初发起nodePor访问的 目的ip（nodeIP） 和 目的端口（nodePort）
 	ret = dsr_set_opt4(ctx, ip4,
 			   ctx_load_meta(ctx, CB_ADDR_V4),
 			   ctx_load_meta(ctx, CB_PORT));
@@ -1301,6 +1307,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 
 		info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
 		if (info != NULL && info->tunnel_endpoint != 0) {
+            // 通过vxlan 隧道，把 source identity 嵌入 VNI ， 发送给对方
 			ret = __encap_with_nodeid(ctx, info->tunnel_endpoint,
 						  SECLABEL, TRACE_PAYLOAD_LEN);
 			if (ret)
@@ -1354,9 +1361,10 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 	if (nodeport_lb_hairpin())
         // if enable HAIRPING
         // haripin模式下，数据包 完成 snat后， 直接由 接收网卡 发出，所以，我们在此解析目的mac
-        //在之前缓存信息中，看是否能查询到目的mac
+        // 查询 cilium_neigh4 map ， 在之前缓存信息中，看是否能查询到目的mac
 		dmac = map_lookup_elem(&NODEPORT_NEIGH4, &ip4->daddr);
 	if (dmac) {
+        // 如果能 查询到 mac ，直接写入
 		union macaddr mac = NATIVE_DEV_MAC_BY_IFINDEX(fib_params.l.ifindex);
 
 		if (eth_store_daddr_aligned(ctx, dmac->addr, 0) < 0) {
@@ -1368,6 +1376,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 			goto drop_err;
 		}
 	} else {
+        //如果查询不到cilium_neigh4， 则直接通过内核 邻接表解析
 		fib_params.l.ipv4_src = ip4->saddr;
 		fib_params.l.ipv4_dst = ip4->daddr;
         //在内核中，进行邻居表 查询 目的 mac
@@ -1392,7 +1401,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 		}
 	}
 out_send: __maybe_unused
-    //从相应的网卡 发出数据包
+    // 重定向到 物理网卡 egress ， 发出数据包
 	return ctx_redirect(ctx, fib_params.l.ifindex, 0);
 drop_err:
 	return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP,
@@ -1403,6 +1412,10 @@ drop_err:
 /* Main node-port entry point for host-external ingressing node-port traffic
  * which handles the case of: i) backend is local EP, ii) backend is remote EP,
  * iii) reply from remote backend EP.
+3 对于三类 nodePort 的流量
+3.1  访问nodePort，后端pod 是在本地，实现 nodePort 的 DNAT 解析
+3.2  访问nodePort，后端pod 是别的node上，实现 nodePort 的 DNAT 解析
+3.3  当初外部访问nodePort，本node 解析（dnat+snat ，非dsr方式）转发到别的node上，此刻 回复数据 返回来了，那么 需要我们 unNAT  后 返回给client
  */
 static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 					__u32 src_identity)
@@ -1429,7 +1442,7 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 
 	l4_off = l3_off + ipv4_hdrlen(ip4);
 
-    // 根据数据包，生成出 struct lb4_key key 信息 （访问的service 的 ip 和端口）
+    // 根据数据包，生成出 struct lb4_key key 信息 （访问的 nodePort 的 ip 和端口）
 	ret = lb4_extract_key(ctx, ip4, l4_off, &key, &csum_off, CT_EGRESS);
 	if (IS_ERR(ret)) {
 		if (ret == DROP_NO_SERVICE)
@@ -1439,15 +1452,19 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 		else
 			return ret;
 	}
-
+    // 查询是否命中 nodeport
 	svc = lb4_lookup_service(&key, false);
 	if (svc) {
+        // 如果是 ipip dsr 转发，不做 dnat
 		const bool skip_xlate = DSR_ENCAP_MODE == DSR_ENCAP_IPIP;
 
 		if (!lb4_src_range_ok(svc, ip4->saddr))
 			return DROP_NOT_IN_SRC_RANGE;
 
-        // 查询链路追踪表 ，  完成 tuple 中 目的endpoint 的DNAT 解析 ， 
+        // 查询或 新建 链路追踪表 ，  非IPIP dsr nodepor场景下，会直接 把 dnat 的结果写入了数据包 
+        // 解析 affinity service ，或者 以 随机/maglev 算法 解析普通 service
+        // 注意，这里只是 dnat了目的ip和端口，没有做 snat 
+        // 注意，如果是 IPIP 隧道实现 dsr， 这里的 skip_xlate 会使得 数据中的 目的地址不会被dnat
 		ret = lb4_local(get_ct_map4(&tuple), ctx, l3_off, l4_off,
 				&csum_off, &key, &tuple, svc, &ct_state_new,
 				ip4->saddr, ipv4_has_l4_header(ip4), skip_xlate);
@@ -1456,6 +1473,7 @@ static __always_inline int nodeport_lb4(struct __ctx_buff *ctx,
 	}
 
 	if (!svc || !lb4_svc_is_routable(svc)) {
+        // 如果没有命中任何的service 
 		if (svc)
 			return DROP_IS_CLUSTER_IP;
 
@@ -1463,6 +1481,7 @@ skip_service_lookup:
 		ctx_set_xfer(ctx, XFER_PKT_NO_SVC);
 
 #ifndef ENABLE_MASQUERADE
+        // 判断是否需要以 dsr 方式转发
 		if (nodeport_uses_dsr4(&tuple))
 			return CTX_ACT_OK;
 #endif
@@ -1474,16 +1493,23 @@ skip_service_lookup:
 		return DROP_MISSED_TAIL_CALL;
 	}
 
-    //根据DNAT后的 endpoint ip， 查询是否 本地endpoint
+    //命中了 nodePort
+
+    
+    //查询cilium_lxc map， 看  DNAT后的 endpoint ip 是否 本地endpoint
 	backend_local = __lookup_ip4_endpoint(tuple.daddr);
 	if (!backend_local && lb4_svc_is_hostport(svc))
+        //如果非本地endpoint，且访问的是 hostport，是无效
 		return DROP_INVALID;
 
 	/* Reply from DSR packet is never seen on this node again hence no
 	 * need to track in here.
 	 */
 	if (backend_local || !nodeport_uses_dsr4(&tuple)) {
-        // 如果 back endpoint 是本地 
+        // 如果 back endpoint 是本地  
+        // 或者 以非dsr方式 转发到别的node上的pod
+        // 或者 非dsr 的 回复流量
+        
 		struct ct_state ct_state = {};
 
         // 查询链路追踪表 
@@ -1543,7 +1569,7 @@ redo_local:
 		if (eth_load_saddr(ctx, smac.addr, 0) < 0)
 			return DROP_INVALID;
 
-        //把client 的源mac  记录到 邻接表map 
+        //把client 的源mac  记录到 cilium_neigh4 map , 以便将来使用
 		mac = map_lookup_elem(&NODEPORT_NEIGH4, &ip4->saddr);
 		if (!mac || eth_addrcmp(mac, &smac)) {
 			ret = map_update_elem(&NODEPORT_NEIGH4, &ip4->saddr,
@@ -1557,21 +1583,27 @@ redo_local:
 	if (!backend_local) {
 		edt_set_aggregate(ctx, 0);
 		if (nodeport_uses_dsr4(&tuple)) { // true or false
+        // 如果是 DSR 方式转发到别的node
 #if DSR_ENCAP_MODE == DSR_ENCAP_IPIP
     // 如果是以 IPIP 隧道封装来 实现DSR
 			ctx_store_meta(ctx, CB_HINT,
-				       ((__u32)tuple.sport << 16) | tuple.dport);
-			ctx_store_meta(ctx, CB_ADDR_V4, tuple.daddr);
+				       ((__u32)tuple.sport << 16) | tuple.dport); // client 源端口+后端 endpoint 的port
+			ctx_store_meta(ctx, CB_ADDR_V4, tuple.daddr); // 后端endpoint的 ip
 #elif DSR_ENCAP_MODE == DSR_ENCAP_NONE
     // 如果是以 直接路由 来 实现DSR
-			ctx_store_meta(ctx, CB_PORT, key.dport);//service 的端口
-			ctx_store_meta(ctx, CB_ADDR_V4, key.address); //service的ip
+            //在数据包中 
+			ctx_store_meta(ctx, CB_PORT, key.dport);//最初发起nodePor访问的 目的ip（nodeIP） 
+			ctx_store_meta(ctx, CB_ADDR_V4, key.address); //最初发起nodePor访问的  目的端口（nodePort）
 #endif /* DSR_ENCAP_MODE */
             // DSR 模式的 NodePort转发
+            // no-snat 方式 tail call
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_NODEPORT_DSR);
 		} else {
-			ctx_store_meta(ctx, CB_NAT, NAT_DIR_EGRESS);
             // SNAT 方式的 nodePort转发（从相关网卡 发出）
+            // 当初 snat 方式的 回复流量
+            
+			ctx_store_meta(ctx, CB_NAT, NAT_DIR_EGRESS);
+            // SNAT 方式 tail call
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_NODEPORT_NAT);
 		}
 		return DROP_MISSED_TAIL_CALL;
@@ -1579,7 +1611,8 @@ redo_local:
 
 	ctx_set_xfer(ctx, XFER_PKT_NO_SVC);
 
-    // 如果是 nodePort 访问本地的 endpoint ， 则继续后续的 转发处理
+    // 如果是 nodePort 访问本地的 endpoint ，注意，这里没有做 snat
+    //  则继续后续处理
 	return CTX_ACT_OK;
 }
 
@@ -1613,6 +1646,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 	l4_off = l3_off + ipv4_hdrlen(ip4);
 	csum_l4_offset_and_flags(tuple.nexthdr, &csum_off);
 
+    // 查询链路追踪表
 	ret = ct_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, CT_INGRESS, &ct_state,
 			 &monitor);
 
@@ -1632,6 +1666,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 		*ifindex = ct_state.ifindex;
 #ifdef ENCAP_IFINDEX
 		{
+            // 如果当初是别的node完成 nodePort 转发到本地来了，并且 使用了隧道，那么 封装好隧道报头
 			struct remote_endpoint_info *info;
 
 			info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
@@ -1654,6 +1689,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 		}
 #endif
         // mac 写入数据包
+        // 查询 cilium_neigh4 map ， 获取出 目的ip的 mac
 		dmac = map_lookup_elem(&NODEPORT_NEIGH4, &ip4->daddr);
 		if (dmac) {
 			union macaddr mac = NATIVE_DEV_MAC_BY_IFINDEX(*ifindex);
@@ -1669,6 +1705,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 			fib_params.ipv4_src = ip4->saddr;
 			fib_params.ipv4_dst = ip4->daddr;
 
+            // 如果 cilium_neigh4 map 查询不到，则查询 linux 内核 的 邻居表
 			ret = fib_lookup(ctx, &fib_params, sizeof(fib_params),
 					 BPF_FIB_LOOKUP_DIRECT |
 					 BPF_FIB_LOOKUP_OUTPUT);
@@ -1682,6 +1719,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 		}
 	} else {
 		if (!bpf_skip_recirculation(ctx)) {
+            // tail call bpf_host.c 的 CILIUM_CALL_IPV4_FROM_LXC ，
 			bpf_skip_nodeport_set(ctx);
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_LXC);
 			return DROP_MISSED_TAIL_CALL;

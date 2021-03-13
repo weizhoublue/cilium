@@ -340,6 +340,7 @@ static __always_inline int snat_v4_rewrite_egress(struct __ctx_buff *ctx,
 			case IPPROTO_TCP:
 			case IPPROTO_UDP:
                 // Overwrites a TCP or UDP port with new value and fixes up the checksum
+                // 修改了 目的端口，保留的源端口
 				ret = l4_modify_port(ctx, off,
 						     offsetof(struct tcphdr, source),
 						     &csum, state->to_sport,
@@ -493,6 +494,7 @@ static __always_inline __maybe_unused int snat_v4_create_dsr(struct __ctx_buff *
 	state.to_saddr = to_saddr;
 	state.to_sport = to_sport;
 
+    // cilium_snat_v4_external map
 	ret = map_update_elem(&SNAT_MAPPING_IPV4, &tuple, &state, 0);
 	if (ret)
 		return ret;

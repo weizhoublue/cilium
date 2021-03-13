@@ -89,7 +89,7 @@ redirect_direct_v4(struct __ctx_buff *ctx __maybe_unused,
 		.ipv4_src	= ip4->saddr,
 		.ipv4_dst	= ip4->daddr,
 	};
-
+    // 查询 内核 邻居表，解析目的mac
 	ret = fib_lookup(ctx, &fib_params, sizeof(fib_params),
 			 BPF_FIB_LOOKUP_DIRECT);
 	switch (ret) {
@@ -106,7 +106,7 @@ redirect_direct_v4(struct __ctx_buff *ctx __maybe_unused,
 	default:
 		return CTX_ACT_DROP;
 	}
-
+    // 转发接口
 	oif = fib_params.ifindex;
 # endif /* ENABLE_SKIP_FIB */
 

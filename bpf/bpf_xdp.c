@@ -114,6 +114,7 @@ int tail_lb_ipv4(struct __ctx_buff *ctx)
 	int ret = CTX_ACT_OK;
 
 	if (!bpf_skip_nodeport(ctx)) {
+        //实现 nodePOrt 解析 , 解析方法  同物理网卡tc ingress ebfp解析nodePort 一致
 		ret = nodeport_lb4(ctx, 0);
 		if (IS_ERR(ret))
 			return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP,
@@ -148,18 +149,21 @@ static __always_inline int check_v4(struct __ctx_buff *ctx)
 		return CTX_ACT_DROP;
 
 #ifdef CIDR4_FILTER
-	memcpy(pfx.lpm.data, &ipv4_hdr->saddr, sizeof(pfx.addr));
-	pfx.lpm.prefixlen = 32;
-
-#ifdef CIDR4_LPM_PREFILTER
-	if (map_lookup_elem(&CIDR4_LMAP_NAME, &pfx))
-		return CTX_ACT_DROP;
-#endif /* CIDR4_LPM_PREFILTER */
-	return map_lookup_elem(&CIDR4_HMAP_NAME, &pfx) ?
-		CTX_ACT_DROP : check_v4_lb(ctx);
+    	memcpy(pfx.lpm.data, &ipv4_hdr->saddr, sizeof(pfx.addr));
+    	pfx.lpm.prefixlen = 32;
+    
+    #ifdef CIDR4_LPM_PREFILTER
+    	if (map_lookup_elem(&CIDR4_LMAP_NAME, &pfx))
+    		return CTX_ACT_DROP;
+    #endif /* CIDR4_LPM_PREFILTER */
+        //  如果 命中 CIDR4 FILTER，则丢弃，否则尝试 进行 nodePort 解析
+    	return map_lookup_elem(&CIDR4_HMAP_NAME, &pfx) ?
+    		CTX_ACT_DROP : check_v4_lb(ctx);
 #else
+    // 进行 nodePort 解析
 	return check_v4_lb(ctx);
 #endif /* CIDR4_FILTER */
+
 }
 #else
 static __always_inline int check_v4(struct __ctx_buff *ctx)

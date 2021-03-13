@@ -144,6 +144,7 @@ resolve_srcid_ipv6(struct __ctx_buff *ctx, __u32 srcid_from_proxy,
 		union v6addr node_ip = {};
 
 		BPF_V6(node_ip, ROUTER_IP);
+        // 从 IPV6 的 header 的 流标签 位 取出 src identity
 		ret = derive_src_id(&node_ip, ip6, &src_id);
 		if (IS_ERR(ret))
 			return ret;
@@ -235,6 +236,7 @@ skip_host_firewall:
 		/* If we are attached to cilium_host at egress, this will
 		 * rewrite the destination MAC address to the MAC of cilium_net.
 		 */
+        // 强制 下跳给 cilium_nets
 		ret = rewrite_dmac_to_host(ctx, secctx);
 		/* DIRECT PACKET READ INVALID */
 		if (IS_ERR(ret))
@@ -261,7 +263,7 @@ skip_host_firewall:
 	dst = (union v6addr *) &ip6->daddr;
 	info = ipcache_lookup6(&IPCACHE_MAP, dst, V6_CACHE_KEY_LEN);
 	if (info != NULL && info->tunnel_endpoint != 0) {
-        //ipsec 处理
+        // vxlan 隧道 处理
 		ret = encap_and_redirect_with_nodeid(ctx, info->tunnel_endpoint,
 							 info->key,
 							 secctx, TRACE_PAYLOAD_LEN);
@@ -360,6 +362,7 @@ handle_to_netdev_ipv6(struct __ctx_buff *ctx)
 		return hdrlen;
 
 	if (likely(nexthdr == IPPROTO_ICMPV6)) {
+        // 开启 host policy 时，只放行 部分的 icmp 类型消息 
 		ret = icmp6_host_handle(ctx);
 		if (ret == SKIP_HOST_FIREWALL)
 			return CTX_ACT_OK;
@@ -369,6 +372,7 @@ handle_to_netdev_ipv6(struct __ctx_buff *ctx)
 
 	/* to-netdev is attached to the egress path of the native device. */
 	srcID = ipcache_lookup_srcid6(ctx);
+    // 实施 host egress policy
 	return ipv6_host_policy_egress(ctx, srcID);
 }
 # endif
@@ -452,7 +456,10 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	if (!from_host) {
 		if (ctx_get_xfer(ctx) != XFER_PKT_NO_SVC &&
 		    !bpf_skip_nodeport(ctx)) {
-            // 实现 nodePort 转发
+            // 是访问 service 的流量
+            // 实现 nodePort 解析
+            // 如果endpoint 是在其他node上，直接完成 redirect 发送
+            // 如果endpoint是在本地，则函数还会返回来
 			ret = nodeport_lb4(ctx, secctx);
 			if (ret < 0)
 				return ret;
@@ -483,6 +490,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 			return ret;
 	} else if (!ctx_skip_host_fw(ctx)) {
 		/* We're on the ingress path of the native device. */
+        // 实施 host ingress policy 过滤
 		ret = ipv4_host_policy_ingress(ctx, &remoteID);
 		if (IS_ERR(ret))
 			return ret;
@@ -495,6 +503,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	tuple.nexthdr = ip4->protocol;
 
 	if (from_host) {
+        // cilium_host at egress 逻辑
 		/* If we are attached to cilium_host at egress, this will
 		 * rewrite the destination MAC address to the MAC of cilium_net.
 		 */
@@ -511,6 +520,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	ep = lookup_ip4_endpoint(ip4);
 	if (ep) {
         // 如果访问目的ip是本地endpoint
+        
 		/* Let through packets to the node-ip so they are processed by
 		 * the local ip stack.
 		 */
@@ -523,15 +533,18 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 #else
 			return CTX_ACT_OK;
 #endif
-        // 转发出数据包
+        //  直接重定向到 本地 另一个endpoint的 lxc egress
 		return ipv4_local_delivery(ctx, ETH_HLEN, secctx, ip4, ep,
 					   METRIC_INGRESS, from_host);
 	}
 
+    
+    
 #ifdef ENCAP_IFINDEX
 	info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
+    // 如果 访问目的是  其它 node 上的pod 
 	if (info != NULL && info->tunnel_endpoint != 0) {
-        // ipsec 处理
+        // vxlan 封装，把 source identity 嵌入 VNI
 		ret = encap_and_redirect_with_nodeid(ctx, info->tunnel_endpoint,
 						     info->key, secctx,
 						     TRACE_PAYLOAD_LEN);
@@ -781,6 +794,11 @@ static __always_inline int do_netdev_encrypt(struct __ctx_buff *ctx, __u16 proto
 #endif /* ENCAP_IFINDEX */
 #endif /* ENABLE_IPSEC */
 
+/*
+2个 逻辑 调用本函数：
+ 物理网卡 上的 ingress 逻辑 ，from_host=false
+cilium_host egress上的逻辑， 发出的流量，from_host=true
+*/
 static __always_inline int
 do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 {
@@ -790,11 +808,13 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 
 #ifdef ENABLE_IPSEC
 	if (from_host) {
+        // cilium_host egress上的逻辑
 		__u32 magic = ctx->mark & MARK_MAGIC_HOST_MASK;
-
+        // 实施ipsec 封装
 		if (magic == MARK_MAGIC_ENCRYPT)
 			return do_netdev_encrypt(ctx, proto);
 	} else {
+        // 物理网卡 上的 ingress 逻辑，进行 ipsec 解封装
 		int done = do_decrypt(ctx, proto);
 
 		if (!done)
@@ -804,6 +824,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 	bpf_clear_meta(ctx);
 
 	if (from_host) {
+        // cilium_host egress上的逻辑
 #ifdef HOST_REDIRECT_TO_INGRESS
 		if (proto == bpf_htons(ETH_P_ARP)) {
 			union macaddr mac = HOST_IFINDEX_MAC;
@@ -823,7 +844,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 		int trace = TRACE_FROM_HOST;
 		bool from_proxy;
 
-        //识别流量 是从哪个 identity  发送来的， 是否来自 L7代理发出来的
+        //识别流量 的 source identity  ， 判断是否来自 ingress/egress sL7代理发出来的
 		from_proxy = inherit_identity_from_host(ctx, &identity);
 		if (from_proxy)
 			trace = TRACE_FROM_PROXY;
@@ -843,6 +864,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 # endif
 #ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
+        //从 IPV6 3层报头“流标签”位 取出 src identity
 		identity = resolve_srcid_ipv6(ctx, identity, from_host);
 		ctx_store_meta(ctx, CB_SRC_IDENTITY, identity);
 		if (from_host)
@@ -860,6 +882,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 		ctx_store_meta(ctx, CB_SRC_IDENTITY, identity);
         // from  cilium_host
 		if (from_host) {
+        // cilium_host egress上的逻辑
 # if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_MASQUERADE)
 			/* If we don't rely on BPF-based masquerading, we need
 			 * to pass the srcid from ipcache to host firewall. See
@@ -923,7 +946,7 @@ handle_netdev(struct __ctx_buff *ctx, const bool from_host)
 	return do_netdev(ctx, proto, from_host);
 }
 
-/*
+/*  外部进入 物理网卡的流量 
  * from-netdev is attached as a tc ingress filter to one or more physical devices
  * managed by Cilium (e.g., eth0). This program is only attached when:
  * - the host firewall is enabled, or
@@ -935,7 +958,7 @@ int from_netdev(struct __ctx_buff *ctx)
 	return handle_netdev(ctx, false);
 }
 
-/*
+/* cilium_host 发出的流量, cilium_host 网卡 tc egress
  * from-host is attached as a tc egress filter to the node's 'cilium_host'
  * interface, or to the primary Flannel device if present.
  */
@@ -949,7 +972,7 @@ int from_host(struct __ctx_buff *ctx)
 	return handle_netdev(ctx, true);
 }
 
-/* 绑定到 宿主机上的一些物理网卡上，处理 host firewall 和 nodePort
+/* 绑定到 宿主机上的一些物理网卡上，处理 发出流量  host firewall 和 nodePort
  * to-netdev is attached as a tc egress filter to one or more physical devices
  * managed by Cilium (e.g., eth0). This program is only attached when:
  * - the host firewall is enabled, or
@@ -992,6 +1015,7 @@ int to_netdev(struct __ctx_buff *ctx __maybe_unused)
 		 */
 		if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_HOST)
 			src_id = HOST_ID;
+        // 解析 source 的 identity 
 		src_id = resolve_srcid_ipv4(ctx, src_id, &ipcache_srcid, true);
 
 		if (!revalidate_data(ctx, &data, &data_end, &ip4))
@@ -1000,7 +1024,7 @@ int to_netdev(struct __ctx_buff *ctx __maybe_unused)
 		/* We need to pass the srcid from ipcache to host firewall. See
 		 * comment in ipv4_host_policy_egress() for details.
 		 */
-        // 实施 host policy 的 egress 过滤
+        // 只对 发自本地host 的流量，实施 host egress policy 
 		ret = ipv4_host_policy_egress(ctx, src_id, ipcache_srcid);
 		break;
 	}
@@ -1016,7 +1040,7 @@ out:
 #endif /* ENABLE_HOST_FIREWALL */
 
 #if defined(ENABLE_BANDWIDTH_MANAGER)
-    // 实施 endpoint的带宽限制
+    // 基于endpoint id， 查询 cilium_throttle 表 ， 实施 endpoint的egress带宽限制
 	ret = edt_sched_departure(ctx);
 	/* No send_drop_notify_error() here given we're rate-limiting. */
 	if (ret == CTX_ACT_DROP) {
@@ -1032,6 +1056,7 @@ out:
 	 defined(ENABLE_MASQUERADE))
 	if ((ctx->mark & MARK_MAGIC_SNAT_DONE) != MARK_MAGIC_SNAT_DONE) {
         //对于endpoint 访问集群外部流量，实施 snat
+        // 对 pod的 cidr ，以及ipMasqAgent功能中的nonMasqueradeCIDRs 不进行snat  
 		ret = nodeport_nat_fwd(ctx);
 		if (IS_ERR(ret))
 			return send_drop_notify_error(ctx, 0, ret,
@@ -1065,10 +1090,12 @@ int to_host(struct __ctx_buff *ctx)
 		set_identity_mark(ctx, srcID);
         
 	} else if ((magic & 0xFFFF) == MARK_MAGIC_TO_PROXY) {
+        // 在 lxc 的 ingress 上，已经 打上了mark MARK_MAGIC_TO_PROXY
         // #define MARK_MAGIC_TO_PROXY		0x0200
         // TPROXY  代理，转发L7 流量
         
 		/* Upper 16 bits may carry proxy port number */
+        // 获取出 tproxy 转发 前的   原始目标的端口
 		__be16 port = magic >> 16;
 
 		ctx_store_meta(ctx, 0, CB_PROXY_MAGIC);

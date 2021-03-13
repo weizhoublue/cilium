@@ -53,6 +53,7 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 			return ret;
 	}
 #endif
+    // 把目的ip 换成了？本地 ROUTER_IP
 	ret = encap_remap_v6_host_address(ctx, false);
 	if (unlikely(ret < 0))
 		return ret;
@@ -167,11 +168,16 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 	bool decrypted;
 
 	/* verifier workaround (dereference of modified ctx ptr) */
+    // 取出 ipv4 报头
 	if (!revalidate_data_pull(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 #ifdef ENABLE_NODEPORT
 	if (!bpf_skip_nodeport(ctx)) {
         // 实施nodePort 转发
+            // 是访问 service 的流量
+            // 实现 nodePort 解析
+            // 如果endpoint 是在其他node上，直接完成 redirect 发送
+            // 如果endpoint是在本地，则函数还会返回来
 		int ret = nodeport_lb4(ctx, *identity);
 
 		if (ret < 0)
@@ -186,8 +192,10 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx, __u32 *identity)
 	if (decrypted) {
 		*identity = key.tunnel_id = get_identity(ctx);
 	} else {
+        // 获取出 隧道的 metadata
 		if (unlikely(ctx_get_tunnel_key(ctx, &key, sizeof(key), 0) < 0))
 			return DROP_NO_TUNNEL_KEY;
+        // 这个tunnel_id原本应该是 vxlan 的 VNI， 这里难道 作为了 endpoint 的 identity 来使用 ？
 		*identity = key.tunnel_id;
 
 		if (*identity == HOST_ID)
@@ -232,6 +240,7 @@ not_esp:
 		if (ep->flags & ENDPOINT_F_HOST)
 			goto to_host;
 
+        // 发送给 本地pod的流量
 		return ipv4_local_delivery(ctx, ETH_HLEN, *identity, ip4, ep,
 					   METRIC_INGRESS, false);
 	}
@@ -242,13 +251,14 @@ to_host:
 		union macaddr host_mac = HOST_IFINDEX_MAC;
 		union macaddr router_mac = NODE_MAC;
 		int ret;
-
+        // 更新3层ttl ， 2层mac
 		ret = ipv4_l3(ctx, ETH_HLEN, (__u8 *)&router_mac.addr,
 			      (__u8 *)&host_mac.addr, ip4);
 		if (ret != CTX_ACT_OK)
 			return ret;
 
 		cilium_dbg_capture(ctx, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
+        // 发送给 本宿主机的， 重定向给 cilium_host 接口
 		return redirect(HOST_IFINDEX, 0);
 	}
 #else
@@ -331,6 +341,7 @@ int to_overlay(struct __ctx_buff *ctx)
 	int ret;
 
     // 为什么这个函数 只处理 ipv6 ？而且不是进行隧道封装
+    // 把 源IP 替换成了本地 ？ HOST_IP
 	ret = encap_remap_v6_host_address(ctx, true);
 	if (unlikely(ret < 0))
 		goto out;
@@ -356,7 +367,9 @@ int to_overlay(struct __ctx_buff *ctx)
 		ret = CTX_ACT_OK;
 		goto out;
 	}
-    // 若nodeport转发，实施snat
+
+    //如果开启了masquerade功能，则对于endpoint 访问集群外部流量，实施 snat 
+    //（ 对目的是 pod的 cidr 和 ipMasqAgent功能中的nonMasqueradeCIDRs ， 不进行snat）
 	ret = nodeport_nat_fwd(ctx);
 #endif
 out:
