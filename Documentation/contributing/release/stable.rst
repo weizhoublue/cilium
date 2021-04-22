@@ -59,9 +59,6 @@ Reference steps for the template
        instance, indentation mismatches) as well as duplicate contributor
        names, and correct them accordingly.
 
-#. Update the ``cilium_version`` and ``cilium_tag`` variables in
-   ``examples/getting-started/Vagrantfile``
-
 #. Set the right version for the ``CustomResourceDefinitionSchemaVersion`` in
    the ``pkg/k8s/client`` by following these instructions:
 
@@ -106,6 +103,10 @@ Reference steps for the template
 
    Following the steps above, the release draft will already be prepared.
    Preview the description and then publish the release.
+
+   #. Use ``contrib/release/pull-docker-manifests.sh`` to fetch the official
+      docker manifests for the release and add these into the Github release
+      announcement.
 
 #. Prepare Helm changes for the release using the `Cilium Helm Charts Repository <https://github.com/cilium/charts/>`_
    and push the changes into that repository (not the main cilium repository):

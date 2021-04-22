@@ -18,8 +18,11 @@ the network.
 .. image:: masquerade.png
     :align: center
 
-This behavior can be disabled with the option ``masquerade: false`` in which
-case no masquerading will be performed.
+For IPv6 addresses masquerading is performed only when using iptables
+implementation mode.
+
+This behavior can be disabled with the option ``enable-ipv4-masquerade: false``
+for IPv4 and ``enable-ipv6-masquerade: false`` for IPv6 traffic leaving the host.
 
 Configuration
 -------------
@@ -47,7 +50,7 @@ implementation. It requires Linux kernel 4.19 and can be enabled with
 the ``bpf.masquerade=true`` helm option (enabled by default).
 
 The current implementation depends on :ref:`the BPF NodePort feature <kubeproxy-free>`.
-The dependency will be removed in the future (`GH-13732 <https://github.com/cilium/cilium/issues/13732>`_).
+The dependency will be removed in the future (:gh-issue:`13732`).
 
 Masquerading can take place only on those devices which run the eBPF masquerading
 program. This means that a packet sent from a pod to an outside will be masqueraded
@@ -123,6 +126,9 @@ The example below shows how to configure the agent via `ConfigMap` and to verify
     172.16.0.0/12
     192.168.0.0/16
 
+.. note::
+
+    eBPF based masquerading is currently not supported for IPv6 traffic.
 
 iptables-based
 **************

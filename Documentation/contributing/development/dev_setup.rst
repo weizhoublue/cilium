@@ -1,5 +1,5 @@
 .. only:: not (epub or latex or html)
-  
+
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
     https://docs.cilium.io
@@ -42,7 +42,7 @@ contribute to Cilium:
 +--------------------------------------------------------------+------------------------------+--------------------------------------------------+
 + `gomega <https://github.com/onsi/gomega>`_                   | >= 1.2.0                     | ``go get -u github.com/onsi/gomega``             |
 +--------------------------------------------------------------+------------------------------+--------------------------------------------------+
-+ golangci-lint                                                | >= v1.27                     | ``https://github.com/golangci/golangci-lint``    |
++ `golangci-lint <https://github.com/golangci/golangci-lint>`_ | >= v1.27                     | ``go get -u github.com/golangci/golangci-lint``  |
 +--------------------------------------------------------------+------------------------------+--------------------------------------------------+
 + `Docker <https://docs.docker.com/engine/installation/>`_     | OS-Dependent                 | N/A (OS-specific)                                |
 +--------------------------------------------------------------+------------------------------+--------------------------------------------------+
@@ -91,7 +91,7 @@ existing cluster. For example, to add a net-next VM to a one-node cluster:
 
 ::
 
-    $ NWORKERS=1 NETNEXT=1 ./contrib/vagrant/start.sh k8s2+
+    $ K8S=1 NWORKERS=1 NETNEXT=1 ./contrib/vagrant/start.sh k8s2+
 
 Cilium Vagrantfiles look for a file ``.devvmrc`` in the root of your
 Cilium repository. This file is ignored for Git, so it does not exist

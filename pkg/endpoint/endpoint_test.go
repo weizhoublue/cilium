@@ -18,7 +18,6 @@ package endpoint
 
 import (
 	"context"
-	"net"
 	"reflect"
 	"testing"
 	"time"
@@ -26,7 +25,6 @@ import (
 	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/fake"
-	"github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn/restore"
@@ -37,6 +35,7 @@ import (
 	pkgLabels "github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/metrics"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/option"
@@ -80,6 +79,7 @@ var suite = EndpointSuite{repo: policy.NewPolicyRepository(nil, nil)}
 var _ = Suite(&suite)
 
 func (s *EndpointSuite) SetUpSuite(c *C) {
+	ctmap.InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true, true)
 	s.repo = policy.NewPolicyRepository(nil, nil)
 	// GetConfig the default labels prefix filter
 	err := labelsfilter.ParseLabelPrefixCfg(nil, "")
@@ -720,47 +720,4 @@ func BenchmarkEndpointGetModel(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		e.GetModel()
 	}
-}
-
-type ipReleaserDummy struct{}
-
-func (i *ipReleaserDummy) ReleaseIP(ip net.IP) error {
-	return nil
-}
-
-type monitorOwnerDummy struct{}
-
-func (m *monitorOwnerDummy) NotifyMonitorDeleted(e *Endpoint) {
-	return
-}
-
-type dummyManager struct{}
-
-func (d *dummyManager) AllocateID(id uint16) (uint16, error) {
-	return uint16(1), nil
-}
-
-func (d *dummyManager) RunK8sCiliumEndpointSync(*Endpoint, EndpointStatusConfiguration) {
-}
-
-func (d *dummyManager) UpdateReferences(map[id.PrefixType]string, *Endpoint) {
-}
-
-func (d *dummyManager) UpdateIDReference(*Endpoint) {
-}
-
-func (d *dummyManager) RemoveReferences(map[id.PrefixType]string) {
-}
-
-func (d *dummyManager) RemoveID(uint16) {
-}
-
-func (d *dummyManager) ReleaseID(*Endpoint) error {
-	return nil
-}
-
-func (d *dummyManager) AddIPv6Address(addressing.CiliumIPv6) {
-}
-
-func (d *dummyManager) RemoveIPv6Address(addressing.CiliumIPv6) {
 }

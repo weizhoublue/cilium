@@ -32,6 +32,7 @@ import (
 
 	. "gopkg.in/check.v1"
 	core_v1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 )
@@ -969,126 +970,119 @@ func (s *K8sSuite) Test_ConvertToK8sService(c *C) {
 	}
 }
 
-func (s *K8sSuite) Test_ConvertToCNPWithStatus(c *C) {
+func (s *K8sSuite) Test_ConvertToK8sV1ServicePorts(c *C) {
 	type args struct {
-		obj interface{}
+		ports []slim_corev1.ServicePort
 	}
 	tests := []struct {
 		name string
 		args args
-		want interface{}
+		want []v1.ServicePort
 	}{
 		{
-			name: "normal conversion",
+			name: "empty",
 			args: args{
-				obj: &v2.CiliumNetworkPolicy{},
+				ports: []slim_corev1.ServicePort{},
 			},
-			want: &types.SlimCNP{
-				CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
-			},
+			want: []v1.ServicePort{},
 		},
 		{
-			name: "delete final state unknown conversion",
+			name: "non-empty",
 			args: args{
-				obj: cache.DeletedFinalStateUnknown{
-					Key: "foo",
-					Obj: &v2.CiliumNetworkPolicy{},
+				ports: []slim_corev1.ServicePort{
+					{
+						Name: "foo",
+						Port: int32(1),
+					},
 				},
 			},
-			want: cache.DeletedFinalStateUnknown{
-				Key: "foo",
-				Obj: &types.SlimCNP{
-					CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
+			want: []v1.ServicePort{
+				{
+					Name: "foo",
+					Port: int32(1),
 				},
 			},
-		},
-		{
-			name: "unknown object type in delete final state unknown conversion",
-			args: args{
-				obj: cache.DeletedFinalStateUnknown{
-					Key: "foo",
-					Obj: 100,
-				},
-			},
-			want: cache.DeletedFinalStateUnknown{
-				Key: "foo",
-				Obj: 100,
-			},
-		},
-		{
-			name: "unknown object type in conversion",
-			args: args{
-				obj: 100,
-			},
-			want: 100,
 		},
 	}
 	for _, tt := range tests {
-		got := ConvertToCNPWithStatus(tt.args.obj)
+		got := ConvertToK8sV1ServicePorts(tt.args.ports)
 		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
 	}
 }
 
-func (s *K8sSuite) Test_ConvertToCCNPWithStatus(c *C) {
+func (s *K8sSuite) Test_ConvertToK8sV1SessionAffinityConfig(c *C) {
+	ts := int32(1)
 	type args struct {
-		obj interface{}
+		cfg *slim_corev1.SessionAffinityConfig
 	}
 	tests := []struct {
 		name string
 		args args
-		want interface{}
+		want *v1.SessionAffinityConfig
 	}{
 		{
-			name: "normal conversion",
+			name: "empty",
 			args: args{
-				obj: &v2.CiliumClusterwideNetworkPolicy{
-					CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
-				},
+				cfg: &slim_corev1.SessionAffinityConfig{},
 			},
-			want: &types.SlimCNP{
-				CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
-			},
+			want: &v1.SessionAffinityConfig{},
 		},
 		{
-			name: "delete final state unknown conversion",
+			name: "non-empty",
 			args: args{
-				obj: cache.DeletedFinalStateUnknown{
-					Key: "foo",
-					Obj: &v2.CiliumClusterwideNetworkPolicy{
-						CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
+				cfg: &slim_corev1.SessionAffinityConfig{
+					ClientIP: &slim_corev1.ClientIPConfig{
+						TimeoutSeconds: &ts,
 					},
 				},
 			},
-			want: cache.DeletedFinalStateUnknown{
-				Key: "foo",
-				Obj: &types.SlimCNP{
-					CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
+			want: &v1.SessionAffinityConfig{
+				ClientIP: &v1.ClientIPConfig{
+					TimeoutSeconds: &ts,
 				},
 			},
-		},
-		{
-			name: "unknown object type in delete final state unknown conversion",
-			args: args{
-				obj: cache.DeletedFinalStateUnknown{
-					Key: "foo",
-					Obj: 100,
-				},
-			},
-			want: cache.DeletedFinalStateUnknown{
-				Key: "foo",
-				Obj: 100,
-			},
-		},
-		{
-			name: "unknown object type in conversion",
-			args: args{
-				obj: 100,
-			},
-			want: 100,
 		},
 	}
 	for _, tt := range tests {
-		got := ConvertToCCNPWithStatus(tt.args.obj)
+		got := ConvertToK8sV1ServiceAffinityConfig(tt.args.cfg)
+		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
+	}
+}
+
+func (s *K8sSuite) Test_ConvertToK8sV1LoadBalancerIngress(c *C) {
+	type args struct {
+		ings []slim_corev1.LoadBalancerIngress
+	}
+	tests := []struct {
+		name string
+		args args
+		want []v1.LoadBalancerIngress
+	}{
+		{
+			name: "empty",
+			args: args{
+				ings: []slim_corev1.LoadBalancerIngress{},
+			},
+			want: []v1.LoadBalancerIngress{},
+		},
+		{
+			name: "non-empty",
+			args: args{
+				ings: []slim_corev1.LoadBalancerIngress{
+					{
+						IP: "1.1.1.1",
+					},
+				},
+			},
+			want: []v1.LoadBalancerIngress{
+				{
+					IP: "1.1.1.1",
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		got := ConvertToK8sV1LoadBalancerIngress(tt.args.ings)
 		c.Assert(got, checker.DeepEquals, tt.want, Commentf("Test Name: %s", tt.name))
 	}
 }
@@ -1165,9 +1159,16 @@ func (s *K8sSuite) Test_ConvertToCCNP(c *C) {
 		{
 			name: "normal conversion",
 			args: args{
-				obj: &v2.CiliumClusterwideNetworkPolicy{
-					CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
-				},
+				obj: &v2.CiliumClusterwideNetworkPolicy{},
+			},
+			want: &types.SlimCNP{
+				CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
+			},
+		},
+		{
+			name: "A CCNP where it doesn't contain neither a spec nor specs",
+			args: args{
+				obj: &v2.CiliumClusterwideNetworkPolicy{},
 			},
 			want: &types.SlimCNP{
 				CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
@@ -1178,9 +1179,7 @@ func (s *K8sSuite) Test_ConvertToCCNP(c *C) {
 			args: args{
 				obj: cache.DeletedFinalStateUnknown{
 					Key: "foo",
-					Obj: &v2.CiliumClusterwideNetworkPolicy{
-						CiliumNetworkPolicy: &v2.CiliumNetworkPolicy{},
-					},
+					Obj: &v2.CiliumClusterwideNetworkPolicy{},
 				},
 			},
 			want: cache.DeletedFinalStateUnknown{

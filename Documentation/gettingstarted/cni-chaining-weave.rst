@@ -11,6 +11,8 @@ Weave Net
 This guide instructs how to install Cilium in chaining configuration on top of
 `Weave Net <https://github.com/weaveworks/weave>`_.
 
+.. include:: cni-chaining-limitations.rst
+
 Create a CNI configuration
 ==========================
 
@@ -68,7 +70,7 @@ Deploy Cilium release via Helm:
       --set cni.customConf=true \\
       --set cni.configMap=cni-configuration \\
       --set tunnel=disabled \\
-      --set masquerade=false
+      --set enableIPv4Masquerade=false
 
 .. note::
 
@@ -81,7 +83,5 @@ Deploy Cilium release via Helm:
    them.
 
 .. include:: k8s-install-validate.rst
-.. include:: namespace-kube-system.rst
-.. include:: hubble-enable.rst
-
+.. include:: next-steps.rst
 

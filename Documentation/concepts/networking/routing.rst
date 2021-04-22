@@ -9,6 +9,7 @@ Routing
 #######
 
 .. _arch_overlay:
+.. _encapsulation:
 
 Encapsulation
 =============
@@ -130,7 +131,6 @@ The following configuration options must be set to run the datapath in native
 routing mode:
 
 * ``tunnel: disabled``: Enable native routing mode.
-* ``enable-endpoint-routes: true``: Enable per-endpoint routing on the node
 * ``native-routing-cidr: x.x.x.x/y``: Set the CIDR in which native routing
   can be performed.
 
@@ -248,7 +248,7 @@ The AWS ENI datapath is enabled by setting the following option:
 
 * ``egress-masquerade-interfaces: eth+`` is the interface selector of all
   interfaces which are subject to masquerading. Masquerading can be disabled
-  entirely with ``masquerade: "false"``.
+  entirely with ``enable-ipv4-masquerade: "false"``.
 
 See the section :ref:`ipam_eni` for details on how to configure ENI IPAM
 specific parameters.
@@ -307,5 +307,5 @@ The following configuration options must be set to run the datapath on GKE:
 * ``native-routing-cidr: x.x.x.x/y``: Set the CIDR in which native routing
   is supported.
 
-See the getting started guide :ref:`k8s_install_gke` to install Cilium on
+See the getting started guide :ref:`k8s_install_quick` to install Cilium on
 Google Kubernetes Engine (GKE).

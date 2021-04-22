@@ -1,16 +1,10 @@
-# Copyright 2020 Authors of Cilium
+# Copyright 2020-2021 Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG GOLANG_IMAGE=docker.io/library/golang:1.15.6-alpine3.12
-ARG ALPINE_IMAGE=docker.io/library/alpine:3.12
+ARG GOLANG_IMAGE=docker.io/library/golang:1.16.3-alpine3.13@sha256:7f69ee6e3ea6c3acab98576d8d51bf2e72ed722a0bd4e4363423fddb3958d5af
+ARG ALPINE_IMAGE=docker.io/library/alpine:3.13.1@sha256:08d6ca16c60fe7490c03d10dc339d9fd8ea67c6466dea8d558526b1330a85930
 
 FROM ${GOLANG_IMAGE} as builder
-
-RUN apk add --no-cache \
-  curl \
-  bash \
-  make \
-  && true
 
 COPY install-protoplugins.sh /tmp/install-protoplugins.sh
 RUN /tmp/install-protoplugins.sh

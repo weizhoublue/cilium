@@ -1,4 +1,4 @@
-// Copyright 2018-2020 Authors of Cilium
+// Copyright 2018-2021 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cilium/cilium/pkg/versioncheck"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 
@@ -117,7 +118,7 @@ var _ = Describe("K8sUpdates", func() {
 		ExpectAllPodsTerminated(kubectl)
 	})
 
-	SkipItIf(helpers.SkipGKEQuarantined, "Tests upgrade and downgrade from a Cilium stable image to master", func() {
+	It("Tests upgrade and downgrade from a Cilium stable image to master", func() {
 		var assertUpgradeSuccessful func()
 		assertUpgradeSuccessful, cleanupCallback =
 			InstallAndValidateCiliumUpgrades(
@@ -145,8 +146,7 @@ func removeCilium(kubectl *helpers.Kubectl) {
 // that need to run, and the second one are the cleanup actions
 func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVersion, oldImageVersion, newHelmChartVersion, newImageVersion string) (func(), func()) {
 	var (
-		privateIface string // only used when running w/o kube-proxy
-		err          error
+		err error
 
 		timeout = 5 * time.Minute
 	)
@@ -162,11 +162,6 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 
 	SkipIfIntegration(helpers.CIIntegrationFlannel)
 
-	if helpers.RunsWithoutKubeProxy() {
-		privateIface, err = kubectl.GetPrivateIface()
-		ExpectWithOffset(1, err).To(BeNil(), "Unable to determine private iface")
-	}
-
 	apps := []string{helpers.App1, helpers.App2, helpers.App3}
 	app1Service := "app1-service"
 
@@ -179,22 +174,6 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 			"sleepAfterInit":     "true",
 			"operator.enabled":   "false ",
 			"hubble.tls.enabled": "false",
-		}
-		// Cilium < v1.8 doesn't support multi-dev, so set only one device.
-		// If not set, then overwriteHelmOptions() will set two devices.
-		if helpers.RunsWithoutKubeProxy() || helpers.RunsOn419Kernel() {
-			switch oldHelmChartVersion {
-			case "1.5-dev", "1.6-dev", "1.7-dev":
-				opts["global.nodePort.device"] = privateIface
-			default:
-				opts["devices"] = privateIface
-			}
-			// Cilium < v1.8 has kube-proxy-replacement=strict mode
-			// broken due to too high complexity (v4, v6, strict, debug).
-			// See also notes in GH-#12018 issue.
-			if helpers.RunsOn419Kernel() {
-				opts["debug.enabled"] = "false"
-			}
 		}
 		if imageName != "" {
 			opts["image.repository"] = imageName
@@ -271,17 +250,6 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 			"image.repository":              "quay.io/cilium/cilium",
 			"operator.image.repository":     "quay.io/cilium/operator",
 			"hubble.relay.image.repository": "quay.io/cilium/hubble-relay",
-		}
-		if helpers.RunsWithoutKubeProxy() || helpers.RunsOn419Kernel() {
-			switch oldHelmChartVersion {
-			case "1.5-dev", "1.6-dev", "1.7-dev":
-				opts["global.nodePort.device"] = privateIface
-			default:
-				opts["devices"] = privateIface
-			}
-			if helpers.RunsOn419Kernel() {
-				opts["debug.enabled"] = "false"
-			}
 		}
 
 		// Eventually allows multiple return values, and performs the assertion
@@ -433,22 +401,16 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 
 		opts = map[string]string{
 			"preflight.enabled":   "true ",
-			"agent.enabled":       "false ",
 			"config.enabled":      "false ",
 			"operator.enabled":    "false ",
 			"preflight.image.tag": newImageVersion,
 			"nodeinit.enabled":    "false",
 		}
-		if helpers.RunsWithoutKubeProxy() || helpers.RunsOn419Kernel() {
-			switch oldHelmChartVersion {
-			case "1.5-dev", "1.6-dev", "1.7-dev":
-				opts["global.nodePort.device"] = privateIface
-			default:
-				opts["devices"] = privateIface
-			}
-			if helpers.RunsOn419Kernel() {
-				opts["debug.enabled"] = "false"
-			}
+		hasNewHelmValues := versioncheck.MustCompile(">=1.8.90")
+		if hasNewHelmValues(versioncheck.MustVersion(newHelmChartVersion)) {
+			opts["agent"] = "false "
+		} else {
+			opts["agent.enabled"] = "false "
 		}
 
 		EventuallyWithOffset(1, func() (*helpers.CmdRes, error) {

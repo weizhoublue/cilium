@@ -18,20 +18,22 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/cgroups"
 	"github.com/cilium/cilium/pkg/command/exec"
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/alignchecker"
+	"github.com/cilium/cilium/pkg/datapath/connector"
+	"github.com/cilium/cilium/pkg/datapath/linux/ethtool"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/datapath/prefilter"
 	"github.com/cilium/cilium/pkg/defaults"
@@ -50,14 +52,11 @@ const (
 	initArgIPv4NodeIP
 	initArgIPv6NodeIP
 	initArgMode
+	initArgTunnelMode
 	initArgDevices
 	initArgHostDev1
 	initArgHostDev2
-	initArgXDPDevice
-	initArgXDPMode
 	initArgMTU
-	initArgIPSec
-	initArgEncryptInterface
 	initArgHostReachableServices
 	initArgHostReachableServicesUDP
 	initArgHostReachableServicesPeer
@@ -66,10 +65,9 @@ const (
 	initArgNodePort
 	initArgNodePortBind
 	initBPFCPU
-	initArgNodePortIPv4Addrs
-	initArgNodePortIPv6Addrs
 	initArgNrCPUs
 	initArgEndpointRoutes
+	initArgProxyRule
 	initArgMax
 )
 
@@ -120,7 +118,7 @@ func writePreFilterHeader(preFilter *prefilter.PreFilter, dir string) error {
 	return fw.Flush()
 }
 
-func addENIRules(sysSettings []sysctl.Setting) ([]sysctl.Setting, error) {
+func addENIRules(sysSettings []sysctl.Setting, nodeAddressing datapath.NodeAddressing) ([]sysctl.Setting, error) {
 	// AWS ENI mode requires symmetric routing, see
 	// iptables.addCiliumENIRules().
 	// The default AWS daemonset installs the following rules that are used
@@ -161,7 +159,90 @@ func addENIRules(sysSettings []sysctl.Setting) ([]sysctl.Setting, error) {
 		return nil, fmt.Errorf("unable to install ip rule for ENI multi-node NodePort: %w", err)
 	}
 
+	// Add rules for router (cilium_host).
+	info := node.GetRouterInfo()
+	cidrs := info.GetIPv4CIDRs()
+	routerIP := net.IPNet{
+		IP:   nodeAddressing.IPv4().Router(),
+		Mask: net.CIDRMask(32, 32),
+	}
+	for _, cidr := range cidrs {
+		if err = linuxrouting.SetupRules(&routerIP, &cidr, info.GetMac().String(), info.GetInterfaceNumber()); err != nil {
+			return nil, fmt.Errorf("unable to install ip rule for cilium_host: %w", err)
+		}
+	}
+
 	return retSettings, nil
+}
+
+// reinitializeIPSec is used to recompile and load encryption network programs.
+func (l *Loader) reinitializeIPSec(ctx context.Context) error {
+	if !option.Config.EnableIPSec {
+		return nil
+	}
+
+	interfaces := option.Config.EncryptInterface
+	if option.Config.IPAM == ipamOption.IPAMENI {
+		// IPAMENI mode supports multiple network facing interfaces that
+		// will all need Encrypt logic applied in order to decrypt any
+		// received encrypted packets. This logic will attach to all
+		// !veth devices. Only use if user has not configured interfaces.
+		if len(interfaces) == 0 {
+			if links, err := netlink.LinkList(); err == nil {
+				for _, link := range links {
+					isVirtual, err := ethtool.IsVirtualDriver(link.Attrs().Name)
+					if err == nil && !isVirtual {
+						interfaces = append(interfaces, link.Attrs().Name)
+					}
+				}
+			}
+			option.Config.EncryptInterface = interfaces
+		}
+
+		// For the ENI ipam mode on EKS, this will be the interface that
+		// the router (cilium_host) IP is associated to.
+		if len(option.Config.IPv4PodSubnets) == 0 {
+			if info := node.GetRouterInfo(); info != nil {
+				for _, c := range info.GetIPv4CIDRs() {
+					cidr := c // create a copy to be able to take a reference
+					option.Config.IPv4PodSubnets = append(option.Config.IPv4PodSubnets, &cidr)
+				}
+			}
+		}
+	}
+
+	// No interfaces is valid in tunnel disabled case
+	if len(interfaces) != 0 {
+		for _, iface := range interfaces {
+			if err := connector.DisableRpFilter(iface); err != nil {
+				log.WithError(err).WithField(logfields.Interface, iface).Warn("Rpfilter could not be disabled, node to node encryption may fail")
+			}
+		}
+
+		if err := l.replaceNetworkDatapath(ctx, interfaces); err != nil {
+			return fmt.Errorf("failed to load encryption program: %w", err)
+		}
+	}
+	return nil
+}
+
+func (l *Loader) reinitializeXDPLocked(ctx context.Context, extraCArgs []string) error {
+	maybeUnloadObsoleteXDPPrograms(option.Config.XDPDevice, option.Config.XDPMode)
+	if option.Config.XDPDevice != "undefined" {
+		if err := compileAndLoadXDPProg(ctx, option.Config.XDPDevice, option.Config.XDPMode, extraCArgs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReinitializeXDP (re-)configures the XDP datapath only. This includes recompilation
+// and reinsertion of the object into the kernel as well as an atomic program replacement
+// at the XDP hook. extraCArgs can be passed-in in order to alter BPF code defines.
+func (l *Loader) ReinitializeXDP(ctx context.Context, o datapath.BaseProgramOwner, extraCArgs []string) error {
+	o.GetCompilationLock().Lock()
+	defer o.GetCompilationLock().Unlock()
+	return l.reinitializeXDPLocked(ctx, extraCArgs)
 }
 
 // Reinitialize (re-)configures the base datapath configuration including global
@@ -195,14 +276,6 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		return err
 	}
 
-	if option.Config.XDPDevice != "undefined" {
-		args[initArgXDPDevice] = option.Config.XDPDevice
-		args[initArgXDPMode] = option.Config.XDPMode
-	} else {
-		args[initArgXDPDevice] = "<nil>"
-		args[initArgXDPMode] = "<nil>"
-	}
-
 	if option.Config.DevicePreFilter != "undefined" {
 		scopedLog := log.WithField(logfields.XDPDevice, option.Config.XDPDevice)
 
@@ -226,7 +299,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	args[initArgBpffsRoot] = bpf.GetMapRoot()
 
 	if option.Config.EnableIPv4 {
-		args[initArgIPv4NodeIP] = node.GetInternalIPv4().String()
+		args[initArgIPv4NodeIP] = node.GetInternalIPv4Router().String()
 	} else {
 		args[initArgIPv4NodeIP] = "<nil>"
 	}
@@ -243,12 +316,6 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	}
 
 	args[initArgMTU] = fmt.Sprintf("%d", deviceMTU)
-
-	if option.Config.EnableIPSec {
-		args[initArgIPSec] = "true"
-	} else {
-		args[initArgIPSec] = "false"
-	}
 
 	if option.Config.EnableHostReachableServices {
 		args[initArgHostReachableServices] = "true"
@@ -268,20 +335,15 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		args[initArgHostReachableServicesPeer] = "false"
 	}
 
-	if option.Config.EncryptInterface != "" {
-		args[initArgEncryptInterface] = option.Config.EncryptInterface
-	} else {
-		args[initArgEncryptInterface] = "<nil>"
-	}
-
 	devices := make([]netlink.Link, 0, len(option.Config.Devices))
 	if len(option.Config.Devices) != 0 {
 		for _, device := range option.Config.Devices {
-			_, err := netlink.LinkByName(device)
+			link, err := netlink.LinkByName(device)
 			if err != nil {
 				log.WithError(err).WithField("device", device).Warn("Link does not exist")
 				return err
 			}
+			devices = append(devices, link)
 		}
 		args[initArgDevices] = strings.Join(option.Config.Devices, ";")
 	} else if option.Config.IsFlannelMasterDeviceSet() {
@@ -291,46 +353,35 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	}
 
 	var mode baseDeviceMode
+	args[initArgTunnelMode] = "<nil>"
 	switch {
 	case option.Config.IsFlannelMasterDeviceSet():
 		mode = flannelMode
 	case option.Config.Tunnel != option.TunnelDisabled:
-		mode = baseDeviceMode(option.Config.Tunnel)
+		mode = tunnelMode
+		args[initArgTunnelMode] = option.Config.Tunnel
 	case option.Config.DatapathMode == datapathOption.DatapathModeIpvlan:
 		mode = ipvlanMode
+	case option.Config.EnableHealthDatapath:
+		mode = option.DSRDispatchIPIP
+		sysSettings = append(sysSettings,
+			sysctl.Setting{Name: "net.core.fb_tunnels_only_for_init_net",
+				Val: "2", IgnoreErr: true})
 	default:
 		mode = directMode
 	}
 	args[initArgMode] = string(mode)
 
+	if option.Config.Tunnel == option.TunnelDisabled && option.Config.EnableEgressGateway {
+		// Enable tunnel mode to vxlan if egress gateway is configured
+		// Tunnel is required for egress traffic under this config
+		args[initArgTunnelMode] = option.TunnelVXLAN
+	}
+
 	if option.Config.EnableNodePort {
 		args[initArgNodePort] = "true"
-		if option.Config.EnableIPv4 {
-			addrs := node.GetNodePortIPv4AddrsWithDevices()
-			tmp := make([]string, 0, len(addrs))
-			for iface, ipv4 := range addrs {
-				tmp = append(tmp,
-					fmt.Sprintf("%s=%#x", iface,
-						byteorder.HostSliceToNetwork(ipv4, reflect.Uint32).(uint32)))
-			}
-			args[initArgNodePortIPv4Addrs] = strings.Join(tmp, ";")
-		} else {
-			args[initArgNodePortIPv4Addrs] = "<nil>"
-		}
-		if option.Config.EnableIPv6 {
-			addrs := node.GetNodePortIPv6AddrsWithDevices()
-			tmp := make([]string, 0, len(addrs))
-			for iface, ipv6 := range addrs {
-				tmp = append(tmp, fmt.Sprintf("%s=%s", iface, common.GoArray2CNoSpaces(ipv6)))
-			}
-			args[initArgNodePortIPv6Addrs] = strings.Join(tmp, ";")
-		} else {
-			args[initArgNodePortIPv6Addrs] = "<nil>"
-		}
 	} else {
 		args[initArgNodePort] = "false"
-		args[initArgNodePortIPv4Addrs] = "<nil>"
-		args[initArgNodePortIPv6Addrs] = "<nil>"
 	}
 
 	if option.Config.NodePortBindProtection {
@@ -356,7 +407,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 
 	if option.Config.IPAM == ipamOption.IPAMENI {
 		var err error
-		if sysSettings, err = addENIRules(sysSettings); err != nil {
+		if sysSettings, err = addENIRules(sysSettings, o.Datapath().LocalNodeAddressing()); err != nil {
 			return fmt.Errorf("unable to install ip rule for ENI multi-node NodePort: %w", err)
 		}
 	}
@@ -371,6 +422,12 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	args[initArgHostDev1] = hostDev1.Attrs().Name
 	args[initArgHostDev2] = hostDev2.Attrs().Name
 
+	if option.Config.InstallIptRules {
+		args[initArgProxyRule] = "true"
+	} else {
+		args[initArgProxyRule] = "false"
+	}
+
 	// "Legacy" datapath inizialization with the init.sh script
 	// TODO(mrostecki): Rewrite the whole init.sh in Go, step by step.
 	for i, arg := range args {
@@ -379,9 +436,15 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		}
 	}
 
-	prog := filepath.Join(option.Config.BpfDir, "init.sh")
 	ctx, cancel := context.WithTimeout(ctx, defaults.ExecTimeout)
 	defer cancel()
+
+	extraArgs := []string{"-Dcapture_enabled=0"}
+	if err := l.reinitializeXDPLocked(ctx, extraArgs); err != nil {
+		log.WithError(err).Fatal("Failed to compile XDP program")
+	}
+
+	prog := filepath.Join(option.Config.BpfDir, "init.sh")
 	cmd := exec.CommandContext(ctx, prog, args...)
 	cmd.Env = bpf.Environment()
 	if _, err := cmd.CombinedOutput(log, true); err != nil {
@@ -395,6 +458,10 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		}
 	} else {
 		log.Warning("Cannot check matching of C and Go common struct alignments due to old LLVM/clang version")
+	}
+
+	if err := l.reinitializeIPSec(ctx); err != nil {
+		return err
 	}
 
 	if err := o.Datapath().Node().NodeConfigurationChanged(*o.LocalConfig()); err != nil {

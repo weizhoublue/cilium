@@ -34,6 +34,7 @@ import (
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
+	"github.com/cilium/cilium/pkg/maps/egressmap"
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
 	"github.com/cilium/cilium/pkg/maps/fragmap"
 	ipcachemap "github.com/cilium/cilium/pkg/maps/ipcache"
@@ -56,7 +57,7 @@ import (
 
 // LocalConfig returns the local configuration of the daemon's nodediscovery.
 func (d *Daemon) LocalConfig() *datapath.LocalNodeConfiguration {
-	<-d.nodeDiscovery.Registered
+	<-d.nodeDiscovery.LocalStateInitialized
 	return &d.nodeDiscovery.LocalConfig
 }
 
@@ -341,11 +342,15 @@ func (d *Daemon) initMaps() error {
 		return err
 	}
 
-	if _, err := metricsmap.Metrics.OpenOrCreate(); err != nil {
+	if err := metricsmap.Metrics.OpenOrCreate(); err != nil {
 		return err
 	}
 
 	if _, err := tunnel.TunnelMap.OpenOrCreate(); err != nil {
+		return err
+	}
+
+	if _, err := egressmap.EgressMap.OpenOrCreate(); err != nil {
 		return err
 	}
 
@@ -395,13 +400,13 @@ func (d *Daemon) initMaps() error {
 	}
 
 	ipv4Nat, ipv6Nat := nat.GlobalMaps(option.Config.EnableIPv4,
-		option.Config.EnableIPv6)
-	if option.Config.EnableIPv4 {
+		option.Config.EnableIPv6, option.Config.EnableNodePort)
+	if ipv4Nat != nil {
 		if _, err := ipv4Nat.Create(); err != nil {
 			return err
 		}
 	}
-	if option.Config.EnableIPv6 {
+	if ipv6Nat != nil {
 		if _, err := ipv6Nat.Create(); err != nil {
 			return err
 		}

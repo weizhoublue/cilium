@@ -22,6 +22,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/idpool"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -41,10 +42,6 @@ const (
 	// maxAllocAttempts is the number of attempted allocation requests
 	// performed before failing.
 	maxAllocAttempts = 16
-
-	// listTimeout is the time to wait for the initial list operation to
-	// succeed when creating a new allocator
-	listTimeout = 3 * time.Minute
 )
 
 // Allocator is a distributed ID allocator backed by a KVstore. It maps
@@ -173,6 +170,14 @@ func NewAllocatorForGC(backend Backend) *Allocator {
 	return &Allocator{backend: backend}
 }
 
+type GCStats struct {
+	// Alive is the number of identities alive
+	Alive int
+
+	// Deleted is the number of identities deleted
+	Deleted int
+}
+
 // Backend represents clients to remote ID allocation systems, such as KV
 // Stores. These are used to coordinate key->ID allocation between cilium
 // nodes.
@@ -243,7 +248,7 @@ type Backend interface {
 	// by cilium-agent.
 	// Note: not all Backend implemenations rely on this, such as the kvstore
 	// backends, and may use leases to expire keys.
-	RunGC(ctx context.Context, rateLimit *rate.Limiter, staleKeysPrevRound map[string]uint64) (map[string]uint64, error)
+	RunGC(ctx context.Context, rateLimit *rate.Limiter, staleKeysPrevRound map[string]uint64) (map[string]uint64, *GCStats, error)
 
 	// RunLocksGC reaps stale or unused locks within the Backend. It is used by
 	// the cilium-operator and is not invoked by cilium-agent. Returns
@@ -311,7 +316,7 @@ func NewAllocator(typ AllocatorKey, backend Backend, opts ...AllocatorOption) (*
 		go func() {
 			select {
 			case <-a.initialListDone:
-			case <-time.After(listTimeout):
+			case <-time.After(option.Config.AllocatorListTimeout):
 				log.Fatalf("Timeout while waiting for initial allocator state")
 			}
 			a.startLocalKeySync()
@@ -499,9 +504,9 @@ func (a *Allocator) lockedAllocate(ctx context.Context, key AllocatorKey) (idpoo
 		}
 
 		if firstUse {
-			log.WithField(fieldKey, k).Info("Reserved new local key")
+			log.WithField(fieldKey, k).Debug("Reserved new local key")
 		} else {
-			log.WithField(fieldKey, k).Info("Reusing existing local key")
+			log.WithField(fieldKey, k).Debug("Reusing existing local key")
 		}
 	}
 
@@ -802,7 +807,7 @@ func (a *Allocator) Release(ctx context.Context, key AllocatorKey) (lastUse bool
 }
 
 // RunGC scans the kvstore for unused master keys and removes them
-func (a *Allocator) RunGC(rateLimit *rate.Limiter, staleKeysPrevRound map[string]uint64) (map[string]uint64, error) {
+func (a *Allocator) RunGC(rateLimit *rate.Limiter, staleKeysPrevRound map[string]uint64) (map[string]uint64, *GCStats, error) {
 	return a.backend.RunGC(context.TODO(), rateLimit, staleKeysPrevRound)
 }
 
@@ -841,6 +846,8 @@ func (a *Allocator) syncLocalKeys() error {
 
 func (a *Allocator) startLocalKeySync() {
 	go func(a *Allocator) {
+		kvTimer, kvTimerDone := inctimer.New()
+		defer kvTimerDone()
 		for {
 			if err := a.syncLocalKeys(); err != nil {
 				log.WithError(err).Warning("Unable to run local key sync routine")
@@ -850,7 +857,7 @@ func (a *Allocator) startLocalKeySync() {
 			case <-a.stopGC:
 				log.Debug("Stopped master key sync routine")
 				return
-			case <-time.After(option.Config.KVstorePeriodicSync):
+			case <-kvTimer.After(option.Config.KVstorePeriodicSync):
 			}
 		}
 	}(a)

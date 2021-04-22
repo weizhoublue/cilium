@@ -12,6 +12,8 @@ clean:
 	-$(QUIET)rm -rf _build _preview Pipfile Pipfile.lock
 
 builder-image: Dockerfile requirements.txt
+	# Pre-pull FROM docker images due to Buildkit sometimes failing to pull them.
+	grep "^FROM " $< | cut -d ' ' -f2 | xargs -n1 docker pull
 	$(QUIET)tar c requirements.txt Dockerfile \
 	  | $(CONTAINER_ENGINE) build --tag cilium/docs-builder -
 
@@ -51,7 +53,7 @@ html-netlify: copy-api
 	@$(ECHO_GEN)_build/$@
 	$(QUIET) SKIP_LINT=1 ./check-build.sh html $(SPHINX_OPTS)
 
-DOCS_PORT = 9082
+DOCS_PORT = 9081
 
 run-server: stop-server
 	# Work around Docker issue where this directory is created as root in

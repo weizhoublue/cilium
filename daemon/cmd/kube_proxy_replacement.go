@@ -17,6 +17,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -29,13 +30,14 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/maglev"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/probe"
 	"github.com/cilium/cilium/pkg/sysctl"
-
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 func initKubeProxyReplacementOptions() (strict bool) {
@@ -47,10 +49,10 @@ func initKubeProxyReplacementOptions() (strict bool) {
 	}
 
 	if option.Config.KubeProxyReplacement == option.KubeProxyReplacementDisabled {
-		log.Infof("Auto-disabling %q, %q, %q, %q, %q features",
+		log.Infof("Auto-disabling %q, %q, %q, %q, %q features and falling back to %q",
 			option.EnableNodePort, option.EnableExternalIPs,
 			option.EnableHostReachableServices, option.EnableHostPort,
-			option.EnableSessionAffinity)
+			option.EnableSessionAffinity, option.EnableHostLegacyRouting)
 
 		disableNodePort()
 		option.Config.EnableHostReachableServices = false
@@ -185,7 +187,10 @@ func initKubeProxyReplacementOptions() (strict bool) {
 				log.Fatalf("Invalid value for --%s: %d, supported values are: %v",
 					option.MaglevTableSize, option.Config.MaglevTableSize, supportedPrimes)
 			}
-			if err := maglev.InitMaglevSeeds(option.Config.MaglevHashSeed); err != nil {
+			if err := maglev.Init(
+				option.Config.MaglevHashSeed,
+				uint64(option.Config.MaglevTableSize),
+			); err != nil {
 				log.WithError(err).Fatalf("Failed to initialize maglev hash seeds")
 			}
 		}
@@ -224,32 +229,27 @@ func initKubeProxyReplacementOptions() (strict bool) {
 		probe.HaveIPv6Support()
 
 		option.Config.EnableHostServicesPeer = true
-		if option.Config.EnableIPv4 && bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET4_GETPEERNAME) != nil ||
-			option.Config.EnableIPv6 && bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET6_GETPEERNAME) != nil {
-			option.Config.EnableHostServicesPeer = false
-		}
-
-		if option.Config.EnableHostServicesTCP &&
-			(option.Config.EnableIPv4 && bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET4_CONNECT) != nil ||
-				option.Config.EnableIPv6 && bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET6_CONNECT) != nil) {
-			msg := "BPF host reachable services for TCP needs kernel 4.17.0 or newer."
-			if strict {
-				log.Fatal(msg)
-			} else {
-				option.Config.EnableHostServicesTCP = false
-				log.Warn(msg + " Disabling the feature.")
+		if option.Config.EnableIPv4 {
+			if err := bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET4_GETPEERNAME); err != nil {
+				option.Config.EnableHostServicesPeer = false
 			}
 		}
-		if option.Config.EnableHostServicesUDP &&
-			(option.Config.EnableIPv4 && bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_UDP4_RECVMSG) != nil ||
-				option.Config.EnableIPv6 && bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_UDP6_RECVMSG) != nil) {
-			msg := fmt.Sprintf("BPF host reachable services for UDP needs kernel 4.19.57, 5.1.16, 5.2.0 or newer. If you run an older kernel and only need TCP, then specify: --%s=tcp and --%s=%s", option.HostReachableServicesProtos, option.KubeProxyReplacement, option.KubeProxyReplacementPartial)
-			if strict {
-				log.Fatal(msg)
-			} else {
-				option.Config.EnableHostServicesUDP = false
-				log.Warn(msg + " Disabling the feature.")
+		if option.Config.EnableIPv6 {
+			if err := bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET6_GETPEERNAME); err != nil {
+				option.Config.EnableHostServicesPeer = false
 			}
+		}
+		if option.Config.EnableHostServicesTCP && option.Config.EnableIPv4 {
+			probeCgroupSupportTCP(strict, true)
+		}
+		if option.Config.EnableHostServicesTCP && option.Config.EnableIPv6 {
+			probeCgroupSupportTCP(strict, false)
+		}
+		if option.Config.EnableHostServicesUDP && option.Config.EnableIPv4 {
+			probeCgroupSupportUDP(strict, true)
+		}
+		if option.Config.EnableHostServicesUDP && option.Config.EnableIPv6 {
+			probeCgroupSupportUDP(strict, false)
 		}
 		if !option.Config.EnableHostServicesTCP && !option.Config.EnableHostServicesUDP {
 			option.Config.EnableHostReachableServices = false
@@ -286,38 +286,6 @@ func initKubeProxyReplacementOptions() (strict bool) {
 		}
 	}
 
-	if !option.Config.EnableHostLegacyRouting {
-		msg := ""
-		switch {
-		case !option.Config.EnableNodePort:
-			msg = fmt.Sprintf("BPF host routing requires %s.", option.EnableNodePort)
-		case option.Config.Tunnel != option.TunnelDisabled:
-			msg = fmt.Sprintf("BPF host routing is only available in native routing mode.")
-		// Needs host stack for packet handling.
-		case option.Config.EnableEndpointRoutes:
-			msg = fmt.Sprintf("BPF host routing is incompatible with %s.", option.EnableEndpointRoutes)
-		case option.Config.EnableIPSec:
-			msg = fmt.Sprintf("BPF host routing is incompatible with %s.", option.EnableIPSecName)
-		// Non-BPF masquerade requires netfilter and hence CT.
-		case option.Config.Masquerade && !option.Config.EnableBPFMasquerade:
-			msg = fmt.Sprintf("BPF host routing requires %s.", option.EnableBPFMasquerade)
-		default:
-			foundNeigh := false
-			foundPeer := false
-			if h := probesManager.GetHelpers("sched_cls"); h != nil {
-				_, foundNeigh = h["bpf_redirect_neigh"]
-				_, foundPeer = h["bpf_redirect_peer"]
-			}
-			if !foundNeigh || !foundPeer {
-				msg = fmt.Sprintf("BPF host routing requires kernel 5.10 or newer.")
-			}
-		}
-		if msg != "" {
-			option.Config.EnableHostLegacyRouting = true
-			log.Infof("%s Falling back to legacy host routing (%s=true).", msg, option.EnableHostLegacyRouting)
-		}
-	}
-
 	if option.Config.EnableNodePort {
 		if option.Config.Tunnel != option.TunnelDisabled &&
 			option.Config.NodePortMode != option.NodePortModeSNAT {
@@ -332,6 +300,11 @@ func initKubeProxyReplacementOptions() (strict bool) {
 				log.Fatalf("Cannot use NodePort acceleration with tunneling. Either run cilium-agent with --%s=%s or --%s=%s",
 					option.NodePortAcceleration, option.NodePortAccelerationDisabled, option.TunnelName, option.TunnelDisabled)
 			}
+
+			if option.Config.EnableEgressGateway {
+				log.Fatalf("Cannot use NodePort acceleration with the egress gateway. Run cilium-agent with either --%s=%s or %s=false",
+					option.NodePortAcceleration, option.NodePortAccelerationDisabled, option.EnableEgressGateway)
+			}
 		}
 
 		if option.Config.NodePortMode == option.NodePortModeDSR &&
@@ -343,9 +316,99 @@ func initKubeProxyReplacementOptions() (strict bool) {
 				log.Fatalf("DSR dispatch mode %s currently only available under XDP acceleration", option.Config.LoadBalancerDSRDispatch)
 			}
 		}
+
+		if option.Config.EnableRecorder {
+			if option.Config.DatapathMode != datapathOption.DatapathModeLBOnly {
+				log.Fatalf("pcap recorder --%s currently only supported for --%s=%s", option.EnableRecorder, option.DatapathMode, datapathOption.DatapathModeLBOnly)
+			}
+			found := false
+			if h := probesManager.GetHelpers("xdp"); h != nil {
+				if _, ok := h["bpf_ktime_get_boot_ns"]; ok {
+					found = true
+				}
+			}
+			if !found {
+				log.Fatalf("pcap recorder --%s datapath needs kernel 5.8.0 or newer", option.EnableRecorder)
+			}
+		}
+
+		option.Config.EnableHealthDatapath =
+			option.Config.DatapathMode == datapathOption.DatapathModeLBOnly &&
+				option.Config.NodePortMode == option.NodePortModeDSR &&
+				option.Config.LoadBalancerDSRDispatch == option.DSRDispatchIPIP
+		if option.Config.EnableHealthDatapath {
+			found := false
+			if h := probesManager.GetHelpers("cgroup_sock_addr"); h != nil {
+				if _, ok := h["bpf_getsockopt"]; ok {
+					found = true
+				}
+			}
+			if !found {
+				option.Config.EnableHealthDatapath = false
+				log.Info("BPF load-balancer health check datapath needs kernel 5.12.0 or newer. Disabling BPF load-balancer health check datapath.")
+			}
+		}
+	}
+
+	if option.Config.InstallNoConntrackIptRules {
+		// InstallNoConntrackIptRules can only be enabled when Cilium is
+		// running in full KPR mode as otherwise conntrack would be
+		// required for NAT operations
+		if !option.Config.KubeProxyReplacementFullyEnabled() {
+			log.Fatalf("%s requires the agent to run with %s=%s.",
+				option.InstallNoConntrackIptRules, option.KubeProxyReplacement, option.KubeProxyReplacementStrict)
+		}
 	}
 
 	return
+}
+
+func probeCgroupSupportTCP(strict, ipv4 bool) {
+	var err error
+
+	if ipv4 {
+		err = bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET4_CONNECT)
+	} else {
+		err = bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_INET6_CONNECT)
+	}
+	if err != nil {
+		scopedLog := log.WithError(err)
+		msg := "BPF host reachable services for TCP needs kernel 4.17.0 or newer."
+		if errors.Is(err, unix.EPERM) {
+			msg = "Cilium cannot load bpf programs. Security profiles like SELinux may be restricting permissions."
+		}
+
+		if strict {
+			scopedLog.Fatal(msg)
+		} else {
+			option.Config.EnableHostServicesTCP = false
+			scopedLog.Warn(msg + " Disabling the feature.")
+		}
+	}
+}
+
+func probeCgroupSupportUDP(strict, ipv4 bool) {
+	var err error
+
+	if ipv4 {
+		err = bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_UDP4_RECVMSG)
+	} else {
+		err = bpf.TestDummyProg(bpf.ProgTypeCgroupSockAddr, bpf.BPF_CGROUP_UDP6_RECVMSG)
+	}
+	if err != nil {
+		scopedLog := log.WithError(err)
+		msg := fmt.Sprintf("BPF host reachable services for UDP needs kernel 4.19.57, 5.1.16, 5.2.0 or newer. If you run an older kernel and only need TCP, then specify: --%s=tcp and --%s=%s", option.HostReachableServicesProtos, option.KubeProxyReplacement, option.KubeProxyReplacementPartial)
+		if errors.Is(err, unix.EPERM) {
+			msg = "Cilium cannot load bpf programs. Security profiles like SELinux may be restricting permissions."
+		}
+
+		if strict {
+			scopedLog.Fatal(msg)
+		} else {
+			option.Config.EnableHostServicesUDP = false
+			scopedLog.Warn(msg + " Disabling the feature.")
+		}
+	}
 }
 
 // handleNativeDevices tries to detect bpf_host devices (if needed).
@@ -424,7 +487,47 @@ func finishKubeProxyReplacementInit(isKubeProxyReplacementStrict bool) {
 		}
 	}
 
-	// After this point, BPF NodePort should not be disabled
+	// +-------------------------------------------------------+
+	// | After this point, BPF NodePort should not be disabled |
+	// +-------------------------------------------------------+
+
+	if !option.Config.EnableHostLegacyRouting {
+		msg := ""
+		switch {
+		// If we chain CNIs then all bets are off.
+		case option.Config.IsFlannelMasterDeviceSet():
+			msg = fmt.Sprintf("BPF host routing is incompatible with %s.", option.FlannelMasterDevice)
+		// Needs host stack for packet handling.
+		case option.Config.EnableIPSec:
+			msg = fmt.Sprintf("BPF host routing is incompatible with %s.", option.EnableIPSecName)
+		// Non-BPF masquerade requires netfilter and hence CT.
+		case (option.Config.EnableIPv4Masquerade || option.Config.EnableIPv6Masquerade) &&
+			!option.Config.EnableBPFMasquerade:
+			msg = fmt.Sprintf("BPF host routing requires %s.", option.EnableBPFMasquerade)
+		// All cases below still need to be implemented ...
+		case option.Config.EnableEndpointRoutes:
+			msg = fmt.Sprintf("BPF host routing is currently not supported with %s.", option.EnableEndpointRoutes)
+		case !mac.HaveMACAddrs(option.Config.Devices):
+			msg = "BPF host routing is currently not supported with devices without L2 addr."
+		case option.Config.EnableWireguard:
+			msg = fmt.Sprintf("BPF host routing is currently not compatible with Wireguard (--%s).", option.EnableWireguard)
+		default:
+			probesManager := probes.NewProbeManager()
+			foundNeigh := false
+			foundPeer := false
+			if h := probesManager.GetHelpers("sched_cls"); h != nil {
+				_, foundNeigh = h["bpf_redirect_neigh"]
+				_, foundPeer = h["bpf_redirect_peer"]
+			}
+			if !foundNeigh || !foundPeer {
+				msg = fmt.Sprintf("BPF host routing requires kernel 5.10 or newer.")
+			}
+		}
+		if msg != "" {
+			option.Config.EnableHostLegacyRouting = true
+			log.Infof("%s Falling back to legacy host routing (%s=true).", msg, option.EnableHostLegacyRouting)
+		}
+	}
 
 	if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled {
 		if option.Config.XDPDevice != "undefined" &&
@@ -496,14 +599,7 @@ func disableNodePort() {
 	option.Config.EnableHostPort = false
 	option.Config.EnableExternalIPs = false
 	option.Config.EnableSVCSourceRangeCheck = false
-}
-
-func hasHardwareAddress(ifIndex int) bool {
-	iface, err := netlink.LinkByIndex(ifIndex)
-	if err != nil {
-		return false
-	}
-	return len(iface.Attrs().HardwareAddr) > 0
+	option.Config.EnableHostLegacyRouting = true
 }
 
 // detectDevices tries to detect device names which are going to be used for
@@ -524,9 +620,7 @@ func detectDevices(detectNodePortDevs, detectDirectRoutingDev bool) error {
 			"Cannot retrieve host IP addrs for BPF NodePort device detection")
 	} else {
 		for _, a := range addrs {
-			if hasHardwareAddress(a.LinkIndex) {
-				ifidxByAddr[a.IP.String()] = a.LinkIndex
-			}
+			ifidxByAddr[a.IP.String()] = a.LinkIndex
 		}
 	}
 
@@ -559,8 +653,14 @@ func detectDevices(detectNodePortDevs, detectDirectRoutingDev bool) error {
 		devSet[option.Config.DirectRoutingDevice] = struct{}{}
 	}
 
+	l3DevOK := supportL3Dev()
 	option.Config.Devices = make([]string, 0, len(devSet))
 	for dev := range devSet {
+		if !l3DevOK && !mac.HasMacAddr(dev) {
+			log.WithField(logfields.Device, dev).
+				Warn("Ignoring L3 device; >= 5.8 kernel is required.")
+			continue
+		}
 		option.Config.Devices = append(option.Config.Devices, dev)
 	}
 	return nil
@@ -709,4 +809,13 @@ func hasFullHostReachableServices() bool {
 	return option.Config.EnableHostReachableServices &&
 		option.Config.EnableHostServicesTCP &&
 		option.Config.EnableHostServicesUDP
+}
+
+func supportL3Dev() bool {
+	probesManager := probes.NewProbeManager()
+	if h := probesManager.GetHelpers("sched_cls"); h != nil {
+		_, found := h["bpf_skb_change_head"]
+		return found
+	}
+	return false
 }

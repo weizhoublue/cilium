@@ -70,8 +70,7 @@ enabled.
       namespace: kube-system
     data:
       # The kvstore configuration is used to enable use of a kvstore for state
-      # storage. This can either be provided with an external kvstore or with the
-      # help of cilium-etcd-operator which operates an etcd cluster automatically.
+      # storage.
       kvstore: etcd
       kvstore-opt: '{"etcd.config": "/var/lib/etcd-config/etcd.config"}'
 
@@ -377,7 +376,7 @@ Cilium to print the follow message:
         level=warning msg="================================= WARNING ==========================================" subsys=bpf
         level=warning msg="BPF filesystem is not mounted. This will lead to network disruption when Cilium pods" subsys=bpf
         level=warning msg="are restarted. Ensure that the BPF filesystem is mounted in the host." subsys=bpf
-        level=warning msg="https://docs.cilium.io/en/stable/kubernetes/requirements/#mounted-bpf-filesystem" subsys=bpf
+        level=warning msg="https://docs.cilium.io/en/stable/operations/system_requirements/#mounted-ebpf-filesystem" subsys=bpf
         level=warning msg="====================================================================================" subsys=bpf
         level=info msg="Mounting BPF filesystem at /sys/fs/bpf" subsys=bpf
 

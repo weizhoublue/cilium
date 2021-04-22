@@ -15,25 +15,37 @@
 package manager
 
 import (
+	"context"
 	"math"
 	"net"
+	"strconv"
 	"time"
 
+	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/identity"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/node/addressing"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/source"
+	"github.com/cilium/cilium/pkg/sysctl"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
 	baseBackgroundSyncInterval = time.Minute
+	// The default value of kernel parameter net.ipv4.neigh.default.base_reachable_time_ms.
+	// If option.NeighborRefreshBaseInterval is not configured and we failed to
+	// read from sysctl, refresh at this interval.
+	neighborRefreshBaseInterval = 30 * time.Second
+
+	randGen = rand.NewSafeRand(time.Now().UnixNano())
 )
 
 type nodeEntry struct {
@@ -60,6 +72,7 @@ type IPCache interface {
 type Configuration interface {
 	RemoteNodeIdentitiesEnabled() bool
 	NodeEncryptionEnabled() bool
+	EncryptionEnabled() bool
 }
 
 // Notifier is the interface the wraps Subscribe and Unsubscribe. An
@@ -275,6 +288,8 @@ func (m *Manager) backgroundSyncInterval() time.Duration {
 }
 
 func (m *Manager) backgroundSync() {
+	syncTimer, syncTimerDone := inctimer.New()
+	defer syncTimerDone()
 	for {
 		syncInterval := m.backgroundSyncInterval()
 		log.WithField("syncInterval", syncInterval.String()).Debug("Performing regular background work")
@@ -305,7 +320,7 @@ func (m *Manager) backgroundSync() {
 		select {
 		case <-m.closeChan:
 			return
-		case <-time.After(syncInterval):
+		case <-syncTimer.After(syncInterval):
 		}
 	}
 }
@@ -320,7 +335,7 @@ func (m *Manager) legacyNodeIpBehavior() bool {
 	// ipcache. This resulted in a behavioral change. New deployments will
 	// provide this behavior out of the gate, existing deployments will
 	// have to opt into this by enabling remote-node identities.
-	return !m.conf.NodeEncryptionEnabled() && !m.conf.RemoteNodeIdentitiesEnabled()
+	return !m.conf.EncryptionEnabled() && !m.conf.RemoteNodeIdentitiesEnabled()
 }
 
 // NodeUpdated is called after the information of a node has been updated. The
@@ -345,10 +360,13 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 
 	for _, address := range n.IPAddresses {
 		var tunnelIP net.IP
+		key := n.EncryptionKey
+
 		// If the host firewall is enabled, all traffic to remote nodes must go
 		// through the tunnel to preserve the source identity as part of the
-		// encapsulation.
-		if address.Type == addressing.NodeCiliumInternalIP || m.conf.NodeEncryptionEnabled() ||
+		// encapsulation. In encryption case we also want to use vxlan device
+		// to create symmetric traffic when sending nodeIP->pod and pod->nodeIP.
+		if address.Type == addressing.NodeCiliumInternalIP || m.conf.EncryptionEnabled() ||
 			option.Config.EnableHostFirewall || option.Config.JoinCluster {
 			tunnelIP = nodeIP
 		}
@@ -357,7 +375,17 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 			continue
 		}
 
-		isOwning, _ := m.ipcache.Upsert(address.IP.String(), tunnelIP, n.EncryptionKey, nil, ipcache.Identity{
+		// If we are doing encryption, but not node based encryption, then do not
+		// add a key to the nodeIPs so that we avoid a trip through stack and attempting
+		// to encrypt something we know does not have an encryption policy installed
+		// in the datapath. By setting key=0 and tunnelIP this will result in traffic
+		// being sent unencrypted over overlay device.
+		if !m.conf.NodeEncryptionEnabled() &&
+			(address.Type == addressing.NodeExternalIP || address.Type == addressing.NodeInternalIP) {
+			key = 0
+		}
+
+		isOwning, _ := m.ipcache.Upsert(address.IP.String(), tunnelIP, key, nil, ipcache.Identity{
 			ID:     remoteHostIdentity,
 			Source: n.Source,
 		})
@@ -479,14 +507,6 @@ func (m *Manager) NodeDeleted(n nodeTypes.Node) {
 	entry.mutex.Unlock()
 }
 
-// Exists returns true if a node with the name exists
-func (m *Manager) Exists(id nodeTypes.Identity) bool {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-	_, ok := m.nodes[id]
-	return ok
-}
-
 // GetNodeIdentities returns a list of all node identities store in node
 // manager.
 func (m *Manager) GetNodeIdentities() []nodeTypes.Identity {
@@ -516,16 +536,50 @@ func (m *Manager) GetNodes() map[nodeTypes.Identity]nodeTypes.Node {
 	return nodes
 }
 
-// DeleteAllNodes deletes all nodes from the node manager.
-func (m *Manager) DeleteAllNodes() {
-	m.mutex.Lock()
-	for _, entry := range m.nodes {
-		entry.mutex.Lock()
-		m.Iter(func(nh datapath.NodeHandler) {
-			nh.NodeDelete(entry.node)
-		})
-		entry.mutex.Unlock()
+// StartNeighborRefresh spawns a controller which refreshes neighbor table
+// by sending arping periodically. Linux keeps an arp entry in reachable
+// state for (0.5 ~ 1.5) * base_reachable_time_ms, default by 15 to 45 seconds:
+// https://elixir.bootlin.com/linux/v5.7.19/source/net/core/neighbour.c#L113
+// We do the refresh in a similar way.
+func (m *Manager) StartNeighborRefresh(nh datapath.NodeHandler) {
+	var interval time.Duration
+	baseReachableStr, err := sysctl.Read("net.ipv4.neigh.default.base_reachable_time_ms")
+	if err != nil {
+		interval = neighborRefreshBaseInterval
+	} else {
+		baseReachableU32, err := strconv.ParseUint(baseReachableStr, 10, 32)
+		if err != nil {
+			interval = neighborRefreshBaseInterval
+		} else {
+			interval = time.Duration(baseReachableU32) * time.Millisecond
+		}
 	}
-	m.nodes = map[nodeTypes.Identity]*nodeEntry{}
-	m.mutex.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	controller.NewManager().UpdateController("neighbor-table-refresh",
+		controller.ControllerParams{
+			DoFunc: func(controllerCtx context.Context) error {
+				// cancel previous go routines from previous controller run
+				cancel()
+				ctx, cancel = context.WithCancel(controllerCtx)
+				m.mutex.RLock()
+				defer m.mutex.RUnlock()
+				for _, entry := range m.nodes {
+					entry.mutex.Lock()
+					entryNode := entry.node
+					entry.mutex.Unlock()
+					if entryNode.IsLocal() {
+						continue
+					}
+					go func(c context.Context, e nodeTypes.Node) {
+						n := randGen.Int63n(int64(interval / 2))
+						time.Sleep(interval/2 + time.Duration(n))
+						nh.NodeNeighborRefresh(c, e)
+					}(ctx, entryNode)
+				}
+				return nil
+			},
+			RunInterval: interval,
+		},
+	)
+	return
 }

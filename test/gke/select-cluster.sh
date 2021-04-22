@@ -41,6 +41,14 @@ while [ $locked -ne 0 ]; do
 		continue
 	fi
 
+
+	echo "checking whether cluster ${cluster_uri} has node pools"
+	node_pools=($(gcloud container node-pools list --project "${project}" --region "${region}" --cluster "${cluster_uri}" --format="value(name)"))
+	if [ "${#node_pools[@]}" -ne 1 ] ; then
+	  echo "expected 1 node pool, found ${#node_pools[@]}"
+	  continue
+	fi
+
 	echo "getting kubeconfig for ${cluster_uri} (will store in ${KUBECONFIG})"
 	gcloud container clusters get-credentials --project "${project}" --region "${region}" "${cluster_uri}"
 
@@ -67,12 +75,10 @@ echo "${cluster_uri}" > "${script_dir}/cluster-uri"
 gcloud container clusters describe --project "${project}" --region "${region}" --format='value(name)' "${cluster_uri}" > "${script_dir}/cluster-name"
 gcloud container clusters describe --project "${project}" --region "${region}" --format='value(currentMasterVersion)' "${cluster_uri}" \
   | sed -E 's/([0-9]+\.[0-9]+)\..*/\1/' | tr -d '\n' > "${script_dir}/cluster-version"
+gcloud container clusters describe --project "${project}" --region "${region}" --format='value(clusterIpv4Cidr)' "${cluster_uri}" > "${script_dir}/cluster-cidr"
 
 echo "cleaning cluster before tests"
 "${script_dir}"/clean-cluster.sh
-
-echo "creating cilium ns"
-kubectl create ns cilium || true
 
 echo "scaling ${cluster_uri} to 2"
 "${script_dir}"/resize-cluster.sh 2 "${cluster_uri}"
@@ -84,7 +90,3 @@ do
     kubectl label node "$node" cilium.io/ci-node=k8s"$index" --overwrite
     index=$((index+1))
 done
-
-echo "adding node registry as trusted"
-helm template registry-adder "${test_dir}/k8sT/manifests/registry-adder-gke" --set IP="$(${script_dir}/registry-ip.sh)" > "${script_dir}/registry-adder.yaml"
-kubectl apply -f "${script_dir}/registry-adder.yaml"

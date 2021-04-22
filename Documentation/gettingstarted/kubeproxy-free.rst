@@ -36,32 +36,9 @@ Quick-Start
 Initialize the control-plane node via ``kubeadm init`` and skip the
 installation of the ``kube-proxy`` add-on:
 
-.. tabs::
-
-  .. group-tab:: K8s 1.16 and newer
-
-    .. code:: bash
+.. code:: bash
 
       kubeadm init --skip-phases=addon/kube-proxy
-
-  .. group-tab:: K8s 1.15 and older
-
-    In K8s 1.15 and older it is not yet possible to disable kube-proxy via ``--skip-phases=addon/kube-proxy``
-    in kubeadm, therefore the below workaround for manually removing the ``kube-proxy`` DaemonSet and
-    cleaning the corresponding iptables rules after kubeadm initialization is still necessary (`kubeadm#1733 <https://github.com/kubernetes/kubeadm/issues/1733>`__).
-
-    Initialize control-plane as first step:
-
-    .. code:: bash
-
-      kubeadm init
-
-    Then delete the ``kube-proxy`` DaemonSet and remove its iptables rules as following:
-
-    .. code:: bash
-
-      kubectl -n kube-system delete ds kube-proxy
-      iptables-restore <(iptables-save | grep -v KUBE)
 
 For existing installations with ``kube-proxy`` running as a DaemonSet, remove it
 by using the following commands:
@@ -69,6 +46,8 @@ by using the following commands:
 .. code:: bash
 
       kubectl -n kube-system delete ds kube-proxy
+      # Delete the configmap as well to avoid kube-proxy being reinstalled during a kubeadm upgrade (works only for K8s 1.19 and newer)
+      kubectl -n kube-system delete cm kube-proxy
       # Run on each node:
       iptables-restore <(iptables-save | grep -v KUBE)
 
@@ -616,7 +595,7 @@ instead for gaining visibility.
 NodePort XDP on AWS
 ===================
 
-In order to run with NodePort XDP on AWS, follow the instructions in the :ref:`k8s_install_eks`
+In order to run with NodePort XDP on AWS, follow the instructions in the :ref:`k8s_install_quick`
 guide to set up an EKS cluster or use any other method of your preference to set up a
 Kubernetes cluster.
 
@@ -772,7 +751,7 @@ will automatically configure your virtual network to route pod traffic correctly
      --set azure.clientID=$AZURE_CLIENT_ID \\
      --set azure.clientSecret=$AZURE_CLIENT_SECRET \\
      --set tunnel=disabled \\
-     --set masquerade=false \\
+     --set enableIPv4Masquerade=false \\
      --set devices=eth0 \\
      --set kubeProxyReplacement=strict \\
      --set loadBalancer.acceleration=native \\
@@ -841,6 +820,29 @@ kernels or starting from v5.7 kernels only for the host namespace by default
 and therefore not affecting any application pod ``bind(2)`` requests anymore. In
 order to opt-out from this behavior in general, this setting can be changed for
 expert users by switching ``nodePort.bindProtection`` to ``false``.
+
+NodePort with FHRP & VPC
+************************
+
+When using Cilium's kube-proxy replacement in conjunction with a
+`FHRP <https://en.wikipedia.org/wiki/First-hop_redundancy_protocol>`_
+such as VRRP or Cisco's HSRP and VPC (also known as multi-chassis EtherChannel), the default configuration
+can cause issues or unwanted traffic flows. This is due to an optimization that causes the source IP of
+ingress packets destined for a NodePort to be associated with the corresponding MAC address, and later in
+the reply, the MAC address is used as the destination when forwarding the L2 frame, bypassing the FIB lookup.
+
+In such an environment, it may be preferred to instruct Cilium not to attempt this optimization.
+This will ensure the response is always forwarded to the MAC address of the currently active FHRP peer, no matter
+the origin of the incoming packet.
+
+To disable the optimization set ``bpf.lbBypassFIBLookup`` to ``false``.
+
+.. parsed-literal::
+
+    helm install cilium |CHART_RELEASE| \\
+        --namespace kube-system \\
+        --set kubeProxyReplacement=strict \\
+        --set bpf.lbBypassFIBLookup=false
 
 .. _Configuring Maps:
 
@@ -1184,7 +1186,7 @@ working, take a look at `this KEP
 Limitations
 ###########
 
-    * Cilium's eBPF kube-proxy replacement currently cannot be used with :ref:`encryption`.
+    * Cilium's eBPF kube-proxy replacement currently cannot be used with :ref:`gsg_encryption`.
     * Cilium's eBPF kube-proxy replacement relies upon the :ref:`host-services` feature
       which uses eBPF cgroup hooks to implement the service translation. The getpeername(2)
       hook address translation in eBPF is only available for v5.8 kernels. It is known to
@@ -1210,8 +1212,7 @@ Limitations
       objects if support is available and ignores ``Endpoints`` in those cases. Kubernetes 1.19
       release introduces ``EndpointSliceMirroring`` controller that mirrors custom ``Endpoints``
       resources to corresponding ``EndpointSlices`` and thus allowing backing ``Endpoints``
-      to work. For a more detailed discussion see
-      `#12438 <https://github.com/cilium/cilium/issues/12438>`__.
+      to work. For a more detailed discussion see :gh-issue:`12438`.
     * As per `k8s Service <https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types>`__,
       Cilium's eBPF kube-proxy replacement disallow access of a ClusterIP service
       from outside a cluster.

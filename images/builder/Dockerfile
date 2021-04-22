@@ -1,14 +1,49 @@
-# Copyright 2020 Authors of Cilium
+# Copyright 2020-2021 Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG COMPILERS_IMAGE=docker.io/cilium/image-compilers:57f235db9a07e81c5b60c536498ecbf2501dd267@sha256:080245ac0d7d061e05613e6bf887dc3c8bb07392cd2ce265b8a4aaaad17f2125
-ARG TESTER_IMAGE=docker.io/cilium/image-tester:70724309b859786e0a347605e407c5261f316eb0@sha256:89cc1f577d995021387871d3dbeb771b75ab4d70073d9bcbc42e532792719781
-ARG GOLANG_IMAGE=docker.io/library/golang:1.15.6@sha256:68d8b4d7ec2847a6886fa31323bfc166e6850ce4927939c12c0f536153d28394
+ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:6ed96e618f68cd941b62b546fc8d161db0144d84@sha256:5245610a830b14972d5b287fc0318ac6ab0d420e4afc9b5db9032a04fd706d32
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:ed80679d06b551d2856ca1cd5733b71e7430adb2@sha256:05da74b6aef0c77a0bfdd646e4b559c803960526acba1e134d5edb674a7bd9fb
+ARG TESTER_IMAGE=quay.io/cilium/image-tester:eb76f0d4d585946bb0267b4c4478cceed17bbd87@sha256:c9a598cdc4843e62ab4e430f36343ca06d5292506261f17e466e0f1cbb48ddbb
+ARG GOLANG_IMAGE=docker.io/library/golang:1.16.3@sha256:7f69ee6e3ea6c3acab98576d8d51bf2e72ed722a0bd4e4363423fddb3958d5af
+ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:0147a23fdada32bd51b4f313c645bcb5fbe188d6@sha256:24fd3ad32471d0e45844c856c38f1b2d4ac8bd0a2d4edf64cffaaa3fd0b21202
+
+FROM ${COMPILERS_IMAGE} as compilers-image
 
 FROM ${GOLANG_IMAGE} as golang-dist
 
-FROM ${COMPILERS_IMAGE} as rootfs
-LABEL maintainer="maintainer@cilium.io"
+FROM ${CILIUM_LLVM_IMAGE} as llvm-dist
+
+FROM ${CILIUM_RUNTIME_IMAGE} as rootfs
+
+# Change the number to force the generation of a new git-tree SHA. Useful when
+# we want to re-run 'apt-get upgrade' for stale images.
+ENV FORCE_BUILD=1
+
+# TARGETARCH is an automatic platform ARG enabled by Docker BuildKit.
+ARG TARGETARCH
+RUN \
+    apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    # Only install cross tools on amd64
+    CROSSPKG="" && [ "$TARGETARCH" != "amd64" ] || CROSSPKG="gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu" && \
+    apt-get install -y --no-install-recommends \
+      $CROSSPKG \
+      # Dependencies to unzip protoc
+      unzip \
+      # Base Cilium-build dependencies
+      binutils \
+      coreutils \
+      curl \
+      gcc \
+      git \
+      libc6-dev \
+      libelf-dev \
+      make && \
+    apt-get purge --auto-remove && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+COPY --from=compilers-image /usr/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu
 
 COPY --from=golang-dist /usr/local/go /usr/local/go
 RUN mkdir -p /go
@@ -16,11 +51,15 @@ ENV GOROOT /usr/local/go
 ENV GOPATH /go
 ENV PATH "${GOROOT}/bin:${GOPATH}/bin:${PATH}"
 
-COPY build-go-deps.sh /tmp/build-go-deps.sh
-RUN /tmp/build-go-deps.sh
+WORKDIR /go/src/github.com/cilium/cilium/images/builder
+RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/builder \
+    ./build-go-deps.sh
 
-COPY install-protoc.sh /tmp/install-protoc.sh
-RUN /tmp/install-protoc.sh
+RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/builder \
+    ./install-protoc.sh
+
+# used to facilitate the verifier tests
+COPY --from=llvm-dist /usr/local/bin/llvm-objcopy /bin/
 
 FROM ${TESTER_IMAGE} as test
 COPY --from=rootfs / /

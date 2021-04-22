@@ -163,11 +163,8 @@ func Hint(err error) error {
 func timeSince(since time.Time) string {
 	out := "never"
 	if !since.IsZero() {
-		// Poor man's implementtion of time.Truncate(). Can be refined
-		// when we rebase to go 1.9
 		t := time.Since(since)
-		t -= t % time.Second
-		out = t.String() + " ago"
+		out = t.Truncate(time.Second).String() + " ago"
 	}
 
 	return out
@@ -301,16 +298,16 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 	if sr.KubeProxyReplacement != nil {
 		devices := ""
 		if sr.KubeProxyReplacement.Mode != models.KubeProxyReplacementModeDisabled {
-			for i, dev := range sr.KubeProxyReplacement.Devices {
-				kubeProxyDevices += dev
-				if dev == sr.KubeProxyReplacement.DirectRoutingDevice {
+			for i, dev := range sr.KubeProxyReplacement.DeviceList {
+				kubeProxyDevices += fmt.Sprintf("%s %s", dev.Name, strings.Join(dev.IP, " "))
+				if dev.Name == sr.KubeProxyReplacement.DirectRoutingDevice {
 					kubeProxyDevices += " (Direct Routing)"
 				}
 				if i+1 != len(sr.KubeProxyReplacement.Devices) {
 					kubeProxyDevices += ", "
 				}
 			}
-			if len(sr.KubeProxyReplacement.Devices) > 0 {
+			if len(sr.KubeProxyReplacement.DeviceList) > 0 {
 				devices = "[" + kubeProxyDevices + "]"
 			}
 		}
@@ -318,7 +315,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 			sr.KubeProxyReplacement.Mode, devices)
 	}
 	if sr.Cilium != nil {
-		fmt.Fprintf(w, "Cilium:\t%s\t%s\n", sr.Cilium.State, sr.Cilium.Msg)
+		fmt.Fprintf(w, "Cilium:\t%s   %s\n", sr.Cilium.State, sr.Cilium.Msg)
 	}
 
 	if sr.Stale != nil {
@@ -400,22 +397,46 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 
 	if sr.Masquerading != nil {
 		var status string
-		if !sr.Masquerading.Enabled {
-			status = "Disabled"
-		} else if sr.Masquerading.Mode == models.MasqueradingModeBPF {
-			if sr.Masquerading.IPMasqAgent {
-				status = "BPF (ip-masq-agent)"
-			} else {
-				status = "BPF"
+
+		enabled := func(enabled bool) string {
+			if enabled {
+				return "Enabled"
 			}
-			if sr.KubeProxyReplacement != nil {
-				status += fmt.Sprintf("\t[%s]\t%s",
-					strings.Join(sr.KubeProxyReplacement.Devices, ", "),
-					sr.Masquerading.SnatExclusionCidr)
+			return "Disabled"
+		}
+
+		if sr.Masquerading.EnabledProtocols == nil {
+			status = enabled(sr.Masquerading.Enabled)
+		} else if !sr.Masquerading.EnabledProtocols.IPV4 && !sr.Masquerading.EnabledProtocols.IPV6 {
+			status = enabled(false)
+		} else {
+			if sr.Masquerading.Mode == models.MasqueradingModeBPF {
+				if sr.Masquerading.IPMasqAgent {
+					status = "BPF (ip-masq-agent)"
+				} else {
+					status = "BPF"
+				}
+				if sr.KubeProxyReplacement != nil {
+					// When BPF Masquerading is enabled we don't do any masquerading for IPv6
+					// traffic so no SNAT Exclusion IPv6 CIDR is listed in status output.
+					devStr := ""
+					for i, dev := range sr.KubeProxyReplacement.DeviceList {
+						devStr += dev.Name
+						if i+1 != len(sr.KubeProxyReplacement.DeviceList) {
+							devStr += ", "
+						}
+					}
+					status += fmt.Sprintf("\t[%s]\t%s",
+						devStr,
+						sr.Masquerading.SnatExclusionCidrV4)
+				}
+
+			} else if sr.Masquerading.Mode == models.MasqueradingModeIptables {
+				status = "IPTables"
 			}
 
-		} else if sr.Masquerading.Mode == models.MasqueradingModeIptables {
-			status = "IPTables"
+			status = fmt.Sprintf("%s [IPv4: %s, IPv6: %s]", status,
+				enabled(sr.Masquerading.EnabledProtocols.IPV4), enabled(sr.Masquerading.EnabledProtocols.IPV6))
 		}
 		fmt.Fprintf(w, "Masquerading:\t%s\n", status)
 	}
@@ -560,7 +581,7 @@ func FormatStatusResponse(w io.Writer, sr *models.StatusResponse, sd StatusDetai
 		tab := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 		fmt.Fprintf(tab, "  Status:\t%s\n", sr.KubeProxyReplacement.Mode)
 		if protocols != "" {
-			fmt.Fprintf(tab, "  Protocols:\t%s\n", protocols)
+			fmt.Fprintf(tab, "  Socket LB Protocols:\t%s\n", protocols)
 		}
 		if kubeProxyDevices != "" {
 			fmt.Fprintf(tab, "  Devices:\t%s\n", kubeProxyDevices)

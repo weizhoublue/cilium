@@ -32,6 +32,7 @@ import (
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/identity"
 	identityCache "github.com/cilium/cilium/pkg/identity/cache"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/k8s"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
@@ -61,6 +62,19 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+type configuration struct {
+	clusterName      string
+	serviceProxyName string
+}
+
+func (c configuration) LocalClusterName() string {
+	return c.clusterName
+}
+
+func (c configuration) K8sServiceProxyName() string {
+	return c.serviceProxyName
+}
+
 var (
 	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "clustermesh-apiserver")
 
@@ -85,8 +99,8 @@ var (
 
 	mockFile        string
 	clusterID       int
-	clusterName     string
 	ciliumK8sClient clientset.Interface
+	cfg             configuration
 
 	shutdownSignal = make(chan struct{})
 
@@ -187,7 +201,7 @@ func runApiserver() error {
 	flags.IntVar(&clusterID, option.ClusterIDName, 0, "Cluster ID")
 	option.BindEnv(option.ClusterIDName)
 
-	flags.StringVar(&clusterName, option.ClusterName, "default", "Cluster name")
+	flags.StringVar(&cfg.clusterName, option.ClusterName, "default", "Cluster name")
 	option.BindEnv(option.ClusterName)
 
 	flags.StringVar(&mockFile, "mock-file", "", "Read from mock file")
@@ -206,6 +220,12 @@ func runApiserver() error {
 		option.KVStoreOpt, "Key-value store options")
 	option.BindEnv(option.KVStoreOpt)
 
+	flags.StringVar(&cfg.serviceProxyName, option.K8sServiceProxyName, "", "Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)")
+	option.BindEnv(option.K8sServiceProxyName)
+
+	flags.Duration(option.AllocatorListTimeoutName, defaults.AllocatorListTimeout, "Timeout for listing allocator state before exiting")
+	option.BindEnv(option.AllocatorListTimeoutName)
+
 	viper.BindPFlags(flags)
 	option.Config.Populate()
 
@@ -217,8 +237,6 @@ func runApiserver() error {
 }
 
 func main() {
-	log.Infof("Starting Cilium ClusterMesh apiserver...")
-
 	installSigHandler()
 
 	if err := runApiserver(); err != nil {
@@ -351,7 +369,7 @@ func (n nodeStub) GetKeyName() string { return string(n) }
 func updateNode(obj interface{}) {
 	if ciliumNode, ok := obj.(*ciliumv2.CiliumNode); ok {
 		n := nodeTypes.ParseCiliumNode(ciliumNode)
-		n.Cluster = clusterName
+		n.Cluster = cfg.clusterName
 		n.ClusterID = clusterID
 		if err := ciliumNodeStore.UpdateLocalKeySync(context.Background(), &n); err != nil {
 			log.WithError(err).Warning("Unable to insert node into etcd")
@@ -470,7 +488,7 @@ func deleteEndpoint(obj interface{}) {
 }
 
 func synchronizeCiliumEndpoints() {
-	_, ciliumNodeInformer := informer.NewInformer(
+	_, ciliumEndpointsInformer := informer.NewInformer(
 		cache.NewListWatchFromClient(ciliumK8sClient.CiliumV2().RESTClient(),
 			"ciliumendpoints", k8sv1.NamespaceAll, fields.Everything()),
 		&ciliumv2.CiliumEndpoint{},
@@ -492,10 +510,15 @@ func synchronizeCiliumEndpoints() {
 		k8s.ConvertToCiliumEndpoint,
 	)
 
-	go ciliumNodeInformer.Run(wait.NeverStop)
+	go ciliumEndpointsInformer.Run(wait.NeverStop)
 }
 
 func runServer(cmd *cobra.Command) {
+	log.WithFields(logrus.Fields{
+		"cluster-name": cfg.clusterName,
+		"cluster-id":   clusterID,
+	}).Info("Starting clustermesh-apiserver...")
+
 	if mockFile == "" {
 		k8s.Configure("", "", 0.0, 0)
 		if err := k8s.Init(k8sconfig.NewDefaultConfiguration()); err != nil {
@@ -539,10 +562,12 @@ func runServer(cmd *cobra.Command) {
 		synchronizeIdentities()
 		synchronizeNodes()
 		synchronizeCiliumEndpoints()
-		operatorWatchers.StartSynchronizingServices(false)
+		operatorWatchers.StartSynchronizingServices(false, cfg)
 	}
 
 	go func() {
+		timer, timerDone := inctimer.New()
+		defer timerDone()
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), defaults.LockLeaseTTL)
 			err := kvstore.Client().Update(ctx, kvstore.HeartbeatPath, []byte(time.Now().Format(time.RFC3339)), true)
@@ -550,7 +575,7 @@ func runServer(cmd *cobra.Command) {
 				log.WithError(err).Warning("Unable to update heartbeat key")
 			}
 			cancel()
-			<-time.After(kvstore.HeartbeatWriteInterval)
+			<-timer.After(kvstore.HeartbeatWriteInterval)
 		}
 	}()
 

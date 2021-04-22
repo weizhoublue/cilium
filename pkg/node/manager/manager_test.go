@@ -17,6 +17,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/datapath"
 	"github.com/cilium/cilium/pkg/datapath/fake"
+	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ipcache"
 	"github.com/cilium/cilium/pkg/node/addressing"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
@@ -45,6 +47,7 @@ var _ = check.Suite(&managerTestSuite{})
 type configMock struct {
 	RemoteNodeIdentity bool
 	NodeEncryption     bool
+	Encryption         bool
 }
 
 func (c *configMock) RemoteNodeIdentitiesEnabled() bool {
@@ -53,6 +56,10 @@ func (c *configMock) RemoteNodeIdentitiesEnabled() bool {
 
 func (c *configMock) NodeEncryptionEnabled() bool {
 	return c.NodeEncryption
+}
+
+func (c *configMock) EncryptionEnabled() bool {
+	return c.Encryption
 }
 
 type nodeEvent struct {
@@ -130,6 +137,14 @@ func (n *signalNodeHandler) NodeValidateImplementation(node nodeTypes.Node) erro
 
 func (n *signalNodeHandler) NodeConfigurationChanged(config datapath.LocalNodeConfiguration) error {
 	return nil
+}
+
+func (n *signalNodeHandler) NodeNeighDiscoveryEnabled() bool {
+	return false
+}
+
+func (n *signalNodeHandler) NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node) {
+	return
 }
 
 func (s *managerTestSuite) TestNodeLifecycle(c *check.C) {
@@ -329,6 +344,8 @@ func (s *managerTestSuite) TestBackgroundSync(c *check.C) {
 
 	go func() {
 		nodeValidationsReceived := 0
+		timer, timerDone := inctimer.New()
+		defer timerDone()
 		for {
 			select {
 			case <-signalNodeHandler.NodeValidateImplementationEvent:
@@ -337,7 +354,7 @@ func (s *managerTestSuite) TestBackgroundSync(c *check.C) {
 					allNodeValidateCallsReceived.Done()
 					return
 				}
-			case <-time.After(time.Second * 5):
+			case <-timer.After(time.Second * 5):
 				c.Errorf("Timeout while waiting for NodeValidateImplementation() to be called")
 			}
 		}
@@ -547,7 +564,7 @@ func (s *managerTestSuite) TestRemoteNodeIdentities(c *check.C) {
 
 func (s *managerTestSuite) TestNodeEncryption(c *check.C) {
 	ipcacheMock := newIPcacheMock()
-	mngr, err := NewManager("test", newSignalNodeHandler(), ipcacheMock, &configMock{NodeEncryption: true})
+	mngr, err := NewManager("test", newSignalNodeHandler(), ipcacheMock, &configMock{NodeEncryption: true, Encryption: true})
 	c.Assert(err, check.IsNil)
 	defer mngr.Close()
 

@@ -56,7 +56,7 @@ func TestNewWatcher(t *testing.T) {
 
 	keypair, caCertPool := w.KeypairAndCACertPool()
 	assert.Equal(t, &expectedKeypair, keypair)
-	assert.Equal(t, expectedCaCertPool, caCertPool)
+	assert.Equal(t, expectedCaCertPool.Subjects(), caCertPool.Subjects())
 }
 
 func TestRotation(t *testing.T) {
@@ -83,7 +83,7 @@ func TestRotation(t *testing.T) {
 
 	keypair, caCertPool := w.KeypairAndCACertPool()
 	assert.Equal(t, &expectedKeypair, keypair)
-	assert.Equal(t, expectedCaCertPool, caCertPool)
+	assert.Equal(t, expectedCaCertPool.Subjects(), caCertPool.Subjects())
 }
 
 func TestFutureWatcherImmediately(t *testing.T) {
@@ -115,7 +115,7 @@ func TestFutureWatcherImmediately(t *testing.T) {
 
 	keypair, caCertPool := w.KeypairAndCACertPool()
 	assert.Equal(t, &expectedKeypair, keypair)
-	assert.Equal(t, expectedCaCertPool, caCertPool)
+	assert.Equal(t, expectedCaCertPool.Subjects(), caCertPool.Subjects())
 }
 
 func TestFutureWatcher(t *testing.T) {
@@ -151,13 +151,13 @@ func TestFutureWatcher(t *testing.T) {
 	select {
 	case w = <-ch:
 	case <-time.After(testReloadDelay):
-		t.Fatal("FutureWatcher should be ready one the TLS files exists")
+		t.Fatal("FutureWatcher should be ready once the TLS files exists")
 	}
 	defer w.Stop()
 
 	keypair, caCertPool := w.KeypairAndCACertPool()
 	assert.Equal(t, &expectedKeypair, keypair)
-	assert.Equal(t, expectedCaCertPool, caCertPool)
+	assert.Equal(t, expectedCaCertPool.Subjects(), caCertPool.Subjects())
 }
 
 func TestKubernetesMount(t *testing.T) {
@@ -183,7 +183,7 @@ func TestKubernetesMount(t *testing.T) {
 	select {
 	case w = <-ch:
 	case <-time.After(testReloadDelay):
-		t.Fatal("FutureWatcher should be ready one the TLS files exists")
+		t.Fatal("FutureWatcher should be ready once the TLS files exists")
 	}
 	defer w.Stop()
 
@@ -198,7 +198,7 @@ func TestKubernetesMount(t *testing.T) {
 
 	keypair, caCertPool := w.KeypairAndCACertPool()
 	assert.Equal(t, &expectedInitialKeypair, keypair)
-	assert.Equal(t, expectedInitialCaCertPool, caCertPool)
+	assert.Equal(t, expectedInitialCaCertPool.Subjects(), caCertPool.Subjects())
 
 	k8sRotate(t, dir)
 	<-time.After(testReloadDelay)
@@ -214,5 +214,5 @@ func TestKubernetesMount(t *testing.T) {
 
 	keypair, caCertPool = w.KeypairAndCACertPool()
 	assert.Equal(t, &expectedRotatedKeypair, keypair)
-	assert.Equal(t, expectedRotatedCaCertPool, caCertPool)
+	assert.Equal(t, expectedRotatedCaCertPool.Subjects(), caCertPool.Subjects())
 }

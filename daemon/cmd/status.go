@@ -41,10 +41,12 @@ import (
 	"github.com/cilium/cilium/pkg/maps/signalmap"
 	"github.com/cilium/cilium/pkg/maps/sockmap"
 	tunnelmap "github.com/cilium/cilium/pkg/maps/tunnel"
+	"github.com/cilium/cilium/pkg/node"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/status"
+	"github.com/cilium/cilium/pkg/version"
 	"github.com/sirupsen/logrus"
 
 	"github.com/go-openapi/runtime/middleware"
@@ -123,15 +125,26 @@ func (d *Daemon) getK8sStatus() *models.K8sStatus {
 
 func (d *Daemon) getMasqueradingStatus() *models.Masquerading {
 	s := &models.Masquerading{
-		Enabled: option.Config.Masquerade,
+		Enabled: option.Config.EnableIPv4Masquerade || option.Config.EnableIPv6Masquerade,
+		EnabledProtocols: &models.MasqueradingEnabledProtocols{
+			IPV4: option.Config.EnableIPv4Masquerade,
+			IPV6: option.Config.EnableIPv6Masquerade,
+		},
 	}
 
-	if !option.Config.Masquerade {
+	if !option.Config.EnableIPv4Masquerade && !option.Config.EnableIPv6Masquerade {
 		return s
 	}
 
 	if option.Config.EnableIPv4 {
-		s.SnatExclusionCidr = datapath.RemoteSNATDstAddrExclusionCIDR().String()
+		// SnatExclusionCidr is the legacy field, continue to provide
+		// it for the time being
+		s.SnatExclusionCidr = datapath.RemoteSNATDstAddrExclusionCIDRv4().String()
+		s.SnatExclusionCidrV4 = datapath.RemoteSNATDstAddrExclusionCIDRv4().String()
+	}
+
+	if option.Config.EnableIPv6 {
+		s.SnatExclusionCidrV6 = datapath.RemoteSNATDstAddrExclusionCIDRv6().String()
 	}
 
 	if option.Config.EnableBPFMasquerade {
@@ -192,9 +205,23 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 		mode = models.KubeProxyReplacementModeDisabled
 	}
 
-	devices := make([]string, len(option.Config.Devices))
+	devicesLegacy := make([]string, len(option.Config.Devices))
+	devices := make([]*models.KubeProxyReplacementDeviceListItems0, len(option.Config.Devices))
+	v4Addrs := node.GetNodePortIPv4AddrsWithDevices()
+	v6Addrs := node.GetNodePortIPv6AddrsWithDevices()
 	for i, iface := range option.Config.Devices {
-		devices[i] = iface
+		devicesLegacy[i] = iface
+		info := &models.KubeProxyReplacementDeviceListItems0{
+			Name: iface,
+			IP:   make([]string, 0),
+		}
+		if addr, ok := v4Addrs[iface]; ok {
+			info.IP = append(info.IP, addr.String())
+		}
+		if addr, ok := v6Addrs[iface]; ok {
+			info.IP = append(info.IP, addr.String())
+		}
+		devices[i] = info
 	}
 
 	features := &models.KubeProxyReplacementFeatures{
@@ -246,7 +273,8 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 
 	return &models.KubeProxyReplacement{
 		Mode:                mode,
-		Devices:             devices,
+		Devices:             devicesLegacy,
+		DeviceList:          devices,
 		DirectRoutingDevice: option.Config.DirectRoutingDevice,
 		Features:            features,
 	}
@@ -458,6 +486,16 @@ func (c *clusterNodesClient) NodeConfigurationChanged(config datapath.LocalNodeC
 	return nil
 }
 
+func (c *clusterNodesClient) NodeNeighDiscoveryEnabled() bool {
+	// no-op
+	return false
+}
+
+func (c *clusterNodesClient) NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node) {
+	// no-op
+	return
+}
+
 func (h *getNodes) cleanupClients() {
 	past := time.Now().Add(-clientGCTimeout)
 	for k, v := range h.clients {
@@ -579,16 +617,22 @@ func (d *Daemon) getStatus(brief bool) models.StatusResponse {
 
 	sr.Stale = stale
 
+	// CiliumVersion definition
+	ver := version.GetCiliumVersion()
+	ciliumVer := fmt.Sprintf("%s (v%s-%s)", ver.Version, ver.Version, ver.Revision)
+
 	switch {
 	case len(sr.Stale) > 0:
+		msg := "Stale status data"
 		sr.Cilium = &models.Status{
 			State: models.StatusStateWarning,
-			Msg:   "Stale status data",
+			Msg:   fmt.Sprintf("%s    %s", ciliumVer, msg),
 		}
 	case d.statusResponse.Kvstore != nil && d.statusResponse.Kvstore.State != models.StatusStateOk:
+		msg := "Kvstore service is not ready"
 		sr.Cilium = &models.Status{
 			State: d.statusResponse.Kvstore.State,
-			Msg:   "Kvstore service is not ready",
+			Msg:   fmt.Sprintf("%s    %s", ciliumVer, msg),
 		}
 	case d.statusResponse.ContainerRuntime != nil && d.statusResponse.ContainerRuntime.State != models.StatusStateOk:
 		msg := "Container runtime is not ready"
@@ -597,15 +641,19 @@ func (d *Daemon) getStatus(brief bool) models.StatusResponse {
 		}
 		sr.Cilium = &models.Status{
 			State: d.statusResponse.ContainerRuntime.State,
-			Msg:   msg,
+			Msg:   fmt.Sprintf("%s    %s", ciliumVer, msg),
 		}
 	case k8s.IsEnabled() && d.statusResponse.Kubernetes != nil && d.statusResponse.Kubernetes.State != models.StatusStateOk:
+		msg := "Kubernetes service is not ready"
 		sr.Cilium = &models.Status{
 			State: d.statusResponse.Kubernetes.State,
-			Msg:   "Kubernetes service is not ready",
+			Msg:   fmt.Sprintf("%s    %s", ciliumVer, msg),
 		}
 	default:
-		sr.Cilium = &models.Status{State: models.StatusStateOk, Msg: "OK"}
+		sr.Cilium = &models.Status{
+			State: models.StatusStateOk,
+			Msg:   ciliumVer,
+		}
 	}
 
 	return sr

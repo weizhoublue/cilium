@@ -23,6 +23,7 @@ datapath instead of the default veth-based one.
 
     - IPVLAN L2 mode
     - L7 policy enforcement
+    - FQDN Policies
     - NAT64
     - IPVLAN with tunneling
     - eBPF-based masquerading
@@ -99,7 +100,7 @@ masquerading all traffic leaving the node:
      --set datapathMode=ipvlan \\
      --set ipvlan.masterDevice=bond0 \\
      --set tunnel=disabled \\
-     --set masquerade=true \\
+     --set enableIPv4Masquerade=true \\
      --set autoDirectNodeRoutes=true
 
 Verify that it has come up correctly:

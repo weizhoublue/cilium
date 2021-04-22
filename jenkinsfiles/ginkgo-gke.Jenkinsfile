@@ -20,18 +20,6 @@ pipeline {
                 returnStdout: true,
                 script: 'if [ "${RunQuarantined}" = "" ]; then echo -n "false"; else echo -n "${RunQuarantined}"; fi'
             )}"""
-        RACE="""${sh(
-                returnStdout: true,
-                script: 'if [ "${run_with_race_detection}" = "" ]; then echo -n ""; else echo -n "1"; fi'
-            )}"""
-        LOCKDEBUG="""${sh(
-                returnStdout: true,
-                script: 'if [ "${run_with_race_detection}" = "" ]; then echo -n ""; else echo -n "1"; fi'
-            )}"""
-        BASE_IMAGE="""${sh(
-                returnStdout: true,
-                script: 'if [ "${run_with_race_detection}" = "" ]; then echo -n "scratch"; else echo -n "quay.io/cilium/cilium-runtime:2020-12-10@sha256:ee6f0f81fa73125234466c13fd16bed30cc3209daa2f57098f63e0285779e5f3"; fi'
-            )}"""
     }
 
     options {
@@ -63,32 +51,6 @@ pipeline {
                 sh 'ls -A | grep -v src | xargs mv -t ${PROJ_PATH}'
             }
         }
-        stage('Start docker registry for build') {
-            steps{
-                sh 'cd ${TESTDIR}/gke; ./start-registry.sh'
-            }
-        }
-        stage('Precheck') {
-            options {
-                timeout(time: 20, unit: 'MINUTES')
-            }
-
-            steps {
-               sh "cd ${WORKSPACE}/${PROJ_PATH}; make jenkins-precheck"
-            }
-            post {
-               always {
-                   sh "cd ${WORKSPACE}/${PROJ_PATH}; make clean-jenkins-precheck || true"
-               }
-               unsuccessful {
-                   script {
-                       if  (!currentBuild.displayName.contains('fail')) {
-                           currentBuild.displayName = 'precheck fail\n' + currentBuild.displayName
-                       }
-                   }
-               }
-            }
-        }
         stage('Authenticate in gke') {
             steps {
                 dir("/tmp") {
@@ -99,26 +61,32 @@ pipeline {
                 }
             }
         }
-        stage('Log in to dockerhub') {
-            steps{
-                withCredentials([usernamePassword(credentialsId: 'CILIUM_BOT_DUMMY', usernameVariable: 'DOCKER_LOGIN', passwordVariable: 'DOCKER_PASSWORD')]) {
-                    sh 'echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_LOGIN} --password-stdin'
+        stage('Set programmatic env vars') {
+            steps {
+                script {
+                    if (env.ghprbActualCommit?.trim()) {
+                        env.DOCKER_TAG = env.ghprbActualCommit
+                    } else {
+                        env.DOCKER_TAG = env.GIT_COMMIT
+                    }
+                    if (env.run_with_race_detection?.trim()) {
+                        env.DOCKER_TAG = env.DOCKER_TAG + "-race"
+                    }
                 }
             }
         }
-        stage('Make Cilium images and prepare gke cluster') {
+        stage('Wait for Cilium images and prepare gke cluster') {
             parallel {
-                stage('Make Cilium images') {
-                    steps {
-                        sh 'cd ${TESTDIR}; ./make-images-push-to-local-registry.sh $(gke/registry-ip.sh) ${TAG} "--no-cache"'
+                stage('Wait for images') {
+                    options {
+                        timeout(time: 20, unit: 'MINUTES')
                     }
-                    post {
-                        unsuccessful {
-                            script {
-                                if  (!currentBuild.displayName.contains('fail')) {
-                                    currentBuild.displayName = 'building or pushing Cilium images failed ' + currentBuild.displayName
-                                }
-                            }
+                    steps {
+                        retry(25) {
+                            sleep(time: 60)
+                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/cilium-ci/tag/${DOCKER_TAG}/images"'
+                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/operator-ci/tag/${DOCKER_TAG}/images"'
+                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/hubble-relay-ci/tag/${DOCKER_TAG}/images"'
                         }
                     }
                 }
@@ -162,30 +130,12 @@ pipeline {
                 CONTAINER_RUNTIME=setIfLabel("area/containerd", "containerd", "docker")
                 KUBECONFIG="${TESTDIR}/gke/gke-kubeconfig"
                 CNI_INTEGRATION="gke"
-                CILIUM_IMAGE = """${sh(
-                        returnStdout: true,
-                        script: 'echo -n $(${TESTDIR}/gke/registry-ip.sh)/cilium/cilium'
-                        )}"""
-                CILIUM_TAG = """${sh(
-                        returnStdout: true,
-                        script: 'echo -n ${TAG}'
-                        )}"""
-                CILIUM_OPERATOR_IMAGE= """${sh(
-                        returnStdout: true,
-                        script: 'echo -n $(${TESTDIR}/gke/registry-ip.sh)/cilium/operator'
-                        )}"""
-                CILIUM_OPERATOR_TAG = """${sh(
-                        returnStdout: true,
-                        script: 'echo -n ${TAG}'
-                        )}"""
-                HUBBLE_RELAY_IMAGE= """${sh(
-                        returnStdout: true,
-                        script: 'echo -n $(${TESTDIR}/gke/registry-ip.sh)/cilium/hubble-relay'
-                        )}"""
-                HUBBLE_RELAY_TAG = """${sh(
-                        returnStdout: true,
-                        script: 'echo -n ${TAG}'
-                        )}"""
+                CILIUM_IMAGE = "quay.io/cilium/cilium-ci"
+                CILIUM_TAG = "${DOCKER_TAG}"
+                CILIUM_OPERATOR_IMAGE= "quay.io/cilium/operator"
+                CILIUM_OPERATOR_TAG = "${DOCKER_TAG}"
+                HUBBLE_RELAY_IMAGE= "quay.io/cilium/hubble-relay-ci"
+                HUBBLE_RELAY_TAG = "${DOCKER_TAG}"
                 K8S_VERSION= """${sh(
                         returnStdout: true,
                         script: 'cat ${TESTDIR}/gke/cluster-version'
@@ -194,11 +144,16 @@ pipeline {
                         returnStdout: true,
                         script: 'echo ${ghprbCommentBody} | sed -r "s/([^ ]* |^[^ ]*$)//" | sed "s/^$/K8s*/" | tr -d \'\n\''
                         )}"""
+                KERNEL="419"
+                NATIVE_CIDR= """${sh(
+                        returnStdout: true,
+                        script: 'cat ${TESTDIR}/gke/cluster-cidr | tr -d \'\n\''
+                        )}"""
             }
             steps {
                 dir("${TESTDIR}"){
                     sh 'env'
-                    sh 'ginkgo --focus="${FOCUS}" -v -- -cilium.provision=false -cilium.timeout=${GINKGO_TIMEOUT} -cilium.kubeconfig=${KUBECONFIG} -cilium.passCLIEnvironment=true -cilium.image=${CILIUM_IMAGE} -cilium.tag=${CILIUM_TAG} -cilium.operator-image=${CILIUM_OPERATOR_IMAGE} -cilium.operator-tag=${CILIUM_OPERATOR_TAG} -cilium.hubble-relay-image=${HUBBLE_RELAY_IMAGE} -cilium.hubble-relay-tag=${HUBBLE_RELAY_TAG} -cilium.holdEnvironment=false -cilium.runQuarantined=${RUN_QUARANTINED}'
+                    sh 'ginkgo --focus="${FOCUS}" -v -- -cilium.provision=false -cilium.timeout=${GINKGO_TIMEOUT} -cilium.kubeconfig=${KUBECONFIG} -cilium.passCLIEnvironment=true -cilium.image=${CILIUM_IMAGE} -cilium.tag=${CILIUM_TAG} -cilium.operator-image=${CILIUM_OPERATOR_IMAGE} -cilium.operator-tag=${CILIUM_OPERATOR_TAG} -cilium.hubble-relay-image=${HUBBLE_RELAY_IMAGE} -cilium.hubble-relay-tag=${HUBBLE_RELAY_TAG} -cilium.holdEnvironment=false -cilium.runQuarantined=${RUN_QUARANTINED} -cilium.operator-suffix="-ci"'
                 }
             }
             post {
@@ -219,7 +174,6 @@ pipeline {
   }
     post {
         always {
-            sh 'cd ${TESTDIR}/gke; ./stop-registry.sh || true'
             sh 'cd ${TESTDIR}/gke; ./release-cluster.sh || true'
             cleanWs()
             sh '/usr/local/bin/cleanup || true'

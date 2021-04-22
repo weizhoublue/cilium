@@ -24,7 +24,9 @@ import (
 )
 
 var _ = Describe("K8sIdentity", func() {
-	SkipContextIf(helpers.DoesNotRunOnGKE, "Identity expiration", func() {
+	SkipContextIf(func() bool {
+		return helpers.DoesNotRunOnGKE() && helpers.DoesNotRunOnEKS()
+	}, "Identity expiration", func() {
 		var (
 			kubectl        *helpers.Kubectl
 			ciliumFilename string
@@ -69,7 +71,7 @@ var _ = Describe("K8sIdentity", func() {
 			By("Waiting for CiliumIdentity to be garbage collected")
 			Eventually(func() bool {
 				return !kubectl.ExecShort(helpers.KubectlCmd + " get ciliumidentity 99999").WasSuccessful()
-			}, 2*time.Minute).Should(BeTrue(), "CiliumIdentity did not get garbage collected before timeout")
+			}, 2*time.Minute, time.Second).Should(BeTrue(), "CiliumIdentity did not get garbage collected before timeout")
 		})
 	})
 })

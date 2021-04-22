@@ -28,8 +28,8 @@ usage() {
     echo -e "\t\$ add-vagrant-boxes.sh \$HOME/go/src/github.com/cilium/cilium/vagrant_box_defaults.rb"
     echo -e "\tdownload latest version for ubuntu-dev and ubuntu-next:"
     echo -e "\t\$ add-vagrant-boxes.sh -l -b ubuntu-dev -b ubuntu-next"
-    echo -e "\tsame as above, downloading into /tmp/ and using aria2c:"
-    echo -e "\t\$ add-vagrant-boxes.sh -alt -b ubuntu-dev -b ubuntu-next"
+    echo -e "\tsame as above, downloading into /tmp/foo and using aria2c:"
+    echo -e "\t\$ add-vagrant-boxes.sh -al -d /tmp/foo -b ubuntu-dev -b ubuntu-next"
     exit $1
 }
 
@@ -41,7 +41,8 @@ version=0
 custom_types=0
 latest=0
 use_aria2=0
-outdir="/tmp/"
+aria2c="aria2c -x16 -s16 -c --auto-file-renaming=false --console-log-level=warn --summary-interval=0"
+outdir="/tmp"
 path=/dev/null
 
 OPTIND=1
@@ -144,7 +145,7 @@ for box in $boxes; do
         if [[ $ret -eq 0 ]]; then
             url="$vagrant_url$box/$version/package.box"
             if [[ $use_aria2 -eq 1 ]] ; then
-                aria2c -x16 -s16 -c -d "$outdir" -o package.box "$url"
+                $aria2c -d "$outdir" -o package.box "$url"
             else
                 curl "$url" -o "$outdir/package.box"
             fi
@@ -163,7 +164,7 @@ for box in $boxes; do
         echo "box locked or unavailable, adding box from vagrant cloud"
         if [[ $use_aria2 -eq 1 ]] ; then
             url="https://vagrantcloud.com/cilium/boxes/$box/versions/$version/providers/virtualbox.box"
-            aria2c -x16 -s16 -c -d "$outdir" -o package.box "$url"
+            $aria2c -d "$outdir" -o package.box "$url"
             vagrant box add "cilium/$box" "$outdir/package.box"
             mkdir -p $box_dir$box
             if [[ ! -f $box_dir$box/metadata_url ]] ; then
@@ -174,4 +175,7 @@ for box in $boxes; do
             vagrant box add cilium/$box --box-version $version
         fi
     fi
+
+    rm -f -- "$outdir/metadata.json"
+    rm -f -- "$outdir/package.box"
 done

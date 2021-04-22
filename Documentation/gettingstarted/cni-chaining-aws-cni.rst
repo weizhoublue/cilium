@@ -4,6 +4,8 @@
     Please use the official rendered version released here:
     https://docs.cilium.io
 
+.. _chaining_aws_cni:
+
 *******
 AWS-CNI
 *******
@@ -15,13 +17,21 @@ networking is setup, the Cilium CNI plugin is called to attach eBPF programs to
 the network devices set up by aws-cni to enforce network policies, perform
 load-balancing, and encryption.
 
+.. include:: cni-chaining-limitations.rst
+
+.. important::
+
+   Due to a bug in certain version of the AWS CNI, please ensure that you are
+   running the AWS CNI `1.7.9 <https://github.com/aws/amazon-vpc-cni-k8s/releases/tag/v1.7.9>`_
+   or newer to guarantee compatibility with Cilium.
+
 .. image:: aws-cni-architecture.png
 
 
 Setup Cluster on AWS
 ====================
 
-Follow the instructions in the :ref:`k8s_install_eks` guide to set up an EKS
+Follow the instructions in the :ref:`k8s_install_quick` guide to set up an EKS
 cluster or use any other method of your preference to set up a Kubernetes
 cluster.
 
@@ -38,7 +48,7 @@ Deploy Cilium release via Helm:
    helm install cilium |CHART_RELEASE| \\
      --namespace kube-system \\
      --set cni.chainingMode=aws-cni \\
-     --set masquerade=false \\
+     --set enableIPv4Masquerade=false \\
      --set tunnel=disabled \\
      --set nodeinit.enabled=true
 
@@ -60,6 +70,5 @@ If you are unsure if a pod is managed by Cilium or not, run ``kubectl get cep``
 in the respective namespace and see if the pod is listed.
 
 .. include:: k8s-install-validate.rst
-.. include:: namespace-kube-system.rst
-.. include:: hubble-enable.rst
 
+.. include:: next-steps.rst

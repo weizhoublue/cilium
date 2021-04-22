@@ -13,12 +13,15 @@ cilium-agent [flags]
 ```
       --agent-health-port int                                TCP port for agent health status API (default 9876)
       --agent-labels strings                                 Additional labels to identify this agent
+      --allocator-list-timeout duration                      Timeout for listing allocator state before exiting (default 3m0s)
       --allow-icmp-frag-needed                               Allow ICMP Fragmentation Needed type packets for purposes like TCP Path MTU. (default true)
       --allow-localhost string                               Policy when to allow local stack to reach local endpoints { auto | always | policy } (default "auto")
       --annotate-k8s-node                                    Annotate Kubernetes node (default true)
       --api-rate-limit map                                   API rate limiting configuration (example: --rate-limit endpoint-create=rate-limit:10/m,rate-burst:2) (default map[])
       --auto-create-cilium-node-resource                     Automatically create CiliumNode resource for own node on startup (default true)
       --auto-direct-node-routes                              Enable automatic L2 routing between nodes
+      --bgp-announce-lb-ip                                   Announces service IPs of type LoadBalancer via BGP
+      --bgp-config-path string                               Path to file containing the BGP configuration (default "/var/lib/cilium/bgp/config.yaml")
       --bpf-ct-global-any-max int                            Maximum number of entries in non-TCP CT table (default 262144)
       --bpf-ct-global-tcp-max int                            Maximum number of entries in TCP CT table (default 524288)
       --bpf-ct-timeout-regular-any duration                  Timeout for entries in non-TCP CT table (default 1m0s)
@@ -30,6 +33,7 @@ cilium-agent [flags]
       --bpf-fragments-map-max int                            Maximum number of entries in fragments tracking map (default 8192)
       --bpf-lb-acceleration string                           BPF load balancing acceleration via XDP ("native", "disabled") (default "disabled")
       --bpf-lb-algorithm string                              BPF load balancing algorithm ("random", "maglev") (default "random")
+      --bpf-lb-bypass-fib-lookup                             Enable FIB lookup bypass optimization for nodeport reverse NAT handling (default true)
       --bpf-lb-dev-ip-addr-inherit string                    Device name which IP addr is inherited by devices running LB BPF program (--devices)
       --bpf-lb-dsr-dispatch string                           BPF load balancing DSR dispatch method ("opt", "ipip") (default "opt")
       --bpf-lb-maglev-hash-seed string                       Maglev cluster-wide hash seed (base64 encoded) (default "JLfvgnHc2kaSUFaI")
@@ -64,27 +68,32 @@ cilium-agent [flags]
       --disable-iptables-feeder-rules strings                Chains to ignore when installing feeder rules.
       --dns-max-ips-per-restored-rule int                    Maximum number of IPs to maintain for each restored DNS rule (default 1000)
       --egress-masquerade-interfaces string                  Limit egress masquerading to interface selector
+      --egress-multi-home-ip-rule-compat                     Offset routing table IDs under ENI IPAM mode to avoid collisions with reserved table IDs. If false, the offset is performed (new scheme), otherwise, the old scheme stays in-place.
       --enable-auto-protect-node-port-range                  Append NodePort range to net.ipv4.ip_local_reserved_ports if it overlaps with ephemeral port range (net.ipv4.ip_local_port_range) (default true)
       --enable-bandwidth-manager                             Enable BPF bandwidth manager
       --enable-bpf-clock-probe                               Enable BPF clock source probing for more efficient tick retrieval
       --enable-bpf-masquerade                                Masquerade packets from endpoints leaving the host with BPF instead of iptables
       --enable-bpf-tproxy                                    Enable BPF-based proxy redirection, if support available
+      --enable-custom-calls                                  Enable tail call hooks for custom eBPF programs
       --enable-endpoint-health-checking                      Enable connectivity health checking between virtual endpoints (default true)
       --enable-endpoint-routes                               Use per endpoint routes instead of routing via cilium_host
       --enable-external-ips                                  Enable k8s service externalIPs feature (requires enabling enable-node-port) (default true)
       --enable-health-check-nodeport                         Enables a healthcheck nodePort server for NodePort services with 'healthCheckNodePort' being set (default true)
       --enable-health-checking                               Enable connectivity health checking (default true)
-      --enable-host-firewall                                 Enable host network policies (beta)
+      --enable-host-firewall                                 Enable host network policies
       --enable-host-legacy-routing                           Enable the legacy host forwarding model which does not bypass upper stack in host namespace
       --enable-host-port                                     Enable k8s hostPort mapping feature (requires enabling enable-node-port) (default true)
       --enable-host-reachable-services                       Enable reachability of services for host applications
       --enable-hubble                                        Enable hubble server
+      --enable-hubble-recorder-api                           Enable the Hubble recorder API (default true)
       --enable-identity-mark                                 Enable setting identity mark for local traffic (default true)
       --enable-ip-masq-agent                                 Enable BPF ip-masq-agent
       --enable-ipsec                                         Enable IPSec support
       --enable-ipv4                                          Enable IPv4 support (default true)
       --enable-ipv4-fragment-tracking                        Enable IPv4 fragments tracking for L4-based lookups (default true)
+      --enable-ipv4-masquerade                               Masquerade IPv4 traffic from endpoints leaving the host (default true)
       --enable-ipv6                                          Enable IPv6 support (default true)
+      --enable-ipv6-masquerade                               Masquerade IPv6 traffic from endpoints leaving the host (default true)
       --enable-ipv6-ndp                                      Enable IPv6 NDP support
       --enable-k8s-api-discovery                             Enable discovery of Kubernetes API groups and resources with the discovery API
       --enable-k8s-endpoint-slice                            Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it (default true)
@@ -95,11 +104,13 @@ cilium-agent [flags]
       --enable-monitor                                       Enable the monitor unix domain socket server (default true)
       --enable-node-port                                     Enable NodePort type services by Cilium
       --enable-policy string                                 Enable policy enforcement (default "default")
+      --enable-recorder                                      Enable BPF datapath pcap recorder
       --enable-remote-node-identity                          Enable use of remote node identity
       --enable-session-affinity                              Enable support for service session affinity
       --enable-svc-source-range-check                        Enable check of service source ranges (currently, only for LoadBalancer) (default true)
       --enable-tracing                                       Enable tracing while determining policy (debugging)
       --enable-well-known-identities                         Enable well-known identities for known Kubernetes components (default true)
+      --enable-wireguard                                     Enable wireguard
       --enable-xt-socket-fallback                            Enable fallback for missing xt_socket module (default true)
       --encrypt-interface string                             Transparent encryption interface
       --encrypt-node                                         Enables encrypting traffic from non-Cilium pods and host networking
@@ -123,9 +134,15 @@ cilium-agent [flags]
       --hubble-disable-tls                                   Allow Hubble server to run on the given listen address without TLS.
       --hubble-event-buffer-capacity int                     Capacity of Hubble events buffer. The provided value must be one less than an integer power of two and no larger than 65535 (ie: 1, 3, ..., 2047, 4095, ..., 65535) (default 4095)
       --hubble-event-queue-size int                          Buffer size of the channel to receive monitor events.
+      --hubble-export-file-compress                          Compress rotated Hubble export files.
+      --hubble-export-file-max-backups int                   Number of rotated Hubble export files to keep. (default 5)
+      --hubble-export-file-max-size-mb int                   Size in MB at which to rotate Hubble export file. (default 10)
+      --hubble-export-file-path string                       Filepath to write Hubble events to.
       --hubble-listen-address string                         An additional address for Hubble server to listen to, e.g. ":4244"
       --hubble-metrics strings                               List of Hubble metrics to enable.
       --hubble-metrics-server string                         Address to serve Hubble metrics on.
+      --hubble-recorder-sink-queue-size int                  Queue size of each Hubble recorder sink (default 1024)
+      --hubble-recorder-storage-path string                  Directory in which pcap files created via the Hubble Recorder API are stored (default "/var/run/cilium/pcaps")
       --hubble-socket-path string                            Set hubble's socket path to listen for connections (default "/var/run/cilium/hubble.sock")
       --hubble-tls-cert-file string                          Path to the public key file for the Hubble server. The file must contain PEM encoded data.
       --hubble-tls-client-ca-files strings                   Paths to one or more public key files of client CA certificates to use for TLS with mutual authentication (mTLS). The files must contain PEM encoded data. When provided, this option effectively enables mTLS.
@@ -133,6 +150,7 @@ cilium-agent [flags]
       --identity-allocation-mode string                      Method to use for identity allocation (default "kvstore")
       --identity-change-grace-period duration                Time to wait before using new identity on endpoint identity change (default 5s)
       --install-iptables-rules                               Install base iptables rules for cilium to mainly interact with kube-proxy (and masquerading) (default true)
+      --install-no-conntrack-iptables-rules                  Install Iptables rules to skip netfilter connection tracking on all pod traffic. This option is only effective when Cilium is running in direct routing and full KPR mode. Moreover, this option cannot be enabled when Cilium is running in a managed Kubernetes environment or in a chained CNI setup.
       --ip-allocation-timeout duration                       Time after which an incomplete CIDR allocation is considered failed (default 2m0s)
       --ip-masq-agent-config-path string                     ip-masq-agent configuration file path (default "/etc/config/ip-masq-agent")
       --ipam string                                          Backend to use for IPAM (default "cluster-pool")
@@ -170,10 +188,11 @@ cilium-agent [flags]
       --label-prefix-file string                             Valid label prefixes file path
       --labels strings                                       List of label prefixes used to determine identity of an endpoint
       --lib-dir string                                       Directory path to store runtime build environment (default "/var/lib/cilium")
+      --local-router-ipv4 string                             Link-local IPv4 used for Cilium's router devices
+      --local-router-ipv6 string                             Link-local IPv6 used for Cilium's router devices
       --log-driver strings                                   Logging endpoints to use for example syslog
-      --log-opt map                                          Log driver options for cilium (default map[])
+      --log-opt map                                          Log driver options for cilium-agent, configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local5","syslog.tag":"cilium-agent"} (default map[])
       --log-system-load                                      Enable periodic logging of system load
-      --masquerade                                           Masquerade packets from endpoints leaving the host (default true)
       --metrics strings                                      Metrics that should be enabled or disabled from the default metric list. (+metric_foo to enable metric_foo , -metric_bar to disable metric_bar)
       --monitor-aggregation string                           Level of monitor aggregation for traces from the datapath (default "None")
       --monitor-aggregation-flags strings                    TCP flags that trigger monitor reports when monitor aggregation is enabled (default [syn,fin,rst])
@@ -187,6 +206,7 @@ cilium-agent [flags]
       --policy-audit-mode                                    Enable policy audit (non-drop) mode
       --policy-queue-size int                                size of queues for policy-related events (default 100)
       --pprof                                                Enable serving the pprof debugging API
+      --pprof-port int                                       Port that the pprof listens on (default 6060)
       --preallocate-bpf-maps                                 Enable BPF map pre-allocation (default true)
       --prefilter-device string                              Device facing external network for XDP prefiltering (default "undefined")
       --prefilter-mode string                                Prefilter mode via XDP ("native", "generic") (default "native")
@@ -205,6 +225,7 @@ cilium-agent [flags]
       --tofqdns-dns-reject-response-code string              DNS response code for rejecting DNS requests, available options are '[nameError refused]' (default "refused")
       --tofqdns-enable-dns-compression                       Allow the DNS proxy to compress responses to endpoints that are larger than 512 Bytes or the EDNS0 option, if present (default true)
       --tofqdns-endpoint-max-ip-per-hostname int             Maximum number of IPs to maintain per FQDN name for each endpoint (default 50)
+      --tofqdns-idle-connection-grace-period duration        Time during which idle but previously active connections with expired DNS lookups are still considered alive (default 0s)
       --tofqdns-max-deferred-connection-deletes int          Maximum number of IPs to retain for expired DNS lookups with still-active connections (default 10000)
       --tofqdns-min-ttl int                                  The minimum time, in seconds, to use DNS data for toFQDNs policies. (default 3600 )
       --tofqdns-pre-cache string                             DNS cache data at this path is preloaded on agent startup

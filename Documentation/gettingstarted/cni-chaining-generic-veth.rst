@@ -14,6 +14,8 @@ The generic veth chaining plugin enables CNI chaining on top of any CNI plugin
 that is using a veth device model. The majority of CNI plugins use such a
 model.
 
+.. include:: cni-chaining-limitations.rst
+
 Validate that the current CNI plugin is using veth
 ==================================================
 
@@ -85,4 +87,4 @@ Deploy Cilium release via Helm:
       --set cni.customConf=true \\
       --set cni.configMap=cni-configuration \\
       --set tunnel=disabled \\
-      --set masquerade=false
+      --set enableIPv4Masquerade=false

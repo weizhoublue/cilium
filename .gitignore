@@ -37,6 +37,7 @@ coverage-all-tmp.out
 
 .DS_Store
 .idea/
+.vscode/
 *.plist
 
 *_bash_completion
@@ -92,9 +93,12 @@ LICENSE.all
 # Not to be ignored by docker.
 GIT_VERSION
 
-# During image builds following files get created
+# The following files get created during image builds
 .buildx
 .buildx_builder
 
 # Local developer config to be executed in the dev VM and CI VMs started locally
 .devvmrc
+
+# Generated dockerignore files
+images/*/Dockerfile.dockerignore

@@ -50,6 +50,10 @@ const (
 	// which corresponds to policy_verdict_notify defined in bpf/lib/policy_log.h
 	MessageTypePolicyVerdict
 
+	// MessageTypeRecCapture is a BPF datapath notification carrying a RecorderCapture
+	// which corresponds to capture_msg defined in bpf/lib/pcap.h
+	MessageTypeRecCapture
+
 	// 129-255 are reserved for agent level events
 
 	// MessageTypeAccessLog contains a pkg/proxy/accesslog.LogRecord
@@ -67,6 +71,7 @@ const (
 	MessageTypeNameL7            = "l7"
 	MessageTypeNameAgent         = "agent"
 	MessageTypeNamePolicyVerdict = "policy-verdict"
+	MessageTypeNameRecCapture    = "recorder"
 )
 
 type MessageTypeFilter []int
@@ -81,6 +86,7 @@ var (
 		MessageTypeNameL7:            MessageTypeAccessLog,
 		MessageTypeNameAgent:         MessageTypeAgent,
 		MessageTypeNamePolicyVerdict: MessageTypePolicyVerdict,
+		MessageTypeNameRecCapture:    MessageTypeRecCapture,
 	}
 )
 
@@ -232,7 +238,8 @@ const (
 	AgentNotifyServiceDeleted
 )
 
-var notifyTable = map[AgentNotification]string{
+// AgentNotifications is a map of all supported agent notification types.
+var AgentNotifications = map[AgentNotification]string{
 	AgentNotifyUnspec:                    "unspecified",
 	AgentNotifyGeneric:                   "Message",
 	AgentNotifyStart:                     "Cilium agent started",
@@ -249,7 +256,7 @@ var notifyTable = map[AgentNotification]string{
 }
 
 func resolveAgentType(t AgentNotification) string {
-	if n, ok := notifyTable[t]; ok {
+	if n, ok := AgentNotifications[t]; ok {
 		return n
 	}
 

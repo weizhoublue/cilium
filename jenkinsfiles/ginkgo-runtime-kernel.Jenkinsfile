@@ -34,7 +34,7 @@ pipeline {
             )}"""
         BASE_IMAGE="""${sh(
                 returnStdout: true,
-                script: 'if [ "${run_with_race_detection}" = "" ]; then echo -n "scratch"; else echo -n "quay.io/cilium/cilium-runtime:2020-12-10@sha256:ee6f0f81fa73125234466c13fd16bed30cc3209daa2f57098f63e0285779e5f3"; fi'
+                script: 'if [ "${run_with_race_detection}" = "" ]; then echo -n "scratch"; else echo -n "quay.io/cilium/cilium-runtime:ed80679d06b551d2856ca1cd5733b71e7430adb2@sha256:05da74b6aef0c77a0bfdd646e4b559c803960526acba1e134d5edb674a7bd9fb"; fi'
             )}"""
     }
 
@@ -66,30 +66,6 @@ pipeline {
                 sh 'mkdir -p ${PROJ_PATH}'
                 sh 'ls -A | grep -v src | xargs mv -t ${PROJ_PATH}'
                 sh '/usr/local/bin/cleanup || true'
-            }
-        }
-        stage('Precheck') {
-            options {
-                timeout(time: 30, unit: 'MINUTES')
-            }
-
-            environment {
-                TESTDIR="${WORKSPACE}/${PROJ_PATH}/"
-            }
-            steps {
-               sh "cd ${TESTDIR}; make jenkins-precheck"
-            }
-            post {
-               always {
-                   sh "cd ${TESTDIR}; make clean-jenkins-precheck || true"
-               }
-               unsuccessful {
-                   script {
-                       if  (!currentBuild.displayName.contains('fail')) {
-                           currentBuild.displayName = 'precheck fail\n' + currentBuild.displayName
-                       }
-                   }
-               }
             }
         }
         stage('Preload vagrant boxes') {

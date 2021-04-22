@@ -5,17 +5,21 @@ spec:
     metadata:
       labels:
         k8s-app: hubble-generate-certs
+        {{- with .Values.certgen.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
-      serviceAccount: hubble-generate-certs
-      serviceAccountName: hubble-generate-certs
+      serviceAccount: {{ .Values.serviceAccounts.hubblecertgen.name | quote }}
+      serviceAccountName: {{ .Values.serviceAccounts.hubblecertgen.name | quote }}
       containers:
         - name: certgen
           image: {{ .Values.certgen.image.repository }}:{{ .Values.certgen.image.tag }}
           imagePullPolicy: {{ .Values.certgen.image.pullPolicy }}
           command:
             - "/usr/bin/cilium-certgen"
-          {{/* Because this is executed as a job, we pass the values as command line args instead of via config map,
-                this allows users to inspect the values used in past runs by inspecting the completed pod */ -}}
+          # Because this is executed as a job, we pass the values as command
+          # line args instead of via config map. This allows users to inspect
+          # the values used in past runs by inspecting the completed pod.
           args:
             - "--cilium-namespace={{ .Release.Namespace }}"
             - "--hubble-ca-reuse-secret=true"
@@ -36,6 +40,7 @@ spec:
             - "--hubble-server-cert-generate=false"
             {{- else }}
             - "--hubble-server-cert-generate=true"
+            - "--hubble-server-cert-common-name={{ list "*" (.Values.cluster.name | replace "." "-") "hubble-grpc.cilium.io" | join "." }}"
             - "--hubble-server-cert-validity-duration={{ $certValiditySecondsStr }}"
             - "--hubble-server-cert-secret-name=hubble-server-certs"
             {{- end }}

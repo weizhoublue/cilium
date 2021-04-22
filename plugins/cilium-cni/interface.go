@@ -31,6 +31,15 @@ func interfaceAdd(ipConfig *current.IPConfig, ipam *models.IPAMAddressResponse, 
 		return nil
 	}
 
+	var masq bool
+	if ipConfig.Version == "4" {
+		masq = conf.MasqueradeProtocols.IPV4
+	} else if ipConfig.Version == "6" {
+		masq = conf.MasqueradeProtocols.IPV6
+	} else {
+		return fmt.Errorf("Invalid IPConfig version: %s", ipConfig.Version)
+	}
+
 	allCIDRs := make([]*net.IPNet, 0, len(ipam.Cidrs))
 	for _, cidrString := range ipam.Cidrs {
 		_, cidr, err := net.ParseCIDR(cidrString)
@@ -40,20 +49,30 @@ func interfaceAdd(ipConfig *current.IPConfig, ipam *models.IPAMAddressResponse, 
 		allCIDRs = append(allCIDRs, cidr)
 	}
 	// Coalesce CIDRs into minimum set needed for route rules
+	// The routes set up here will be cleaned up by linuxrouting.Delete.
+	// Therefore the code here should be kept in sync with the deletion code.
 	ipv4CIDRs, _ := ip.CoalesceCIDRs(allCIDRs)
 	cidrs := make([]string, 0, len(ipv4CIDRs))
 	for _, cidr := range ipv4CIDRs {
 		cidrs = append(cidrs, cidr.String())
 	}
 
-	routingInfo, err := linuxrouting.NewRoutingInfo(ipam.Gateway, cidrs, ipam.MasterMac, conf.Masquerade)
+	routingInfo, err := linuxrouting.NewRoutingInfo(
+		ipam.Gateway,
+		cidrs,
+		ipam.MasterMac,
+		ipam.InterfaceNumber,
+		masq,
+	)
 	if err != nil {
 		return fmt.Errorf("unable to parse routing info: %v", err)
 	}
 
-	if err := routingInfo.Configure(ipConfig.Address.IP,
+	if err := routingInfo.Configure(
+		ipConfig.Address.IP,
 		int(conf.DeviceMTU),
-		conf.Masquerade); err != nil {
+		conf.EgressMultiHomeIPRuleCompat,
+	); err != nil {
 		return fmt.Errorf("unable to install ip rules and routes: %s", err)
 	}
 

@@ -273,7 +273,7 @@ func (w *Watcher) loop() {
 					//      (this e.g. happens in Kubernetes volume mounts. In,
 					//      that case the new target of the symlink will be the
 					//      new watchedPath.
-					// - watchedPath was a parent of targetPath
+					// - watchedPath was a parent of trackedPath
 					//    In this case we will start watching a parent of
 					//     the old watchedPath.
 					err := w.updateWatchedPath(trackedPath)
@@ -286,7 +286,7 @@ func (w *Watcher) loop() {
 					// redirected to a new target. We can detect this, if
 					// after the call to `updateWatchedPath` above, the
 					// tracked and watched path are identical. In such a
-					// case, we emit a create event.
+					// case, we emit a create event for the symlink.
 					newWatchedPath := w.trackedToWatchedPath[trackedPath]
 					if newWatchedPath == trackedPath {
 						w.Events <- Event{
@@ -343,11 +343,13 @@ func (w *Watcher) loop() {
 				}
 			}
 		case err := <-w.watcher.Errors:
-			log.WithError(err).Debug("Received fsnotify error")
+			log.WithError(err).Debug("Received fsnotify error while watching")
 			w.Errors <- err
 		case <-w.stop:
 			err := w.watcher.Close()
-			log.WithError(err).Debug("Received fsnotify error on close")
+			if err != nil {
+				log.WithError(err).Warn("Received fsnotify error on close")
+			}
 			close(w.Events)
 			close(w.Errors)
 			return

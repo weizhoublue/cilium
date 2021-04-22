@@ -15,6 +15,7 @@
 package peer
 
 import (
+	"context"
 	"strings"
 
 	"github.com/cilium/cilium/pkg/datapath"
@@ -116,6 +117,20 @@ func (h handler) NodeConfigurationChanged(_ datapath.LocalNodeConfiguration) err
 	return nil
 }
 
+// NodeNeighDiscoveryEnabled implements
+// datapath.NodeHandler.NodeNeighDiscoveryEnabled. It is a no-op.
+func (h handler) NodeNeighDiscoveryEnabled() bool {
+	// no-op
+	return false
+}
+
+// NodeNeighborRefresh implements
+// datapath.NodeHandler.NodeNeighborRefresh. It is a no-op.
+func (h handler) NodeNeighborRefresh(_ context.Context, _ types.Node) {
+	// no-op
+	return
+}
+
 // Close frees handler resources.
 func (h *handler) Close() {
 	close(h.stop)
@@ -165,7 +180,8 @@ func nodeAddress(n types.Node) string {
 //
 // When nodeName is not provided, an empty string is returned. All Dot (.) in
 // nodeName are replaced by Hyphen (-). When clusterName is not provided, it
-// defaults to the default cluster name.
+// defaults to the default cluster name. All Dot (.) in clusterName are
+// replaced by Hypen (-).
 func tlsServerName(nodeName, clusterName string) string {
 	if nodeName == "" {
 		return ""
@@ -176,9 +192,11 @@ func tlsServerName(nodeName, clusterName string) string {
 	if clusterName == "" {
 		clusterName = ciliumDefaults.ClusterName
 	}
+	// The cluster name may also contain dots.
+	cn := strings.ReplaceAll(clusterName, ".", "-")
 	return strings.Join([]string{
 		nn,
-		clusterName,
+		cn,
 		defaults.GRPCServiceName,
 		defaults.DomainName,
 	}, ".")

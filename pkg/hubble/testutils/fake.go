@@ -32,8 +32,6 @@ import (
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy"
 
-	"github.com/golang/protobuf/ptypes/timestamp"
-	"github.com/golang/protobuf/ptypes/wrappers"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 )
@@ -54,12 +52,29 @@ func (s *FakeGetFlowsServer) Send(response *observerpb.GetFlowsResponse) error {
 	panic("OnSend not set")
 }
 
+// FakeGetAgentEventsServer is used for unit tests and implements the
+// observerpb.Observer_GetAgentEventsServer interface.
+type FakeGetAgentEventsServer struct {
+	OnSend func(response *observerpb.GetAgentEventsResponse) error
+	*FakeGRPCServerStream
+}
+
+// Send implements observerpb.Observer_GetAgentEventsServer.Send.
+func (s *FakeGetAgentEventsServer) Send(response *observerpb.GetAgentEventsResponse) error {
+	if s.OnSend != nil {
+		return s.OnSend(response)
+	}
+	panic("OnSend not set")
+}
+
 // FakeObserverClient is used for unit tests and implements the
 // observerpb.ObserverClient interface.
 type FakeObserverClient struct {
-	OnGetFlows     func(ctx context.Context, in *observerpb.GetFlowsRequest, opts ...grpc.CallOption) (observerpb.Observer_GetFlowsClient, error)
-	OnGetNodes     func(ctx context.Context, in *observerpb.GetNodesRequest, opts ...grpc.CallOption) (*observerpb.GetNodesResponse, error)
-	OnServerStatus func(ctx context.Context, in *observerpb.ServerStatusRequest, opts ...grpc.CallOption) (*observerpb.ServerStatusResponse, error)
+	OnGetFlows       func(ctx context.Context, in *observerpb.GetFlowsRequest, opts ...grpc.CallOption) (observerpb.Observer_GetFlowsClient, error)
+	OnGetAgentEvents func(ctx context.Context, in *observerpb.GetAgentEventsRequest, opts ...grpc.CallOption) (observerpb.Observer_GetAgentEventsClient, error)
+	OnGetDebugEvents func(ctx context.Context, in *observerpb.GetDebugEventsRequest, opts ...grpc.CallOption) (observerpb.Observer_GetDebugEventsClient, error)
+	OnGetNodes       func(ctx context.Context, in *observerpb.GetNodesRequest, opts ...grpc.CallOption) (*observerpb.GetNodesResponse, error)
+	OnServerStatus   func(ctx context.Context, in *observerpb.ServerStatusRequest, opts ...grpc.CallOption) (*observerpb.ServerStatusResponse, error)
 }
 
 // GetFlows implements observerpb.ObserverClient.GetFlows.
@@ -68,6 +83,22 @@ func (c *FakeObserverClient) GetFlows(ctx context.Context, in *observerpb.GetFlo
 		return c.OnGetFlows(ctx, in, opts...)
 	}
 	panic("OnGetFlows not set")
+}
+
+// GetAgentEvents implements observerpb.ObserverClient.GetAgentEvents.
+func (c *FakeObserverClient) GetAgentEvents(ctx context.Context, in *observerpb.GetAgentEventsRequest, opts ...grpc.CallOption) (observerpb.Observer_GetAgentEventsClient, error) {
+	if c.OnGetAgentEvents != nil {
+		return c.OnGetAgentEvents(ctx, in, opts...)
+	}
+	panic("OnGetAgentEvents not set")
+}
+
+// GetDebugEvents implements observerpb.ObserverClient.GetDebugEvents.
+func (c *FakeObserverClient) GetDebugEvents(ctx context.Context, in *observerpb.GetDebugEventsRequest, opts ...grpc.CallOption) (observerpb.Observer_GetDebugEventsClient, error) {
+	if c.OnGetDebugEvents != nil {
+		return c.OnGetDebugEvents(ctx, in, opts...)
+	}
+	panic("OnGetDebugEvents not set")
 }
 
 // GetNodes implements observerpb.ObserverClient.GetNodes.
@@ -275,7 +306,8 @@ var NoopDNSGetter = FakeFQDNCache{
 
 // FakeEndpointGetter is used for unit tests that needs EndpointGetter.
 type FakeEndpointGetter struct {
-	OnGetEndpointInfo func(ip net.IP) (endpoint v1.EndpointInfo, ok bool)
+	OnGetEndpointInfo     func(ip net.IP) (endpoint v1.EndpointInfo, ok bool)
+	OnGetEndpointInfoByID func(id uint16) (endpoint v1.EndpointInfo, ok bool)
 }
 
 // GetEndpointInfo implements EndpointGetter.GetEndpointInfo.
@@ -286,9 +318,20 @@ func (f *FakeEndpointGetter) GetEndpointInfo(ip net.IP) (endpoint v1.EndpointInf
 	panic("OnGetEndpointInfo not set")
 }
 
+// GetEndpointInfoByID implements EndpointGetter.GetEndpointInfoByID.
+func (f *FakeEndpointGetter) GetEndpointInfoByID(id uint16) (endpoint v1.EndpointInfo, ok bool) {
+	if f.OnGetEndpointInfoByID != nil {
+		return f.OnGetEndpointInfoByID(id)
+	}
+	panic("GetEndpointInfoByID not set")
+}
+
 // NoopEndpointGetter always returns an empty response.
 var NoopEndpointGetter = FakeEndpointGetter{
 	OnGetEndpointInfo: func(ip net.IP) (endpoint v1.EndpointInfo, ok bool) {
+		return nil, false
+	},
+	OnGetEndpointInfoByID: func(id uint16) (endpoint v1.EndpointInfo, ok bool) {
 		return nil, false
 	},
 }
@@ -363,145 +406,6 @@ var NoopIdentityGetter = FakeIdentityGetter{
 	OnGetIdentity: func(securityIdentity uint32) (*models.Identity, error) {
 		return &models.Identity{}, nil
 	},
-}
-
-// FakeFlow implements v1.Flow for unit tests. All interface methods
-// return values exposed in the fields.
-type FakeFlow struct {
-	Time               *timestamp.Timestamp
-	Verdict            flowpb.Verdict
-	DropReason         uint32
-	Ethernet           *flowpb.Ethernet
-	IP                 *flowpb.IP
-	L4                 *flowpb.Layer4
-	Source             *flowpb.Endpoint
-	Destination        *flowpb.Endpoint
-	Type               flowpb.FlowType
-	NodeName           string
-	SourceNames        []string
-	DestinationNames   []string
-	L7                 *flowpb.Layer7
-	IsReply            *wrappers.BoolValue
-	EventType          *flowpb.CiliumEventType
-	SourceService      *flowpb.Service
-	DestinationService *flowpb.Service
-	TrafficDirection   flowpb.TrafficDirection
-	PolicyMatchType    uint32
-	DropReasonDesc     flowpb.DropReason
-}
-
-// Reset implements flowpb.Message for the FakeFlow.
-func (f *FakeFlow) Reset() {}
-
-// ProtoMessage implements flowpb.Message for the FakeFlow.
-func (f *FakeFlow) ProtoMessage() {}
-
-// String implements flowpb.Message for the FakeFlow.
-func (f *FakeFlow) String() string { return "fake flow message" }
-
-// GetTime implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetTime() *timestamp.Timestamp {
-	return f.Time
-}
-
-// GetVerdict implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetVerdict() flowpb.Verdict {
-	return f.Verdict
-}
-
-// GetDropReason implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetDropReason() uint32 {
-	return f.DropReason
-}
-
-// GetEthernet implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetEthernet() *flowpb.Ethernet {
-	return f.Ethernet
-}
-
-// GetIP implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetIP() *flowpb.IP {
-	return f.IP
-}
-
-// GetL4 implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetL4() *flowpb.Layer4 {
-	return f.L4
-}
-
-// GetSource implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetSource() *flowpb.Endpoint {
-	return f.Source
-}
-
-// GetDestination implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetDestination() *flowpb.Endpoint {
-	return f.Destination
-}
-
-// GetType implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetType() flowpb.FlowType {
-	return f.Type
-}
-
-// GetNodeName implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetNodeName() string {
-	return f.NodeName
-}
-
-// GetSourceNames implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetSourceNames() []string {
-	return f.SourceNames
-}
-
-// GetDestinationNames implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetDestinationNames() []string {
-	return f.DestinationNames
-}
-
-// GetL7 implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetL7() *flowpb.Layer7 {
-	return f.L7
-}
-
-// GetIsReply implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetIsReply() *wrappers.BoolValue {
-	return f.IsReply
-}
-
-// GetEventType implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetEventType() *flowpb.CiliumEventType {
-	return f.EventType
-}
-
-// GetSourceService implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetSourceService() *flowpb.Service {
-	return f.SourceService
-}
-
-// GetDestinationService implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetDestinationService() *flowpb.Service {
-	return f.DestinationService
-}
-
-// GetTrafficDirection implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetTrafficDirection() flowpb.TrafficDirection {
-	return f.TrafficDirection
-}
-
-// GetPolicyMatchType implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetPolicyMatchType() uint32 {
-	return f.PolicyMatchType
-}
-
-// GetDropReasonDesc implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetDropReasonDesc() flowpb.DropReason {
-	return f.DropReasonDesc
-}
-
-// GetSummary implements v1.Flow for the FakeFlow.
-func (f *FakeFlow) GetSummary() string {
-	return "deprecated"
 }
 
 // FakeEndpointInfo implements v1.EndpointInfo for unit tests. All interface

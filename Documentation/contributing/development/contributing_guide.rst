@@ -23,7 +23,7 @@ Clone and Provision Environment
       git clone https://github.com/cilium/cilium.git
       cd cilium
 
-#. Set up your :ref:`dev_env`
+#. Set up your :ref:`dev_env`.
 #. Check the GitHub issues for `good tasks to get started
    <https://github.com/cilium/cilium/issues?q=is%3Aopen+is%3Aissue+label%3Agood-first-issue>`_.
 
@@ -100,6 +100,15 @@ requirements have been met:
       the first 12 characters of the git SHA followed by the full commit title
       as seen above without breaking the line.
 
+#. If you change CLI arguments of any binaries in this repo, the CI will reject your PR if you don't
+   also update the command reference docs. To do so, make sure to run the ``postcheck`` make target.
+
+   .. code-block:: shell-session
+
+      $ make postcheck
+      $ git add Documentation/cmdref
+      $ git commit
+
 #. All commits are signed off. See the section :ref:`dev_coo`.
 
 #. Document any user-facing or breaking changes in ``Documentation/install/upgrade.rst``.
@@ -165,7 +174,7 @@ requirements have been met:
    +------------------------------+---------------------------------------------------------------------------+
    | ``kind/feature``             | This is a feature                                                         |
    +------------------------------+---------------------------------------------------------------------------+
-   | ``priority/release-blocker`` | This PR should block the current release                                  |
+   | ``release-blocker/X.Y``      | This PR should block the next X.Y release                                 |
    +------------------------------+---------------------------------------------------------------------------+
    | ``needs-backport/X.Y``       | PR needs to be backported to these stable releases                        |
    +------------------------------+---------------------------------------------------------------------------+
@@ -522,8 +531,4 @@ then you just add a line saying:
    Signed-off-by: Random J Developer <random@developer.example.org>
 
 Use your real name (sorry, no pseudonyms or anonymous contributions.)
-
-.. toctree::
-
-   ../../commit-access
 

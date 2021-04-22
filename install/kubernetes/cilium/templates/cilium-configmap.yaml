@@ -143,7 +143,17 @@ data:
   prometheus-serve-addr: ":{{ .Values.prometheus.port }}"
   # Port to expose Envoy metrics (e.g. "9095"). Envoy metrics listener will be disabled if this
   # field is not set.
+  {{- if .Values.proxy.prometheus.enabled }}
   proxy-prometheus-port: "{{ .Values.proxy.prometheus.port }}"
+  {{- end }}
+  {{- if .Values.prometheus.metrics }}
+  # Metrics that should be enabled or disabled from the default metric
+  # list. (+metric_foo to enable metric_foo , -metric_bar to disable
+  # metric_bar).
+  metrics: {{- range .Values.prometheus.metrics }}
+    {{ . }}
+  {{- end }}
+  {{- end }}
 {{- end }}
 
 {{- if .Values.operator.prometheus.enabled }}
@@ -274,6 +284,11 @@ data:
   # backend and affinity maps.
   bpf-lb-map-max: "{{ .Values.bpf.lbMapMax }}"
 {{- end }}
+  # bpf-lb-bypass-fib-lookup instructs Cilium to enable the FIB lookup bypass
+  # optimization for nodeport reverse NAT handling.
+{{- if hasKey .Values.bpf "lbBypassFIBLookup" }}
+  bpf-lb-bypass-fib-lookup: {{ .Values.bpf.lbBypassFIBLookup | quote }}
+{{- end }}
   # Pre-allocation of map entries allows per-packet latency to be reduced, at
   # the expense of up-front memory allocation for the entries in the maps. The
   # default value below will minimize memory usage in the default installation;
@@ -317,9 +332,21 @@ data:
   tunnel: {{ .Values.tunnel }}
 {{- end }}
 
-{{- if .Values.eni }}
+{{- if .Values.eni.enabled }}
   enable-endpoint-routes: "true"
   auto-create-cilium-node-resource: "true"
+{{- if .Values.eni.updateEC2AdapterLimitViaAPI }}
+  update-ec2-adapter-limit-via-api: "true"
+  # The below value is deprecated and will be removed in a future release, see https://github.com/cilium/cilium/issues/12396
+  update-ec2-apdater-limit-via-api: "true"
+{{- end }}
+{{- if .Values.eni.awsReleaseExcessIPs }}
+  aws-release-excess-ips: "true"
+{{- end }}
+  ec2-api-endpoint: {{ .Values.eni.ec2APIEndpoint | quote }}
+  eni-tags: {{ .Values.eni.eniTags | toRawJson | quote }}
+  subnet-ids-filter: {{ .Values.eni.subnetIDsFilter | quote }}
+  subnet-tags-filter: {{ .Values.eni.subnetTagsFilter | quote }}
 {{- end }}
 
 {{- if .Values.azure.enabled }}
@@ -329,6 +356,11 @@ data:
 {{- if .Values.azure.userAssignedIdentityID }}
   azure-user-assigned-identity-id: {{ .Values.azure.userAssignedIdentityID | quote }}
 {{- end }}
+{{- end }}
+
+{{- if .Values.alibabacloud.enabled }}
+  enable-endpoint-routes: "true"
+  auto-create-cilium-node-resource: "true"
 {{- end }}
 
 {{- if .Values.flannel.enabled }}
@@ -375,7 +407,9 @@ data:
 {{- end }}
 {{- end }}
 
-  masquerade: {{ .Values.masquerade | quote }}
+  enable-ipv4-masquerade: {{ .Values.enableIPv4Masquerade | quote }}
+  enable-ipv6-masquerade: {{ .Values.enableIPv6Masquerade | quote }}
+
 {{- if hasKey .Values.bpf "masquerade" }}
   enable-bpf-masquerade: {{ .Values.bpf.masquerade | quote }}
 {{- else if eq $defaultBpfMasquerade "true" }}
@@ -386,6 +420,12 @@ data:
 {{- end }}
 {{- if and .Values.ipMasqAgent .Values.ipMasqAgent.enabled }}
   enable-ip-masq-agent: "true"
+{{- end }}
+
+{{- if hasKey .Values "wireguard" }}
+{{- if .Values.wireguard.enabled }}
+  enable-wireguard: {{ .Values.wireguard.enabled | quote }}
+{{- end }}
 {{- end }}
 
 {{- if .Values.encryption.enabled }}
@@ -407,6 +447,11 @@ data:
 
   enable-xt-socket-fallback: {{ .Values.enableXTSocketFallback | quote }}
   install-iptables-rules: {{ .Values.installIptablesRules | quote }}
+{{- if or (.Values.azure.enabled) (.Values.eni.enabled) (.Values.gke.enabled) (ne .Values.cni.chainingMode "none") }}
+  install-no-conntrack-iptables-rules: "false"
+{{- else }}
+  install-no-conntrack-iptables-rules: {{ .Values.installNoConntrackIptablesRules | quote }}
+{{- end}}
 
 {{- if hasKey .Values "iptablesRandomFully" }}
   iptables-random-fully: {{ .Values.iptablesRandomFully | quote }}
@@ -524,6 +569,9 @@ data:
 {{- if hasKey .Values.k8s "requireIPv4PodCIDR" }}
   k8s-require-ipv4-pod-cidr: {{ .Values.k8s.requireIPv4PodCIDR | quote }}
 {{- end }}
+{{- if hasKey .Values.k8s "requireIPv6PodCIDR" }}
+  k8s-require-ipv6-pod-cidr: {{ .Values.k8s.requireIPv6PodCIDR | quote }}
+{{- end }}
 {{- if and .Values.endpointRoutes .Values.endpointRoutes.enabled }}
   enable-endpoint-routes: {{ .Values.endpointRoutes.enabled | quote }}
 {{- end }}
@@ -629,6 +677,10 @@ data:
   disable-cnp-status-updates: "true"
 {{- end }}
 
+{{- if .Values.enableK8sEventHandover }}
+  enable-k8s-event-handover: "true"
+{{- end }}
+
 {{- if hasKey .Values "crdWaitTimeout" }}
   crd-wait-timeout: {{ .Values.crdWaitTimeout | quote }}
 {{- else if ( ne $crdWaitTimeout "5m" ) }}
@@ -642,6 +694,17 @@ data:
 {{- if hasKey .Values.k8s "serviceProxyName" }}
   # Configure service proxy name for Cilium.
   k8s-service-proxy-name: {{ .Values.k8s.serviceProxyName | quote }}
+{{- end }}
+
+{{- if and .Values.customCalls .Values.customCalls.enabled }}
+  # Enable tail call hooks for custom eBPF programs.
+  enable-custom-calls: {{ .Values.customCalls.enabled | quote }}
+{{- end }}
+
+{{- if and .Values.bgp.enabled (not .Values.bgp.announce.loadbalancerIP) }}
+{{ fail "BGP was enabled, but no announcements were enabled. Please enable one or more announcements." }}
+{{- else if and .Values.bgp.enabled .Values.bgp.announce.loadbalancerIP }}
+  bgp-announce-lb-ip: {{ .Values.bgp.announce.loadbalancerIP | quote }}
 {{- end }}
 
 {{- if .Values.extraConfig }}
