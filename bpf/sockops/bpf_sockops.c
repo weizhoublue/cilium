@@ -61,17 +61,20 @@ static inline void bpf_sock_ops_ipv4(struct bpf_sock_ops *skops)
 	struct sock_key key = {};
 	int verdict;
 
+	// 抽取出 5元组
 	sk_extract4_key(skops, &key);
 
 	/* If endpoint a service use L4/L3 stack for now. These can be
 	 * pulled in as needed.
 	 */
+	// 如果目的是 serivce ？ 不做什么了
 	sk_lb4_key(&lb4_key, &key);
 	svc = lb4_lookup_service(&lb4_key, true);
 	if (svc)
 		return;
 
 	/* Policy lookup required to learn proxy port */
+	// 获取出 目的地址的  identity
 	if (1) {
 		struct remote_endpoint_info *info;
 
@@ -82,15 +85,20 @@ static inline void bpf_sock_ops_ipv4(struct bpf_sock_ops *skops)
 			dstID = WORLD_ID;
 	}
 
+	// 获取 L3/L4 policy 对数据包的 动作
 	verdict = policy_sk_egress(dstID, key.sip4, key.dport);
 	if (redirect_to_proxy(verdict)) {
 		__be32 host_ip = IPV4_GATEWAY;
 
+		// 源和目的  取反 来存储 key
 		key.dip4 = key.sip4;
 		key.dport = key.sport;
 		key.sip4 = host_ip;
-		key.sport = verdict;
+		key.sport = verdict; // proxy_port
 
+		// bpf_sock_hash_update 
+		// 记录 应用发出的数据 （他们会被重定向）
+		// 对于 需要重定向  到 envoy 的 数据，即 本地应用 到 envoy 的数据 ，  记录 其 socket 到 sockHash map
 		sock_hash_update(skops, &SOCK_OPS_MAP, &key, BPF_NOEXIST);
 		return;
 	}
@@ -103,17 +111,21 @@ static inline void bpf_sock_ops_ipv4(struct bpf_sock_ops *skops)
 	 * Then because these are local IPs that have passed LB/Policy/NAT
 	 * blocks redirect directly to socket.
 	 */
+	// 过滤掉那些 同 cilium 无关的 socket
 	exists = __lookup_ip4_endpoint(key.dip4);
 	if (!exists)
 		return;
 
 	dip4 = key.dip4;
 	dport = key.dport;
+	// 源和目的  取反 来存储 key
 	key.dip4 = key.sip4;
 	key.dport = key.sport;
 	key.sip4 = dip4;
 	key.sport = dport;
 
+	// 记录 发送到 应用的数据 
+	// 记录 到 sockHash map
 	sock_hash_update(skops, &SOCK_OPS_MAP, &key, BPF_NOEXIST);
 }
 #endif /* ENABLE_IPV4 */

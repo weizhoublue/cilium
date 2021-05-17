@@ -60,8 +60,11 @@ int bpf_redir_proxy(struct sk_msg_md *msg)
 	else
 		dstID = WORLD_ID;
 
+	// 判读数据包是否需要做重定向（代表了 应用 发出的 场景）
 	verdict = policy_sk_egress(dstID, key.sip4, key.dport);
-	if (verdict >= 0)
+	if (verdict >= 0)  //  policy->proxy_port
+		// 对 应用发出数据, 快速 重定向
+		// ?? 在哪 加速  envoy to local APP 
 		msg_redirect_hash(msg, &SOCK_OPS_MAP, &key, flags);
 	return SK_PASS;
 }

@@ -28,7 +28,7 @@ policy_sk_egress(__u32 identity, __u32 ip,  __u16 dport)
 	};
 
 	if (!map)
-		return CTX_ACT_OK;
+		return CTX_ACT_OK; // 0
 
 	/* Start with L3/L4 lookup. */
 	policy = map_lookup_elem(map, &key);
@@ -36,7 +36,7 @@ policy_sk_egress(__u32 identity, __u32 ip,  __u16 dport)
 		/* FIXME: Need byte counter */
 		__sync_fetch_and_add(&policy->packets, 1);
 		if (unlikely(policy->deny))
-			return DROP_POLICY_DENY;
+			return DROP_POLICY_DENY; // -181
 		return policy->proxy_port;
 	}
 
