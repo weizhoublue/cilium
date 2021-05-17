@@ -3,8 +3,9 @@
 
 include Makefile.digests ../../Makefile.defs
 
-HUBBLE_PROXY_VERSION := "v1.14.5"
-HUBBLE_UI_VERSION := "v0.7.3"
+HUBBLE_PROXY_VERSION := "v1.18.2@sha256:e8b37c1d75787dd1e712ff389b0d37337dc8a174a63bed9c34ba73359dc67da7"
+HUBBLE_UI_VERSION := "v0.7.9@sha256:e0e461c680ccd083ac24fe4f9e19e675422485f04d8720635ec41f2ba9e5562c"
+HUBBLE_UI_BACKEND_VERSION := "v0.7.9@sha256:632c938ef6ff30e3a080c59b734afb1fb7493689275443faa1435f7141aabe76"
 MANAGED_ETCD_VERSION := "v2.0.7"
 ETCD_VERSION := "v3.4.13"
 NODEINIT_VERSION := "62bfbe88c17778aad7bef9fa57ff9e2d4a9ba0d8"
@@ -49,26 +50,31 @@ update-versions:
 		cilium_version="v$(VERSION)";											\
 		branch="$$cilium_version";											\
 		hubble_version=$(HUBBLE_UI_VERSION);										\
+		hubble_backend_version=$(HUBBLE_UI_BACKEND_VERSION);								\
 		pull_policy="IfNotPresent";											\
 		use_digest="$(USE_DIGESTS)";													\
 		if echo "$(VERSION)" | grep -q $(LATEST_VERSION_REGEX); then							\
 			cilium_version="latest";										\
 			branch="master";											\
 			hubble_version="latest";										\
+			hubble_backend_version="latest";									\
 			pull_policy="Always";											\
 			use_digest="false";												\
 		elif echo "$(VERSION)" | grep -q $(DEV_VERSION_REGEX); then							\
 			cilium_version="v$(subst -dev,,$(VERSION))";								\
 			branch="$$cilium_version";										\
 			hubble_version="$(HUBBLE_UI_VERSION)";									\
+			hubble_backend_version="$(HUBBLE_UI_BACKEND_VERSION)";							\
 			pull_policy="Always";											\
 			use_digest="false";												\
 		fi;														\
 		sed -i 's;icon:.*;icon: $(LOGO_BASE_URL)/cilium@'$$branch'/$(LOGO_PATH);' $(CHART_FILE);			\
 		# image.tag operator.image.tag preflight.image.tag hubble.relay.image.tag;					\
 		sed -i 's/tag: .*/tag: '$$cilium_version'/g' $(CILIUM_VALUES);							\
-		# hubble.ui.frontend.image.tag hubble.ui.backend.image.tag;							\
-		sed -i '/repository.*hubble-ui.*/{!b;n;s/tag.*/tag: '$$hubble_version'/}' $(CILIUM_VALUES);			\
+		# hubble.ui.frontend.image.tag;											\
+		sed -i '/repository.*hubble-ui$$/{!b;n;s/tag.*/tag: '$$hubble_version'/}' $(CILIUM_VALUES);			\
+		# hubble.ui.backend.image.tag;											\
+		sed -i '/repository.*hubble-ui-backend.*/{!b;n;s/tag.*/tag: '$$hubble_backend_version'/}' $(CILIUM_VALUES);	\
 		# etcd.image.tag												\
 		sed -i '/repository.*etcd-operator.*/{!b;n;s/tag.*/tag: '$(MANAGED_ETCD_VERSION)'/}' $(CILIUM_VALUES)		\
 		# clustermesh.apiserver.etcd.image.tag										\
@@ -100,6 +106,7 @@ check-docker-images:
 	$(QUIET)\
          HUBBLE_PROXY_VERSION=$(HUBBLE_PROXY_VERSION) \
          HUBBLE_UI_VERSION=$(HUBBLE_UI_VERSION) \
+         HUBBLE_UI_BACKEND_VERSION=$(HUBBLE_UI_BACKEND_VERSION) \
          MANAGED_ETCD_VERSION=$(MANAGED_ETCD_VERSION) \
          ETCD_VERSION=$(ETCD_VERSION) \
          NODEINIT_VERSION=$(NODEINIT_VERSION) \

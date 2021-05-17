@@ -34,6 +34,7 @@ import (
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/identity"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/maglev"
@@ -287,8 +288,15 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			dsrEncapNone
 			dsrEncapIPIP
 		)
+		const (
+			dsrL4XlateInv = iota
+			dsrL4XlateFrontend
+			dsrL4XlateBackend
+		)
 		cDefinesMap["DSR_ENCAP_IPIP"] = fmt.Sprintf("%d", dsrEncapIPIP)
 		cDefinesMap["DSR_ENCAP_NONE"] = fmt.Sprintf("%d", dsrEncapNone)
+		cDefinesMap["DSR_XLATE_FRONTEND"] = fmt.Sprintf("%d", dsrL4XlateFrontend)
+		cDefinesMap["DSR_XLATE_BACKEND"] = fmt.Sprintf("%d", dsrL4XlateBackend)
 		if option.Config.NodePortMode == option.NodePortModeDSR ||
 			option.Config.NodePortMode == option.NodePortModeHybrid {
 			cDefinesMap["ENABLE_DSR"] = "1"
@@ -303,8 +311,18 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			} else if option.Config.LoadBalancerDSRDispatch == option.DSRDispatchIPIP {
 				cDefinesMap["DSR_ENCAP_MODE"] = fmt.Sprintf("%d", dsrEncapIPIP)
 			}
+			if option.Config.LoadBalancerDSRDispatch == option.DSRDispatchIPIP {
+				if option.Config.LoadBalancerDSRL4Xlate == option.DSRL4XlateFrontend {
+					cDefinesMap["DSR_XLATE_MODE"] = fmt.Sprintf("%d", dsrL4XlateFrontend)
+				} else if option.Config.LoadBalancerDSRL4Xlate == option.DSRL4XlateBackend {
+					cDefinesMap["DSR_XLATE_MODE"] = fmt.Sprintf("%d", dsrL4XlateBackend)
+				}
+			} else {
+				cDefinesMap["DSR_XLATE_MODE"] = fmt.Sprintf("%d", dsrL4XlateInv)
+			}
 		} else {
 			cDefinesMap["DSR_ENCAP_MODE"] = fmt.Sprintf("%d", dsrEncapInv)
+			cDefinesMap["DSR_XLATE_MODE"] = fmt.Sprintf("%d", dsrL4XlateInv)
 		}
 		if option.Config.EnableIPv4 {
 			if option.Config.LoadBalancerRSSv4CIDR != "" {
@@ -436,30 +454,23 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		cDefinesMap["ENABLE_HOST_FIREWALL"] = "1"
 	}
 
-	if iface := option.Config.EncryptInterface; len(iface) != 0 {
-		// When FIB lookup is not supported (older kernels)  we need to
-		// pick an interface so pick first interface in list. Then we pick
-		// an IPv4 address to use by selecting link IPAddr. In case with
-		// kernel support, the kernel datapath will use the FIB lookup helper
-		// and this define is ignored.
-		link, err := netlink.LinkByName(iface[0])
-		if err == nil {
-			cDefinesMap["ENCRYPT_IFACE"] = fmt.Sprintf("%d", link.Attrs().Index)
-
-			addr, err := netlink.AddrList(link, netlink.FAMILY_V4)
-			if err != nil {
-				return err
+	if option.Config.EnableIPSec {
+		a := byteorder.HostSliceToNetwork(node.GetIPv4(), reflect.Uint32).(uint32)
+		cDefinesMap["IPV4_ENCRYPT_IFACE"] = fmt.Sprintf("%d", a)
+		if iface := option.Config.EncryptInterface; len(iface) != 0 {
+			link, err := netlink.LinkByName(iface[0])
+			if err == nil {
+				cDefinesMap["ENCRYPT_IFACE"] = fmt.Sprintf("%d", link.Attrs().Index)
 			}
-			if len(addr) == 0 {
-				return fmt.Errorf("no IPv4 addresses available in encrypt interface %q", iface)
-			}
-			a := byteorder.HostSliceToNetwork(addr[0].IPNet.IP, reflect.Uint32).(uint32)
-			cDefinesMap["IPV4_ENCRYPT_IFACE"] = fmt.Sprintf("%d", a)
+		}
+		// If we are using IPAMENI always use IP_POOLS datapath, the pod subnets
+		// will be auto-discovered later at runtime.
+		if (option.Config.IPAM == ipamOption.IPAMENI) ||
+			option.Config.IsPodSubnetsDefined() {
+			cDefinesMap["IP_POOLS"] = "1"
 		}
 	}
-	if option.Config.IsPodSubnetsDefined() {
-		cDefinesMap["IP_POOLS"] = "1"
-	}
+
 	if option.Config.EnableNodePort {
 		if option.Config.EnableIPv4 {
 			cDefinesMap["SNAT_MAPPING_IPV4"] = nat.MapNameSnat4Global
@@ -595,9 +606,6 @@ is_l3; })`))
 
 func (h *HeaderfileWriter) writeNetdevConfig(w io.Writer, cfg datapath.DeviceConfiguration) {
 	fmt.Fprint(w, cfg.GetOptions().GetFmtList())
-	if option.Config.IsFlannelMasterDeviceSet() {
-		fmt.Fprint(w, "#define HOST_REDIRECT_TO_INGRESS 1\n")
-	}
 
 	// In case the Linux kernel doesn't support LPM map type, pass the set
 	// of prefix length for the datapath to lookup the map.
@@ -678,8 +686,6 @@ func (h *HeaderfileWriter) writeStaticData(fw io.Writer, e datapath.EndpointConf
 		fmt.Fprint(fw, defineUint32("LXC_ID", uint32(e.GetID())))
 	}
 
-	fmt.Fprint(fw, defineUint32("HOST_EP_ID", uint32(node.GetEndpointID())))
-
 	fmt.Fprint(fw, defineMAC("NODE_MAC", e.GetNodeMAC()))
 
 	secID := e.GetIdentityLocked().Uint32()
@@ -746,6 +752,8 @@ func (h *HeaderfileWriter) writeTemplateConfig(fw *bufio.Writer, e datapath.Endp
 		}
 	}
 
+	fmt.Fprintf(fw, "#define HOST_EP_ID %d\n", uint32(node.GetEndpointID()))
+
 	if !e.HasIpvlanDataPath() {
 		if e.RequireARPPassthrough() {
 			fmt.Fprint(fw, "#define ENABLE_ARP_PASSTHROUGH 1\n")
@@ -754,9 +762,6 @@ func (h *HeaderfileWriter) writeTemplateConfig(fw *bufio.Writer, e datapath.Endp
 		}
 
 		fmt.Fprint(fw, "#define ENABLE_HOST_REDIRECT 1\n")
-		if option.Config.IsFlannelMasterDeviceSet() {
-			fmt.Fprint(fw, "#define HOST_REDIRECT_TO_INGRESS 1\n")
-		}
 	}
 
 	if e.ConntrackLocalLocked() {

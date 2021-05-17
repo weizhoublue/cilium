@@ -12,7 +12,6 @@ pipeline {
         K8S_VERSION="1.21"
         KERNEL="419"
         SERVER_BOX = "cilium/ubuntu-4-19"
-        CNI_INTEGRATION=setIfLabel("integration/cni-flannel", "FLANNEL", "")
     }
 
     options {
@@ -52,6 +51,9 @@ pipeline {
                     }
                     if (env.run_with_race_detection?.trim()) {
                         env.DOCKER_TAG = env.DOCKER_TAG + "-race"
+                        env.RACE = 1
+                        env.LOCKDEBUG = 1
+                        env.BASE_IMAGE = "quay.io/cilium/cilium-runtime:8fe001a11f25ad9e6676c19b0431f83c893fbab4@sha256:921ab4bf310f562ce7d4aea1f5c2bc8651f273f1a93b36c71b9cb9954869ef68"
                     }
                 }
             }

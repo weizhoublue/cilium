@@ -40,17 +40,6 @@ installation of the ``kube-proxy`` add-on:
 
       kubeadm init --skip-phases=addon/kube-proxy
 
-For existing installations with ``kube-proxy`` running as a DaemonSet, remove it
-by using the following commands:
-
-.. code:: bash
-
-      kubectl -n kube-system delete ds kube-proxy
-      # Delete the configmap as well to avoid kube-proxy being reinstalled during a kubeadm upgrade (works only for K8s 1.19 and newer)
-      kubectl -n kube-system delete cm kube-proxy
-      # Run on each node:
-      iptables-restore <(iptables-save | grep -v KUBE)
-
 Afterwards, join worker nodes by specifying the control-plane node IP address and
 the token returned by ``kubeadm init``:
 
@@ -67,6 +56,19 @@ the token returned by ``kubeadm init``:
     You can validate this by running ``kubectl get nodes -o wide`` to see whether
     each node has an ``InternalIP`` which is assigned to a device with the same
     name on each node.
+
+For existing installations with ``kube-proxy`` running as a DaemonSet, remove it
+by using the following commands below. **Careful:** Be aware that this will break
+existing service connections. It will also stop service related traffic until the
+Cilium replacement has been installed:
+
+.. code:: bash
+
+      kubectl -n kube-system delete ds kube-proxy
+      # Delete the configmap as well to avoid kube-proxy being reinstalled during a kubeadm upgrade (works only for K8s 1.19 and newer)
+      kubectl -n kube-system delete cm kube-proxy
+      # Run on each node:
+      iptables-restore <(iptables-save | grep -v KUBE)
 
 .. include:: k8s-install-download-release.rst
 
@@ -783,7 +785,11 @@ the IP addresses of native devices which have the default route on the host or
 have Kubernetes InternalIP or ExternalIP assigned. InternalIP is preferred over
 ExternalIP if both exist. To change the devices, set their names in the
 ``devices`` Helm option, e.g. ``devices='{eth0,eth1,eth2}'``. Each
-listed device has to be named the same on all Cilium managed nodes.
+listed device has to be named the same on all Cilium managed nodes. Alternatively
+if the devices do not match across different nodes, the wildcard option can be 
+used, e.g. ``devices=eth+``, which would match any device starting with prefix
+``eth``. If no device can be matched the Cilium agent will try to perform auto 
+detection.
 
 When multiple devices are used, only one device can be used for direct routing
 between Cilium nodes. By default, if a single device was detected or specified
@@ -1000,7 +1006,16 @@ Cilium's eBPF kube-proxy replacement can be configured in several modes, i.e. it
 replace kube-proxy entirely or it can co-exist with kube-proxy on the system if the
 underlying Linux kernel requirements do not support a full kube-proxy replacement.
 
-This section therefore elaborates on the various ``kubeProxyReplacement`` options:
+**Careful:** When deploying the eBPF kube-proxy replacement under co-existence with
+kube-proxy on the system, be aware that both mechanisms operate independent of each
+other. Meaning, if the eBPF kube-proxy replacement is added or removed on an already
+*running* cluster in order to delegate operation from respectively back to kube-proxy,
+then it must be expected that existing connections will break since, for example,
+both NAT tables are not aware of each other. If deployed in co-existence on a newly
+spawned up node/cluster which does not yet serve user traffic, then this is not an
+issue.
+
+This section elaborates on the various ``kubeProxyReplacement`` options:
 
 - ``kubeProxyReplacement=strict``: This option expects a kube-proxy-free
   Kubernetes setup where Cilium is expected to fully replace all kube-proxy
@@ -1183,6 +1198,13 @@ working, take a look at `this KEP
     free mode, make sure that default Kubernetes services like ``kube-dns`` and ``kubernetes``
     have the required label value.
 
+External Access To ClusterIP Services
+*************************************
+
+As per `k8s Service <https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types>`__,
+Cilium's eBPF kube-proxy replacement by default disallows access to a ClusterIP service from outside the cluster.
+This can be allowed by setting ``bpf.lbExternalClusterIP=true``.
+
 Limitations
 ###########
 
@@ -1213,9 +1235,6 @@ Limitations
       release introduces ``EndpointSliceMirroring`` controller that mirrors custom ``Endpoints``
       resources to corresponding ``EndpointSlices`` and thus allowing backing ``Endpoints``
       to work. For a more detailed discussion see :gh-issue:`12438`.
-    * As per `k8s Service <https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types>`__,
-      Cilium's eBPF kube-proxy replacement disallow access of a ClusterIP service
-      from outside a cluster.
 
 Further Readings
 ################

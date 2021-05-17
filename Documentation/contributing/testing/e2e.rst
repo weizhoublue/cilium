@@ -470,7 +470,7 @@ This mode expects:
 - A populated K8S_VERSION environment variable set to the version of the cluster
 
 - If appropriate, set the ``CNI_INTEGRATION`` environment variable set to one
-  of ``flannel``, ``gke``, ``eks``, ``eks-chaining``, ``microk8s`` or ``minikube``. This selects
+  of ``gke``, ``eks``, ``eks-chaining``, ``microk8s`` or ``minikube``. This selects
   matching configuration overrides for cilium.
   Leaving this unset for non-matching integrations is also correct.
 
@@ -498,10 +498,6 @@ cluster.
 
 2- Invoke the tests from ``cilium/test`` with options set as explained in
 `Running End-To-End Tests In Other Environments via kubeconfig`_
-
-.. note:: GKE clusters may have namespaces stuck at the ``Terminating`` state,
-          causing Ginkgo tests to fail. If so, you'll see them in ``kubectl get ns``,
-          and can get rid of them by running ``cilium/test/gke/clean-cluster.sh``.
 
 .. note:: The tests require the ``NATIVE_CIDR`` environment variable to be set to
           the value of the cluster IPv4 CIDR returned by the ``gcloud container

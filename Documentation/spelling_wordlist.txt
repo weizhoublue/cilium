@@ -56,6 +56,7 @@ Freescale
 Fsnotify
 GCE
 Gartrell
+Gbit
 Geneve
 GiB
 Github
@@ -98,6 +99,7 @@ Lookup
 Lund
 Lx
 Maglev
+Mainboard
 Majkowski
 Marek
 MaskSize
@@ -256,6 +258,7 @@ bugfix
 bugfixes
 bugtool
 buildx
+busybox
 bytecode
 cBPF
 callee
@@ -496,6 +499,7 @@ jenkins
 jeq
 jge
 jgt
+jitter
 jle
 jlt
 jne
@@ -651,6 +655,7 @@ openSUSE
 openapi
 openssl
 operatorPrometheus
+optimisations
 optimizations
 orchestrator
 org
@@ -836,6 +841,7 @@ udp
 ui
 uid
 uint
+unencrypted
 uninline
 uninstall
 uninstallOnExit

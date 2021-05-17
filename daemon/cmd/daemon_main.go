@@ -29,7 +29,6 @@ import (
 	"github.com/cilium/cilium/api/v1/server/restapi"
 	"github.com/cilium/cilium/pkg/aws/eni"
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/cleanup"
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/controller"
@@ -231,6 +230,9 @@ func init() {
 	flags.Bool(option.AnnotateK8sNode, defaults.AnnotateK8sNode, "Annotate Kubernetes node")
 	option.BindEnv(option.AnnotateK8sNode)
 
+	flags.Duration(option.ARPPingRefreshPeriod, 5*time.Minute, "Period for remote node ARP entry refresh (set 0 to disable)")
+	option.BindEnv(option.ARPPingRefreshPeriod)
+
 	flags.Bool(option.AutoCreateCiliumNodeResource, defaults.AutoCreateCiliumNodeResource, "Automatically create CiliumNode resource for own node on startup")
 	option.BindEnv(option.AutoCreateCiliumNodeResource)
 
@@ -278,7 +280,7 @@ func init() {
 	flags.StringSlice(option.DebugVerbose, []string{}, "List of enabled verbose debug groups")
 	option.BindEnv(option.DebugVerbose)
 
-	flags.StringSlice(option.Devices, []string{}, "List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall)")
+	flags.StringSlice(option.Devices, []string{}, "List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'")
 	option.BindEnv(option.Devices)
 
 	flags.String(option.DirectRoutingDevice, "", "Device name used to connect nodes in direct routing mode (required only by BPF NodePort; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)")
@@ -407,6 +409,9 @@ func init() {
 
 	flags.Bool(option.ForceLocalPolicyEvalAtSource, defaults.ForceLocalPolicyEvalAtSource, "Force policy evaluation of all local communication at the source endpoint")
 	option.BindEnv(option.ForceLocalPolicyEvalAtSource)
+
+	flags.Bool(option.HTTPNormalizePath, true, "Use Envoy HTTP path normalization options, which currently includes RFC 3986 path normalization, Envoy merge slashes option, and unescaping and redirecting for paths that contain escaped slashes. These are necessary to keep path based access control functional, and should not interfere with normal operation. Set this to false only with caution.")
+	option.BindEnv(option.HTTPNormalizePath)
 
 	flags.String(option.HTTP403Message, "", "Message returned in proxy L7 403 body")
 	flags.MarkHidden(option.HTTP403Message)
@@ -589,6 +594,9 @@ func init() {
 	flags.String(option.LoadBalancerDSRDispatch, option.DSRDispatchOption, "BPF load balancing DSR dispatch method (\"opt\", \"ipip\")")
 	option.BindEnv(option.LoadBalancerDSRDispatch)
 
+	flags.String(option.LoadBalancerDSRL4Xlate, option.DSRL4XlateFrontend, "BPF load balancing DSR L4 DNAT method for IPIP (\"frontend\", \"backend\")")
+	option.BindEnv(option.LoadBalancerDSRL4Xlate)
+
 	flags.String(option.LoadBalancerRSSv4CIDR, "", "BPF load balancing RSS outer source IPv4 CIDR prefix for IPIP")
 	option.BindEnv(option.LoadBalancerRSSv4CIDR)
 
@@ -667,7 +675,6 @@ func init() {
 
 	flags.Bool(option.EnableEgressGateway, false, "Enable egress gateway")
 	option.BindEnv(option.EnableEgressGateway)
-	flags.MarkHidden(option.EnableEgressGateway)
 
 	flags.String(option.IPMasqAgentConfigPath, "/etc/config/ip-masq-agent", "ip-masq-agent configuration file path")
 	option.BindEnv(option.IPMasqAgentConfigPath)
@@ -738,16 +745,6 @@ func init() {
 
 	flags.Bool(option.Version, false, "Print version information")
 	option.BindEnv(option.Version)
-
-	flags.String(option.FlannelMasterDevice, "",
-		"Installs a BPF program to allow for policy enforcement in the given network interface. "+
-			"Allows to run Cilium on top of other CNI plugins that provide networking, "+
-			"e.g. flannel, where for flannel, this value should be set with 'cni0'. [EXPERIMENTAL]")
-	option.BindEnv(option.FlannelMasterDevice)
-
-	flags.Bool(option.FlannelUninstallOnExit, false, fmt.Sprintf("When used along the %s "+
-		"flag, it cleans up all BPF programs installed when Cilium agent is terminated.", option.FlannelMasterDevice))
-	option.BindEnv(option.FlannelUninstallOnExit)
 
 	flags.Bool(option.PProf, false, "Enable serving the pprof debugging API")
 	option.BindEnv(option.PProf)
@@ -993,6 +990,9 @@ func init() {
 
 	flags.String(option.BGPConfigPath, "/var/lib/cilium/bgp/config.yaml", "Path to file containing the BGP configuration")
 	option.BindEnv(option.BGPConfigPath)
+
+	flags.Bool(option.ExternalClusterIPName, false, "Enable external access to ClusterIP services (default false)")
+	option.BindEnv(option.ExternalClusterIPName)
 
 	viper.BindPFlags(flags)
 }
@@ -1251,16 +1251,6 @@ func initEnv(cmd *cobra.Command) {
 		if option.Config.Tunnel == "" {
 			option.Config.Tunnel = option.TunnelVXLAN
 		}
-		if option.Config.IsFlannelMasterDeviceSet() {
-			if option.Config.Tunnel != option.TunnelDisabled {
-				log.Warnf("Running Cilium in flannel mode requires tunnel mode be '%s'. Changing tunnel mode to: %s", option.TunnelDisabled, option.TunnelDisabled)
-				option.Config.Tunnel = option.TunnelDisabled
-			}
-			if option.Config.EnableIPv6 {
-				log.Warn("Running Cilium in flannel mode requires IPv6 mode be 'false'. Disabling IPv6 mode")
-				option.Config.EnableIPv6 = false
-			}
-		}
 	case datapathOption.DatapathModeIpvlan:
 		if option.Config.Tunnel != "" && option.Config.Tunnel != option.TunnelDisabled {
 			log.WithField(logfields.Tunnel, option.Config.Tunnel).
@@ -1348,8 +1338,14 @@ func initEnv(cmd *cobra.Command) {
 	initClockSourceOption()
 	initSockmapOption()
 
-	if option.Config.EnableHostFirewall && option.Config.EnableIPSec {
-		log.Fatal("IPSec cannot be used with the host firewall.")
+	if option.Config.EnableHostFirewall {
+		if option.Config.EnableIPSec {
+			log.Fatal("IPSec cannot be used with the host firewall.")
+		}
+		if option.Config.EnableEndpointRoutes && !option.Config.EnableRemoteNodeIdentity {
+			log.Fatalf("The host firewall requires remote-node identities (%s) when running with %s",
+				option.EnableRemoteNodeIdentity, option.EnableEndpointRoutes)
+		}
 	}
 
 	if option.Config.EnableBandwidthManager && option.Config.EnableIPSec {
@@ -1524,20 +1520,6 @@ func runDaemon() {
 
 	log.Info("Initializing daemon")
 
-	// Since flannel doesn't create the cni0 interface until the first container
-	// is initialized we need to wait until it is initialized so we can attach
-	// the BPF program to it. If Cilium is running as a Kubernetes DaemonSet,
-	// there is also a script waiting for the interface to be created.
-	if option.Config.IsFlannelMasterDeviceSet() {
-		err := waitForHostDeviceWhenReady(option.Config.FlannelMasterDevice)
-		if err != nil {
-			log.WithError(err).WithFields(logrus.Fields{
-				logfields.Interface: option.Config.FlannelMasterDevice,
-			}).Error("unable to check for host device")
-			return
-		}
-	}
-
 	option.Config.RunMonitorAgent = true
 
 	if err := enableIPForwarding(); err != nil {
@@ -1602,14 +1584,6 @@ func runDaemon() {
 		log.WithError(err).Fatal("postinit failed")
 	}
 
-	if option.Config.IsFlannelMasterDeviceSet() && option.Config.FlannelUninstallOnExit {
-		cleanup.DeferTerminationCleanupFunction(cleaner.cleanUPWg, cleaner.cleanUPSig, func() {
-			d.compilationMutex.Lock()
-			loader.RemoveTCFilters(option.FlannelMasterDevice, netlink.HANDLE_MIN_EGRESS)
-			d.compilationMutex.Unlock()
-		})
-	}
-
 	bootstrapStats.enableConntrack.Start()
 	log.Info("Starting connection tracking garbage collector")
 	gc.Enable(option.Config.EnableIPv4, option.Config.EnableIPv6,
@@ -1637,18 +1611,6 @@ func runDaemon() {
 		if err := d.endpointManager.AddHostEndpoint(d.ctx, d, d.l7Proxy, d.identityAllocator,
 			"Create host endpoint", nodeTypes.GetName()); err != nil {
 			log.WithError(err).Fatal("Unable to create host endpoint")
-		}
-	}
-
-	if option.Config.IsFlannelMasterDeviceSet() {
-		if option.Config.EnableEndpointHealthChecking {
-			log.Warn("Running Cilium in flannel mode doesn't support endpoint connectivity health checking. Disabling endpoint connectivity health check.")
-			option.Config.EnableEndpointHealthChecking = false
-		}
-
-		err := node.SetInternalIPv4From(option.Config.FlannelMasterDevice)
-		if err != nil {
-			log.WithError(err).WithField("device", option.Config.FlannelMasterDevice).Fatal("Unable to set internal IPv4")
 		}
 	}
 
@@ -1736,7 +1698,7 @@ func runDaemon() {
 	}
 
 	// Start periodical arping to refresh neighbor table
-	if d.datapath.Node().NodeNeighDiscoveryEnabled() {
+	if d.datapath.Node().NodeNeighDiscoveryEnabled() && option.Config.ARPPingRefreshPeriod != 0 {
 		d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.Node())
 	}
 
@@ -1771,6 +1733,16 @@ func runDaemon() {
 	bootstrapStats.overall.End(true)
 	bootstrapStats.updateMetrics()
 	go d.launchHubble()
+
+	err = option.Config.StoreInFile(option.Config.StateDir)
+	if err != nil {
+		log.WithError(err).Error("Unable to store Cilium's configuration")
+	}
+
+	err = option.StoreViperInFile(option.Config.StateDir)
+	if err != nil {
+		log.WithError(err).Error("Unable to store Viper's configuration")
+	}
 
 	select {
 	case err := <-metricsErrs:

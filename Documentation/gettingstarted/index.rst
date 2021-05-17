@@ -66,7 +66,6 @@ Advanced Networking
    alibabacloud-eni
    kube-router
    bird
-   flannel-integration
    ipvlan
    encryption
    host-services
@@ -76,6 +75,7 @@ Advanced Networking
    ipam
    local-redirect-policy
    bgp
+   egress-gateway
 
 Cluster Mesh
 ------------

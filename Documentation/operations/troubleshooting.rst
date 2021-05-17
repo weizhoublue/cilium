@@ -148,6 +148,38 @@ Observing Flows with Hubble
 Hubble is a built-in observability tool which allows you to inspect recent flow
 events on all endpoints managed by Cilium.
 
+Ensure Hubble is running correctly
+----------------------------------
+
+To ensure the Hubble client can connect to the Hubble server running inside
+Cilium, you may use the ``hubble status`` command from within a Cilium pod:
+
+.. code-block:: shell-session
+
+   $ hubble status
+   Healthcheck (via unix:///var/run/cilium/hubble.sock): Ok
+   Current/Max Flows: 4095/4095 (100.00%)
+   Flows/s: 164.21
+
+``cilium-agent`` must be running with the ``--enable-hubble`` option (default) in order
+for the Hubble server to be enabled. When deploying Cilium with Helm, make sure
+to set the ``hubble.enabled=true`` value.
+
+To check if Hubble is enabled in your deployment, you may look for the
+following output in ``cilium status``:
+
+.. code-block:: shell-session
+
+   $ cilium status
+   ...
+   Hubble:   Ok   Current/Max Flows: 4095/4095 (100.00%), Flows/s: 164.21   Metrics: Disabled
+   ...
+
+.. note::
+   Pods need to be managed by Cilium in order to be observable by Hubble.
+   See how to :ref:`ensure a pod is managed by Cilium<ensure_managed_pod>`
+   for more details.
+
 Observing flows of a specific pod
 ---------------------------------
 
@@ -161,19 +193,18 @@ in the last three minutes:
 .. code-block:: shell-session
 
    $ kubectl exec -n kube-system cilium-77lk6 -- hubble observe --since 3m --pod default/tiefighter
-   Jun  2 11:14:46.041   default/tiefighter:38314                  kube-system/coredns-66bff467f8-ktk8c:53   to-endpoint   FORWARDED   UDP
-   Jun  2 11:14:46.041   kube-system/coredns-66bff467f8-ktk8c:53   default/tiefighter:38314                  to-endpoint   FORWARDED   UDP
-   Jun  2 11:14:46.041   default/tiefighter:38314                  kube-system/coredns-66bff467f8-ktk8c:53   to-endpoint   FORWARDED   UDP
-   Jun  2 11:14:46.042   kube-system/coredns-66bff467f8-ktk8c:53   default/tiefighter:38314                  to-endpoint   FORWARDED   UDP
-   Jun  2 11:14:46.042   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     L3-L4         FORWARDED   TCP Flags: SYN
-   Jun  2 11:14:46.042   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: SYN
-   Jun  2 11:14:46.042   default/deathstar-5b7489bc84-9bftc:80     default/tiefighter:57746                  to-endpoint   FORWARDED   TCP Flags: SYN, ACK
-   Jun  2 11:14:46.042   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK
-   Jun  2 11:14:46.043   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK, PSH
-   Jun  2 11:14:46.043   default/deathstar-5b7489bc84-9bftc:80     default/tiefighter:57746                  to-endpoint   FORWARDED   TCP Flags: ACK, PSH
-   Jun  2 11:14:46.043   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK, FIN
-   Jun  2 11:14:46.048   default/deathstar-5b7489bc84-9bftc:80     default/tiefighter:57746                  to-endpoint   FORWARDED   TCP Flags: ACK, FIN
-   Jun  2 11:14:46.048   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK
+   May  4 12:47:08.811: default/tiefighter:53875 -> kube-system/coredns-74ff55c5b-66f4n:53 to-endpoint FORWARDED (UDP)
+   May  4 12:47:08.811: default/tiefighter:53875 -> kube-system/coredns-74ff55c5b-66f4n:53 to-endpoint FORWARDED (UDP)
+   May  4 12:47:08.811: default/tiefighter:53875 <- kube-system/coredns-74ff55c5b-66f4n:53 to-endpoint FORWARDED (UDP)
+   May  4 12:47:08.811: default/tiefighter:53875 <- kube-system/coredns-74ff55c5b-66f4n:53 to-endpoint FORWARDED (UDP)
+   May  4 12:47:08.811: default/tiefighter:50214 <> default/deathstar-c74d84667-cx5kp:80 to-overlay FORWARDED (TCP Flags: SYN)
+   May  4 12:47:08.812: default/tiefighter:50214 <- default/deathstar-c74d84667-cx5kp:80 to-endpoint FORWARDED (TCP Flags: SYN, ACK)
+   May  4 12:47:08.812: default/tiefighter:50214 <> default/deathstar-c74d84667-cx5kp:80 to-overlay FORWARDED (TCP Flags: ACK)
+   May  4 12:47:08.812: default/tiefighter:50214 <> default/deathstar-c74d84667-cx5kp:80 to-overlay FORWARDED (TCP Flags: ACK, PSH)
+   May  4 12:47:08.812: default/tiefighter:50214 <- default/deathstar-c74d84667-cx5kp:80 to-endpoint FORWARDED (TCP Flags: ACK, PSH)
+   May  4 12:47:08.812: default/tiefighter:50214 <> default/deathstar-c74d84667-cx5kp:80 to-overlay FORWARDED (TCP Flags: ACK, FIN)
+   May  4 12:47:08.812: default/tiefighter:50214 <- default/deathstar-c74d84667-cx5kp:80 to-endpoint FORWARDED (TCP Flags: ACK, FIN)
+   May  4 12:47:08.812: default/tiefighter:50214 <> default/deathstar-c74d84667-cx5kp:80 to-overlay FORWARDED (TCP Flags: ACK)
 
 You may also use ``-o json`` to obtain more detailed information about each
 flow event.
@@ -214,88 +245,45 @@ more details about how to troubleshoot policy related drops.
    simultaneously without having to first manually target a specific node.  See
    `Observing flows with Hubble Relay`_ for more information.
 
-Ensure Hubble is running correctly
-----------------------------------
-
-To ensure the Hubble client can connect to the Hubble server running inside
-Cilium, you may use the ``hubble status`` command:
-
-.. code-block:: shell-session
-
-   $ hubble status
-   Healthcheck (via unix:///var/run/cilium/hubble.sock): Ok
-   Max Flows: 4096
-   Current Flows: 2542 (62.06%)
-
-``cilium-agent`` must be running with the ``--enable-hubble`` option (default) in order
-for the Hubble server to be enabled. When deploying Cilium with Helm, make sure
-to set the ``hubble.enabled=true`` value.
-
-To check if Hubble is enabled in your deployment, you may look for the
-following output in ``cilium status``:
-
-.. code-block:: shell-session
-
-   $ cilium status
-   ...
-   Hubble:   Ok   Current/Max Flows: 2542/4096 (62.06%), Flows/s: 164.21   Metrics: Disabled
-   ...
-
-.. note::
-   Pods need to be managed by Cilium in order to be observable by Hubble.
-   See how to :ref:`ensure a pod is managed by Cilium<ensure_managed_pod>`
-   for more details.
-
 Observing flows with Hubble Relay
 =================================
 
 Hubble Relay is a service which allows to query multiple Hubble instances
-simultaneously and aggregate the results. The Hubble service needs to be exposed
-on TCP port ``4244`` to allow Hubble Relay to connect to individual instances.
-This can be done via Helm values or option ``--hubble-listen-address :4244`` on
-cilium-agent.
+simultaneously and aggregate the results. See :ref:`hubble_setup` to enable
+Hubble Relay if it is not yet enabled and install the Hubble CLI on your local
+machine.
 
-Hubble Relay can be deployed using Helm by setting
-``hubble.relay.enabled=true``. This will deploy Hubble Relay with one
-replica by default. Once the Hubble Relay pod is running, you may access the
-service by port-forwarding it:
+You may access the Hubble Relay service by port-forwarding it locally:
 
 .. code:: bash
 
    kubectl -n kube-system port-forward service/hubble-relay --address 0.0.0.0 --address :: 4245:80
 
 This will forward the Hubble Relay service port (``80``) to your local machine
-on port ``4245`` on all of it's IP addresses. The next step consists of
-downloading the latest binary release of Hubble CLI from the
-`GitHub release page <https://github.com/cilium/hubble/releases>`_. Make sure to
-download the tarball for your platform, verify the checksum and extract the
-``hubble`` binary from the tarball. Optionally, add the binary to your
-``$PATH`` if using Linux or MacOS or your ``%PATH%`` if using Windows.
+on port ``4245`` on all of it's IP addresses.
 
-You can verify that Hubble Relay can be reached by running the following
-command:
+You can verify that Hubble Relay can be reached by using the Hubble CLI and
+running the following command from your local machine:
 
 .. code:: bash
 
-   hubble status --server localhost:4245
+   hubble status
 
 This command should return an output similar to the following:
 
 .. code-block:: shell-session
 
    Healthcheck (via localhost:4245): Ok
-   Max Flows: 16384
-   Current Flows: 16384 (100.00%)
+   Current/Max Flows: 16380/16380 (100.00%)
+   Flows/s: 46.19
+   Connected Nodes: 4/4
 
-For convenience, you may set and export the ``HUBBLE_SERVER`` environment
-variable:
+You may see details about nodes that Hubble Relay is connected to by running
+the following command:
 
-.. code:: bash
+.. code-block:: bash
 
-   export HUBBLE_SERVER=localhost:4245
-
-This will allow you to use ``hubble status`` and ``hubble observe`` commands
-without having to specify the server address via the ``--server`` flag.
+   hubble list nodes
 
 As Hubble Relay shares the same API as individual Hubble instances, you may
 follow the `Observing flows with Hubble`_ section keeping in mind that
@@ -321,7 +309,7 @@ and various network policy combinations.
 To run the connectivity tests create an isolated test namespace called
 ``cilium-test`` to deploy the tests with.
 
-.. code:: bash
+.. parsed-literal::
 
    kubectl create ns cilium-test
    kubectl apply --namespace=cilium-test -f \ |SCM_WEB|\/examples/kubernetes/connectivity-check/connectivity-check.yaml
@@ -942,9 +930,10 @@ Identifies the Cilium pod that is managing a particular pod in a namespace:
 .. code:: bash
 
     $ curl -sLO releases.cilium.io/v1.1.0/tools/k8s-get-cilium-pod.sh
-    $ ./k8s-get-cilium-pod.sh luke-pod default
+    $ bash ./k8s-get-cilium-pod.sh luke-pod default
     cilium-zmjj9
-
+    cilium-node-init-v7r9p
+    cilium-operator-f576f7977-s5gpq
 
 Execute a command in all Kubernetes Cilium pods
 -----------------------------------------------

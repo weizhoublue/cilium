@@ -36,12 +36,14 @@ jobs:
 
       - name: Install Cilium CLI
         run: |
-          curl -LO https://github.com/cilium/cilium-cli/releases/download/v0.4/cilium-linux-amd64.tar.gz
+          curl -LO https://github.com/cilium/cilium-cli/releases/download/v0.6/cilium-linux-amd64.tar.gz
           sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/bin
           rm cilium-linux-amd64.tar.gz
 
-      - name: Checkout king config
+      - name: Checkout kind config
         uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f
+        with:
+          persist-credentials: false
 
       - name: Create kind cluster
         uses: helm/kind-action@7a937c0fb648064a83b8b9354151e5e543d9fcec
@@ -85,7 +87,7 @@ jobs:
       - name: Install Cilium with encryption
         run: |
           cilium install ${{ steps.vars.outputs.cilium_install_defaults }} \
-            --encryption
+            --encryption=ipsec
 
       - name: Enable Relay
         run: |

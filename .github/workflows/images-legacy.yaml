@@ -24,16 +24,16 @@ jobs:
             dockerfile: ./images/operator/Dockerfile
 
           - name: operator-aws
-            dockerfile: ./images/operator-aws/Dockerfile
+            dockerfile: ./images/operator/Dockerfile
 
           - name: operator-azure
-            dockerfile: ./images/operator-azure/Dockerfile
+            dockerfile: ./images/operator/Dockerfile
 
           - name: operator-alibabacloud
-            dockerfile: ./images/operator-alibabacloud/Dockerfile
+            dockerfile: ./images/operator/Dockerfile
 
           - name: operator-generic
-            dockerfile: ./images/operator-generic/Dockerfile
+            dockerfile: ./images/operator/Dockerfile
 
           - name: hubble-relay
             dockerfile: ./images/hubble-relay/Dockerfile
@@ -46,16 +46,10 @@ jobs:
 
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@2a4b53665e15ce7d7049afb11ff1f70ff1610609
-
-      - name: Login to DockerHub to avoid rate limit
-        uses: docker/login-action@f3364599c6aa293cdc2b8391b1b56d0c30e45c8a
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME_CI }}
-          password: ${{ secrets.DOCKER_HUB_PASSWORD_CI }}
+        uses: docker/setup-buildx-action@0d135e0c2fc0dba0729c1a47ecfcf5a3c7f8579e
 
       - name: Login to quay.io for CI
-        uses: docker/login-action@f3364599c6aa293cdc2b8391b1b56d0c30e45c8a
+        uses: docker/login-action@28218f9b04b4f3f62068d7b6ce6ca5b26e35336c
         with:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME_CI }}
@@ -73,6 +67,7 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f
         with:
+          persist-credentials: false
           ref: ${{ steps.tag.outputs.tag }}
 
       # master branch pushes
@@ -88,6 +83,8 @@ jobs:
           tags: |
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:latest
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}
+          build-args: |
+            OPERATOR_VARIANT=${{ matrix.name }}
 
       - name: CI race detection Build ${{ matrix.name }}
         if: ${{ github.event_name != 'pull_request_target' }}
@@ -102,9 +99,10 @@ jobs:
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:latest-race
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
           build-args: |
-            BASE_IMAGE=quay.io/cilium/cilium-runtime:ed80679d06b551d2856ca1cd5733b71e7430adb2@sha256:05da74b6aef0c77a0bfdd646e4b559c803960526acba1e134d5edb674a7bd9fb
+            BASE_IMAGE=quay.io/cilium/cilium-runtime:07ea8061d047c1085f99916c09d1d9b4c214040b@sha256:f3f8b38ab591055b94a1720d6cda0beabe75c65f2d74e32b65388e4333de7f2c
             LOCKDEBUG=1
             RACE=1
+            OPERATOR_VARIANT=${{ matrix.name }}
 
       - name: CI Image Releases digests
         if: ${{ github.event_name != 'pull_request_target' }}
@@ -128,6 +126,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}
+          build-args: |
+            OPERATOR_VARIANT=${{ matrix.name }}
 
       - name: CI Image Releases digests
         if: ${{ github.event_name == 'pull_request_target' }}
@@ -148,9 +148,10 @@ jobs:
           tags: |
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
           build-args: |
-            BASE_IMAGE=quay.io/cilium/cilium-runtime:ed80679d06b551d2856ca1cd5733b71e7430adb2@sha256:05da74b6aef0c77a0bfdd646e4b559c803960526acba1e134d5edb674a7bd9fb
+            BASE_IMAGE=quay.io/cilium/cilium-runtime:07ea8061d047c1085f99916c09d1d9b4c214040b@sha256:f3f8b38ab591055b94a1720d6cda0beabe75c65f2d74e32b65388e4333de7f2c
             LOCKDEBUG=1
             RACE=1
+            OPERATOR_VARIANT=${{ matrix.name }}
 
       - name: CI Image Releases digests
         if: ${{ github.event_name == 'pull_request_target' }}
@@ -182,13 +183,13 @@ jobs:
 
     steps:
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@25f0500ff22e406f7191a2a8ba8cda16901ca018
+        uses: docker/setup-qemu-action@c308fdd69d26ed66f4506ebd74b180abe5362145
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@2a4b53665e15ce7d7049afb11ff1f70ff1610609
+        uses: docker/setup-buildx-action@0d135e0c2fc0dba0729c1a47ecfcf5a3c7f8579e
 
       - name: Login to quay.io for CI
-        uses: docker/login-action@f3364599c6aa293cdc2b8391b1b56d0c30e45c8a
+        uses: docker/login-action@28218f9b04b4f3f62068d7b6ce6ca5b26e35336c
         with:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME_CI }}
@@ -206,6 +207,7 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f
         with:
+          persist-credentials: false
           ref: ${{ steps.tag.outputs.tag }}
 
       # master branch pushes

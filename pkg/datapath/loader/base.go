@@ -198,17 +198,6 @@ func (l *Loader) reinitializeIPSec(ctx context.Context) error {
 			}
 			option.Config.EncryptInterface = interfaces
 		}
-
-		// For the ENI ipam mode on EKS, this will be the interface that
-		// the router (cilium_host) IP is associated to.
-		if len(option.Config.IPv4PodSubnets) == 0 {
-			if info := node.GetRouterInfo(); info != nil {
-				for _, c := range info.GetIPv4CIDRs() {
-					cidr := c // create a copy to be able to take a reference
-					option.Config.IPv4PodSubnets = append(option.Config.IPv4PodSubnets, &cidr)
-				}
-			}
-		}
 	}
 
 	// No interfaces is valid in tunnel disabled case
@@ -346,8 +335,6 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 			devices = append(devices, link)
 		}
 		args[initArgDevices] = strings.Join(option.Config.Devices, ";")
-	} else if option.Config.IsFlannelMasterDeviceSet() {
-		args[initArgDevices] = option.Config.FlannelMasterDevice
 	} else {
 		args[initArgDevices] = "<nil>"
 	}
@@ -355,8 +342,6 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	var mode baseDeviceMode
 	args[initArgTunnelMode] = "<nil>"
 	switch {
-	case option.Config.IsFlannelMasterDeviceSet():
-		mode = flannelMode
 	case option.Config.Tunnel != option.TunnelDisabled:
 		mode = tunnelMode
 		args[initArgTunnelMode] = option.Config.Tunnel

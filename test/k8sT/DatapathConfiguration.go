@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cilium/cilium/test/config"
@@ -180,7 +181,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 	Context("Encapsulation", func() {
 		BeforeEach(func() {
-			SkipIfIntegration(helpers.CIIntegrationFlannel)
 			SkipIfIntegration(helpers.CIIntegrationGKE)
 		})
 
@@ -219,7 +219,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 		It("Check connectivity with sockops and VXLAN encapsulation", func() {
 			// Note if run on kernel without sockops feature is ignored
-			if !helpers.RunsOnNetNextOr419Kernel() {
+			if !helpers.RunsOn419OrLaterKernel() {
 				Skip("Skipping sockops testing before 4.19 kernel")
 				return
 			}
@@ -256,7 +256,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 
-			if helpers.RunsOnNetNextOr419Kernel() {
+			if helpers.RunsOn419OrLaterKernel() {
 				By("Test BPF masquerade")
 				Expect(testPodHTTPToOutside(kubectl, "http://google.com", false, false)).
 					Should(BeTrue(), "Connectivity test to http://google.com failed")
@@ -312,7 +312,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 	Context("AutoDirectNodeRoutes", func() {
 		BeforeEach(func() {
-			SkipIfIntegration(helpers.CIIntegrationFlannel)
 			SkipIfIntegration(helpers.CIIntegrationGKE)
 		})
 
@@ -331,7 +330,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
-			if helpers.RunsOnNetNextOr419Kernel() {
+			if helpers.RunsOn419OrLaterKernel() {
 				By("Test BPF masquerade")
 				Expect(testPodHTTPToOutside(kubectl, "http://google.com", false, false)).
 					Should(BeTrue(), "Connectivity test to http://google.com failed")
@@ -356,7 +355,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 		It("Check connectivity with sockops and direct routing", func() {
 			// Note if run on kernel without sockops feature is ignored
-			if !helpers.RunsOnNetNextOr419Kernel() {
+			if !helpers.RunsOn419OrLaterKernel() {
 				Skip("Skipping sockops testing before 4.19 kernel")
 				return
 			}
@@ -370,7 +369,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 	})
 
 	SkipContextIf(func() bool {
-		return helpers.DoesNotExistNodeWithoutCilium() || helpers.DoesNotRunOnNetNextOr419Kernel()
+		return helpers.DoesNotExistNodeWithoutCilium() || helpers.DoesNotRunOn419OrLaterKernel()
 	}, "Check BPF masquerading with ip-masq-agent", func() {
 		var (
 			tmpEchoPodPath      string
@@ -529,6 +528,24 @@ var _ = Describe("K8sDatapathConfig", func() {
 				break
 			}
 
+			// Due to IPCache update delays, it can take up to a few seconds
+			// before both nodes have added the new pod IPs to their allowedIPs
+			// list, which can cause flakes in CI. Therefore wait for the
+			// IPs to be present on both nodes before performing the test
+			waitForAllowedIP := func(ciliumPod, ip string) {
+				jsonpath := fmt.Sprintf(`{.encryption.wireguard.interfaces[*].peers[*].allowed-ips[?(@=='%s')]}`, ip)
+				ciliumCmd := fmt.Sprintf(`cilium debuginfo --output jsonpath="%s"`, jsonpath)
+				expected := fmt.Sprintf("jsonpath=%s", ip)
+				err := kubectl.CiliumExecUntilMatch(ciliumPod, ciliumCmd, expected)
+				Expect(err).To(BeNil(), "ip %q not in allowedIPs of pod %q", ip, ciliumPod)
+			}
+
+			waitForAllowedIP(ciliumPodK8s1, fmt.Sprintf("%s/32", dstPodIP))
+			waitForAllowedIP(ciliumPodK8s1, fmt.Sprintf("%s/128", dstPodIPv6))
+
+			waitForAllowedIP(ciliumPodK8s2, fmt.Sprintf("%s/32", srcPodIP))
+			waitForAllowedIP(ciliumPodK8s2, fmt.Sprintf("%s/128", srcPodIPv6))
+
 			checkNoLeak := func(srcPod, srcIP, dstIP string) {
 				cmd := fmt.Sprintf("tcpdump -i %s --immediate-mode -n 'host %s and host %s' -c 1", interNodeDev, srcIP, dstIP)
 				res1, cancel1, err := kubectl.ExecInHostNetNSInBackground(context.TODO(), k8s1NodeName, cmd)
@@ -563,7 +580,8 @@ var _ = Describe("K8sDatapathConfig", func() {
 			deploymentManager.DeployCilium(map[string]string{
 				"tunnel":               "disabled",
 				"autoDirectNodeRoutes": "true",
-				"wireguard.enabled":    "true",
+				"encryption.enabled":   "true",
+				"encryption.type":      "wireguard",
 				"l7Proxy":              "false",
 			}, DeployCiliumOptionsAndDNS)
 
@@ -574,13 +592,27 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 		It("Pod2pod is encrypted in tunneling mode", func() {
 			deploymentManager.DeployCilium(map[string]string{
-				"tunnel":            "vxlan",
-				"wireguard.enabled": "true",
-				"l7Proxy":           "false",
+				"tunnel":             "vxlan",
+				"encryption.enabled": "true",
+				"encryption.type":    "wireguard",
+				"l7Proxy":            "false",
 			}, DeployCiliumOptionsAndDNS)
 
 			testWireguard("cilium_vxlan")
 		})
+
+		It("Pod2pod is encrypted in tunneling mode with per-endpoint routes", func() {
+			deploymentManager.DeployCilium(map[string]string{
+				"tunnel":                 "vxlan",
+				"endpointRoutes.enabled": "true",
+				"encryption.enabled":     "true",
+				"encryption.type":        "wireguard",
+				"l7Proxy":                "false",
+			}, DeployCiliumOptionsAndDNS)
+
+			testWireguard("cilium_vxlan")
+		})
+
 	})
 
 	Context("Sockops performance", func() {
@@ -654,7 +686,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 	Context("Transparent encryption DirectRouting", func() {
 		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and direct routing", func() {
-			SkipIfIntegration(helpers.CIIntegrationFlannel)
 			SkipIfIntegration(helpers.CIIntegrationGKE)
 
 			privateIface, err := kubectl.GetPrivateIface()
@@ -662,13 +693,13 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
 			deploymentManager.DeployCilium(map[string]string{
-				"tunnel":               "disabled",
-				"autoDirectNodeRoutes": "true",
-				"encryption.enabled":   "true",
-				"encryption.interface": privateIface,
-				"devices":              "",
-				"hostFirewall":         "false",
-				"kubeProxyReplacement": "disabled",
+				"tunnel":                     "disabled",
+				"autoDirectNodeRoutes":       "true",
+				"encryption.enabled":         "true",
+				"encryption.ipsec.interface": privateIface,
+				"devices":                    "",
+				"hostFirewall":               "false",
+				"kubeProxyReplacement":       "disabled",
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		})
@@ -677,7 +708,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 		// loading on the native device, the source identity of packet on the
 		// destination node is resolved to WORLD and policy enforcement fails.
 		XIt("Check connectivity with transparent encryption and direct routing with bpf_host", func() {
-			SkipIfIntegration(helpers.CIIntegrationFlannel)
 			SkipIfIntegration(helpers.CIIntegrationGKE)
 
 			privateIface, err := kubectl.GetPrivateIface()
@@ -688,12 +718,12 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
 			deploymentManager.DeployCilium(map[string]string{
-				"tunnel":               "disabled",
-				"autoDirectNodeRoutes": "true",
-				"encryption.enabled":   "true",
-				"encryption.interface": privateIface,
-				"devices":              devices,
-				"hostFirewall":         "false",
+				"tunnel":                     "disabled",
+				"autoDirectNodeRoutes":       "true",
+				"encryption.enabled":         "true",
+				"encryption.ipsec.interface": privateIface,
+				"devices":                    devices,
+				"hostFirewall":               "false",
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		})
@@ -701,9 +731,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 	Context("IPv4Only", func() {
 		It("Check connectivity with IPv6 disabled", func() {
-			// Flannel always disables IPv6, this test is a no-op in that case.
-			SkipIfIntegration(helpers.CIIntegrationFlannel)
-
 			deploymentManager.DeployCilium(map[string]string{
 				"ipv4.enabled": "true",
 				"ipv6.enabled": "false",
@@ -735,6 +762,14 @@ var _ = Describe("K8sDatapathConfig", func() {
 	})
 
 	Context("Host firewall", func() {
+		BeforeAll(func() {
+			kubectl.Exec("kubectl label nodes --all status=lockdown")
+		})
+
+		AfterAll(func() {
+			kubectl.Exec("kubectl label nodes --all status-")
+		})
+
 		AfterEach(func() {
 			kubectl.Exec(fmt.Sprintf("%s delete --all ccnp", helpers.KubectlCmd))
 		})
@@ -858,23 +893,50 @@ func testHostFirewall(kubectl *helpers.Kubectl) {
 	_, err := kubectl.CiliumPolicyAction(randomNs, demoHostPolicies, helpers.KubectlApply, helpers.HelperTimeout)
 	ExpectWithOffset(1, err).Should(BeNil(), fmt.Sprintf("Error creating resource %s: %s", demoHostPolicies, err))
 
-	By("Checking host policies on ingress from local pod")
-	testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClient", "zgroup=testServerHost", false)
-
-	By("Checking host policies on ingress from remote pod")
-	testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClient", "zgroup=testServerHost", true)
-
-	By("Checking host policies on egress to local pod")
-	testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClientHost", "zgroup=testServer", false)
-
-	By("Checking host policies on egress to remote pod")
-	testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClientHost", "zgroup=testServer", true)
-
-	By("Checking host policies on ingress from remote node")
-	testHostFirewallWithPath(kubectl, randomNs, "zgroup=testServerHost", "zgroup=testClientHost", true)
-
-	By("Checking host policies on egress to remote node")
-	testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClientHost", "zgroup=testServerHost", true)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer GinkgoRecover()
+		defer wg.Done()
+		By("Checking host policies on ingress from local pod")
+		testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClient", "zgroup=testServerHost", false)
+	}()
+	wg.Add(1)
+	go func() {
+		defer GinkgoRecover()
+		defer wg.Done()
+		By("Checking host policies on ingress from remote pod")
+		testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClient", "zgroup=testServerHost", true)
+	}()
+	wg.Add(1)
+	go func() {
+		defer GinkgoRecover()
+		defer wg.Done()
+		By("Checking host policies on egress to local pod")
+		testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClientHost", "zgroup=testServer", false)
+	}()
+	wg.Add(1)
+	go func() {
+		defer GinkgoRecover()
+		defer wg.Done()
+		By("Checking host policies on egress to remote pod")
+		testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClientHost", "zgroup=testServer", true)
+	}()
+	wg.Add(1)
+	go func() {
+		defer GinkgoRecover()
+		defer wg.Done()
+		By("Checking host policies on ingress from remote node")
+		testHostFirewallWithPath(kubectl, randomNs, "zgroup=testServerHost", "zgroup=testClientHost", true)
+	}()
+	wg.Add(1)
+	go func() {
+		defer GinkgoRecover()
+		defer wg.Done()
+		By("Checking host policies on egress to remote node")
+		testHostFirewallWithPath(kubectl, randomNs, "zgroup=testClientHost", "zgroup=testServerHost", true)
+	}()
+	wg.Wait()
 }
 
 func testHostFirewallWithPath(kubectl *helpers.Kubectl, randomNs, client, server string, crossNodes bool) {

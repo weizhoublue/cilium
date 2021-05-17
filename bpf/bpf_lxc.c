@@ -397,17 +397,7 @@ ct_recreate6:
 
 #ifdef ENABLE_ROUTING
 to_host:
-	if (is_defined(HOST_REDIRECT_TO_INGRESS) ||
-	    (is_defined(ENABLE_HOST_FIREWALL) && *dstID == HOST_ID)) {
-		if (is_defined(HOST_REDIRECT_TO_INGRESS)) {
-			union macaddr host_mac = HOST_IFINDEX_MAC;
-
-			ret = ipv6_l3(ctx, l3_off, (__u8 *)&router_mac.addr,
-				      (__u8 *)&host_mac.addr, METRIC_EGRESS);
-			if (ret != CTX_ACT_OK)
-				return ret;
-		}
-
+	if (is_defined(ENABLE_HOST_FIREWALL) && *dstID == HOST_ID) {
 		send_trace_notify(ctx, TRACE_TO_HOST, SECLABEL, HOST_ID, 0,
 				  HOST_IFINDEX, reason, monitor);
 		return redirect(HOST_IFINDEX, BPF_F_INGRESS);
@@ -540,6 +530,16 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx,
 
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
+
+/* If IPv4 fragmentation is disabled
+ * AND a IPv4 fragmented packet is received,
+ * then drop the packet.
+ */
+#ifndef ENABLE_IPV4_FRAGMENTS
+	if (ipv4_is_fragment(ip4))
+		return DROP_FRAG_NOSUPPORT;
+#endif
+
 	has_l4_header = ipv4_has_l4_header(ip4);
 
 	tuple.nexthdr = ip4->protocol;
@@ -848,17 +848,7 @@ skip_egress_gateway:
 
 #ifdef ENABLE_ROUTING
 to_host:
-	if (is_defined(HOST_REDIRECT_TO_INGRESS) ||
-	    (is_defined(ENABLE_HOST_FIREWALL) && *dstID == HOST_ID)) {
-		if (is_defined(HOST_REDIRECT_TO_INGRESS)) {
-			union macaddr host_mac = HOST_IFINDEX_MAC;
-
-			ret = ipv4_l3(ctx, l3_off, (__u8 *)&router_mac.addr,
-				      (__u8 *)&host_mac.addr, ip4);
-			if (ret != CTX_ACT_OK)
-				return ret;
-		}
-
+	if (is_defined(ENABLE_HOST_FIREWALL) && *dstID == HOST_ID) {
 		send_trace_notify(ctx, TRACE_TO_HOST, SECLABEL, HOST_ID, 0,
 				  HOST_IFINDEX, reason, monitor);
 		return redirect(HOST_IFINDEX, BPF_F_INGRESS);
@@ -975,7 +965,6 @@ int handle_xgress(struct __ctx_buff *ctx)
 	int ret;
 
 	bpf_clear_meta(ctx);
-	edt_set_aggregate(ctx, LXC_ID);
 
 	send_trace_notify(ctx, TRACE_FROM_LXC, SECLABEL, 0, 0, 0, 0,
 			  TRACE_PAYLOAD_LEN);
@@ -988,6 +977,7 @@ int handle_xgress(struct __ctx_buff *ctx)
 	switch (proto) {
 #ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
+		edt_set_aggregate(ctx, LXC_ID);
 		invoke_tailcall_if(__or(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6)),
 					is_defined(DEBUG)),
 				   CILIUM_CALL_IPV6_FROM_LXC, tail_handle_ipv6);
@@ -995,6 +985,7 @@ int handle_xgress(struct __ctx_buff *ctx)
 #endif /* ENABLE_IPV6 */
 #ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
+		edt_set_aggregate(ctx, LXC_ID);
 		invoke_tailcall_if(__or(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6)),
 					is_defined(DEBUG)),
 				   CILIUM_CALL_IPV4_FROM_LXC, tail_handle_ipv4);
@@ -1730,7 +1721,11 @@ int handle_to_container(struct __ctx_buff *ctx)
 #if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_ROUTING)
 	/* If the packet comes from the hostns and per-endpoint routes are enabled,
 	 * jump to bpf_host to enforce egress host policies before anything else.
-	 * We will jump back to bpf_lxc once host policies are enforced.
+	 *
+	 * We will jump back to bpf_lxc once host policies are enforced. Whenever
+	 * we call inherit_identity_from_host, the packet mark is cleared. Thus,
+	 * when we jump back, the packet mark will have been cleared and the
+	 * identity won't match HOST_ID anymore.
 	 */
 	if (identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 1);

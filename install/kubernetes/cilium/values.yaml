@@ -274,6 +274,9 @@ bpf:
   # first time in a connection.
   monitorFlags: "all"
 
+  # -- Allow cluster external access to ClusterIP services.
+  lbExternalClusterIP: false
+
   # -- Enable native IP masquerade support in eBPF
   #masquerade: true
 
@@ -417,24 +420,55 @@ encryption:
   # -- Enable transparent network encryption.
   enabled: false
 
-  # -- Name of the key file inside the Kubernetes secret configured via secretName.
-  keyFile: keys
-
-  # -- Path to mount the secret inside the Cilium pod.
-  mountPath: /etc/ipsec
-
-  # -- Name of the Kubernetes secret containing the encryption keys.
-  secretName: cilium-ipsec-keys
+  # -- Encryption method. Can be either ipsec or wireguard.
+  type: ipsec
 
   # -- Enable encryption for pure node to node traffic.
+  # This option is only effective when encryption.type is set to ipsec.
   nodeEncryption: false
 
-  # -- The interface to use for encrypted traffic.
-  # interface: eth0
+  ipsec:
+    # -- Name of the key file inside the Kubernetes secret configured via secretName.
+    keyFile: ""
+
+    # -- Path to mount the secret inside the Cilium pod.
+    mountPath: ""
+
+    # -- Name of the Kubernetes secret containing the encryption keys.
+    secretName: ""
+
+    # -- The interface to use for encrypted traffic.
+    interface: ""
+
+  # -- Deprecated in favor of encryption.ipsec.keyFile.
+  # Name of the key file inside the Kubernetes secret configured via secretName.
+  # This option is only effective when encryption.type is set to ipsec.
+  keyFile: keys
+
+  # -- Deprecated in favor of encryption.ipsec.mountPath.
+  # Path to mount the secret inside the Cilium pod.
+  # This option is only effective when encryption.type is set to ipsec.
+  mountPath: /etc/ipsec
+
+  # -- Deprecated in favor of encryption.ipsec.secretName.
+  # Name of the Kubernetes secret containing the encryption keys.
+  # This option is only effective when encryption.type is set to ipsec.
+  secretName: cilium-ipsec-keys
+
+  # -- Deprecated in favor of encryption.ipsec.interface.
+  # The interface to use for encrypted traffic.
+  # This option is only effective when encryption.type is set to ipsec.
+  interface: ""
 
 # TODO: Add documentation
 endpointHealthChecking:
   enabled: true
+
+# -- Enable endpoint status.
+# Status can be: policy, health, controllers, logs and / or state. For 2 or more options use a comma.
+endpointStatus:
+  enabled: false
+  status: ""
 
 endpointRoutes:
   # -- Enable use of per endpoint routes instead of routing via
@@ -465,18 +499,6 @@ eni:
 externalIPs:
   # -- Enable ExternalIPs service support.
   enabled: false
-
-# flannel is the flannel specific configuration
-flannel:
-  # enabled enables the flannel integration
-  enabled: false
-
-  # masterDevice is the name of the flannel bridge
-  masterDevice: cni0
-
-  # uninstallOnExt enables uninstallation of Cilium BPF programs on flannel
-  # managed pods when the Cilium pod is terminated
-  uninstallOnExit: false
 
 # fragmentTracking enables IPv4 fragment tracking support in the datapath.
 # fragmentTracking: true
@@ -744,7 +766,7 @@ hubble:
       # -- Hubble-ui ingress proxy image.
       image:
         repository: docker.io/envoyproxy/envoy
-        tag: v1.14.5
+        tag: v1.18.2@sha256:e8b37c1d75787dd1e712ff389b0d37337dc8a174a63bed9c34ba73359dc67da7
         pullPolicy: Always
       # Resource requests and limits for the 'hubble-ui' container of the 'hubble-ui' deployment, such as
       #     resources:
@@ -876,7 +898,7 @@ keepDeprecatedProbes: false
 # -- Configure the kube-proxy replacement in Cilium BPF datapath
 # Valid options are "disabled", "probe", "partial", "strict".
 # ref: https://docs.cilium.io/en/stable/gettingstarted/kubeproxy-free/
-kubeProxyReplacement: "probe"
+#kubeProxyReplacement: "disabled"
 
 # -- healthz server bind address for the kube-proxy replacement.
 # To enable set the value to '0.0.0.0:10256' for all ipv4
@@ -914,6 +936,11 @@ enableIPv4Masquerade: true
 
 # -- Enables masquerading of IPv6 traffic leaving the node from endpoints.
 enableIPv6Masquerade: true
+
+# -- Enables egress gateway (beta) to redirect and SNAT the traffic that
+# leaves the cluster.
+egressGateway:
+  enabled: false
 
 # -- Specify the CIDR for native routing (ie to avoid IP masquerade for).
 # This value corresponds to the configured cluster-cidr.

@@ -14,7 +14,7 @@ on:
   ###
 
 env:
-  name: cilium-cli-ci-${{ github.run_id }}
+  name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
   location: westeurope
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
@@ -25,7 +25,7 @@ jobs:
         startsWith(github.event.comment.body, 'ci-aks') ||
         startsWith(github.event.comment.body, 'test-me-please')
       )) ||
-      github.event_name == 'schedule' ||
+      (github.event_name == 'schedule' && github.repository == 'cilium/cilium') ||
       github.event.label.name == 'ci-run/aks'
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -71,7 +71,7 @@ jobs:
 
       - name: Install Cilium CLI
         run: |
-          curl -LO https://github.com/cilium/cilium-cli/releases/download/v0.4/cilium-linux-amd64.tar.gz
+          curl -LO https://github.com/cilium/cilium-cli/releases/download/v0.6/cilium-linux-amd64.tar.gz
           sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/bin
           rm cilium-linux-amd64.tar.gz
 
@@ -92,7 +92,7 @@ jobs:
           az group create \
             --name ${{ env.name }} \
             --location ${{ env.location }} \
-            --tags "owner=${{ steps.vars.outputs.owner }}"
+            --tags usage=${{ github.repository_owner }}-${{ github.event.repository.name }} owner=${{ steps.vars.outputs.owner }}
           az aks create \
             --resource-group ${{ env.name }} \
             --name ${{ env.name }} \
@@ -146,7 +146,7 @@ jobs:
       - name: Install Cilium with encryption
         run: |
           cilium install ${{ steps.vars.outputs.cilium_install_defaults }} \
-            --encryption
+            --encryption=ipsec
 
       - name: Enable Relay
         run: |
@@ -172,7 +172,7 @@ jobs:
           cilium connectivity test
 
       - name: Post-test information gathering
-        if: ${{ always() }}
+        if: ${{ failure() }}
         run: |
           cilium status
           kubectl get pods --all-namespaces -o wide
@@ -186,7 +186,7 @@ jobs:
           az group delete --name ${{ env.name }} --yes
 
       - name: Upload artifacts
-        if: ${{ always() }}
+        if: ${{ failure() }}
         uses: actions/upload-artifact@ee69f02b3dfdecd58bb31b4d133da38ba6fe3700
         with:
           name: cilium-sysdump-out.zip

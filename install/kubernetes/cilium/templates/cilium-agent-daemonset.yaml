@@ -198,18 +198,6 @@ spec:
             fieldRef:
               apiVersion: v1
               fieldPath: metadata.namespace
-        - name: CILIUM_FLANNEL_MASTER_DEVICE
-          valueFrom:
-            configMapKeyRef:
-              key: flannel-master-device
-              name: cilium-config
-              optional: true
-        - name: CILIUM_FLANNEL_UNINSTALL_ON_EXIT
-          valueFrom:
-            configMapKeyRef:
-              key: flannel-uninstall-on-exit
-              name: cilium-config
-              optional: true
         - name: CILIUM_CLUSTERMESH_CONFIG
           value: /var/lib/cilium/clustermesh/
         - name: CILIUM_CNI_CHAINING_MODE
@@ -326,8 +314,12 @@ spec:
           readOnly: true
         - mountPath: /run/xtables.lock
           name: xtables-lock
-{{- if .Values.encryption.enabled }}
+{{- if and ( .Values.encryption.enabled ) ( eq .Values.encryption.type "ipsec" ) }}
+  {{- if .Values.encryption.ipsec.mountPath }}
+        - mountPath: {{ .Values.encryption.ipsec.mountPath }}
+  {{- else }}
         - mountPath: {{ .Values.encryption.mountPath }}
+  {{- end }}
           name: cilium-ipsec-secrets
 {{- end }}
 {{- if .Values.kubeConfigPath }}
@@ -542,10 +534,14 @@ spec:
             path: ip-masq-agent
         name: ip-masq-agent
 {{- end }}
-{{- if .Values.encryption.enabled }}
+{{- if and ( .Values.encryption.enabled ) ( eq .Values.encryption.type "ipsec" ) }}
       - name: cilium-ipsec-secrets
         secret:
+  {{- if .Values.encryption.ipsec.secretName }}
+          secretName: {{ .Values.encryption.ipsec.secretName }}
+  {{- else }}
           secretName: {{ .Values.encryption.secretName }}
+  {{- end }}
 {{- end }}
 {{- if .Values.cni.configMap }}
       - name: cni-configuration

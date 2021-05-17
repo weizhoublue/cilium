@@ -20,7 +20,7 @@ Enable the Host Firewall in Cilium
 
 Deploy Cilium release via Helm:
 
-.. parsed-literal ::
+.. parsed-literal::
 
     helm install cilium |CHART_RELEASE|        \\
       --namespace kube-system                  \\
@@ -32,17 +32,6 @@ as ``eth0``. Omitting this option leads Cilium to auto-detect what interfaces
 the host firewall applies to.
 
 At this point, the Cilium-managed nodes are ready to enforce network policies.
-
-.. note::
-
-    The host firewall is not compatible with per-endpoint routing. This option
-    is enabled by default on managed services (AKS, EKS, GKE), so in order to
-    use the host firewall on those environments, per-endpoint routing must be
-    disabled. For example, on GKE, replace ``--set gke.enabled=true`` with
-    ``--set ipam.mode=kubernetes --set endpointRoutes.enabled=false --set
-    tunnel=disabled``.
-
-    See also :gh-issue:`13121`.
 
 
 Attach a Label to the Node
@@ -98,7 +87,7 @@ the outside of the cluster, except if those pods are host-networking pods.
 
 To apply this policy, run:
 
-.. code-block:: shell-session
+.. parsed-literal::
 
     $ kubectl create -f \ |SCM_WEB|\/examples/policies/host/demo-host-policy.yaml
     ciliumclusterwidenetworkpolicy.cilium.io/demo-host-policy created

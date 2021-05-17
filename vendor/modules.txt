@@ -1,4 +1,4 @@
-# github.com/Azure/azure-sdk-for-go v50.0.0+incompatible
+# github.com/Azure/azure-sdk-for-go v50.2.0+incompatible
 ## explicit
 github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-07-01/compute
 github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-09-01/network
@@ -141,7 +141,7 @@ github.com/cilium/customvet/analysis/timeafter
 ## explicit
 github.com/cilium/deepequal-gen
 github.com/cilium/deepequal-gen/generators
-# github.com/cilium/ebpf v0.5.0
+# github.com/cilium/ebpf v0.5.1-0.20210421150058-a4ee356536f3
 ## explicit
 github.com/cilium/ebpf
 github.com/cilium/ebpf/asm
@@ -154,7 +154,7 @@ github.com/cilium/ebpf/perf
 github.com/cilium/ipam/cidrset
 github.com/cilium/ipam/service/allocator
 github.com/cilium/ipam/service/ipallocator
-# github.com/cilium/proxy v0.0.0-20210304222512-e7430b113e09
+# github.com/cilium/proxy v0.0.0-20210511221533-82a70d56bf32
 ## explicit
 github.com/cilium/proxy/go/cilium/api
 github.com/cilium/proxy/go/envoy/annotations
@@ -268,10 +268,6 @@ github.com/form3tech-oss/jwt-go
 # github.com/fsnotify/fsnotify v1.4.10-0.20200417215612-7f4cf4dd2b52
 ## explicit
 github.com/fsnotify/fsnotify
-# github.com/go-bindata/go-bindata/v3 v3.1.3
-## explicit
-github.com/go-bindata/go-bindata/v3
-github.com/go-bindata/go-bindata/v3/go-bindata
 # github.com/go-kit/kit v0.10.0
 github.com/go-kit/kit/log
 # github.com/go-logfmt/logfmt v0.5.0
@@ -375,7 +371,7 @@ github.com/google/gofuzz
 ## explicit
 github.com/google/gopacket
 github.com/google/gopacket/layers
-# github.com/google/gops v0.3.17
+# github.com/google/gops v0.3.18
 ## explicit
 github.com/google/gops/agent
 github.com/google/gops/internal
@@ -434,14 +430,13 @@ github.com/jeremywohl/flatten
 github.com/jmespath/go-jmespath
 # github.com/josharian/intern v1.0.0
 github.com/josharian/intern
+# github.com/josharian/native v0.0.0-20200817173448-b6b71def0850
+github.com/josharian/native
 # github.com/json-iterator/go v1.1.10
 github.com/json-iterator/go
 # github.com/kevinburke/ssh_config v0.0.0-20201106050909-4977a11b4351
 ## explicit
 github.com/kevinburke/ssh_config
-# github.com/kisielk/errcheck v1.5.0
-github.com/kisielk/errcheck
-github.com/kisielk/errcheck/errcheck
 # github.com/kr/pretty v0.2.1
 ## explicit
 github.com/kr/pretty
@@ -470,7 +465,7 @@ github.com/mdlayher/ethernet
 github.com/mdlayher/genetlink
 # github.com/mdlayher/ndp v0.0.0-20200602162440-17ab9e3e5567
 github.com/mdlayher/ndp
-# github.com/mdlayher/netlink v1.1.0
+# github.com/mdlayher/netlink v1.4.0
 github.com/mdlayher/netlink
 github.com/mdlayher/netlink/nlenc
 # github.com/mdlayher/raw v0.0.0-20191009151244-50f2db8cc065
@@ -621,7 +616,7 @@ github.com/subosito/gotenv
 github.com/tklauser/go-sysconf
 # github.com/tklauser/numcpus v0.2.1
 github.com/tklauser/numcpus
-# github.com/vishvananda/netlink v1.1.1-0.20210324230033-66fce01bfa0e
+# github.com/vishvananda/netlink v1.1.1-0.20210510164352-d17758a128bf
 ## explicit
 github.com/vishvananda/netlink
 github.com/vishvananda/netlink/nl
@@ -689,7 +684,7 @@ go.universe.tf/metallb/pkg/controller
 go.universe.tf/metallb/pkg/k8s/types
 go.universe.tf/metallb/pkg/layer2
 go.universe.tf/metallb/pkg/speaker
-# golang.org/x/crypto v0.0.0-20210220033148-5ea612d1eb83
+# golang.org/x/crypto v0.0.0-20210503195802-e9a32991a82e
 ## explicit
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/chacha20
@@ -709,7 +704,7 @@ golang.org/x/lint/golint
 # golang.org/x/mod v0.3.1-0.20200828183125-ce943fd02449
 golang.org/x/mod/module
 golang.org/x/mod/semver
-# golang.org/x/net v0.0.0-20210226172049-e18ecbb05110
+# golang.org/x/net v0.0.0-20210504132125-bbd867fde50d
 ## explicit
 golang.org/x/net/bpf
 golang.org/x/net/context
@@ -738,7 +733,7 @@ golang.org/x/oauth2/internal
 ## explicit
 golang.org/x/sync/errgroup
 golang.org/x/sync/semaphore
-# golang.org/x/sys v0.0.0-20210314195730-07df6a141424
+# golang.org/x/sys v0.0.0-20210503173754-0981d6026fa6
 ## explicit
 golang.org/x/sys/cpu
 golang.org/x/sys/execabs
@@ -748,7 +743,7 @@ golang.org/x/sys/unix
 golang.org/x/sys/windows
 # golang.org/x/term v0.0.0-20210220032956-6a3ed077a48d
 golang.org/x/term
-# golang.org/x/text v0.3.5
+# golang.org/x/text v0.3.6
 golang.org/x/text/encoding
 golang.org/x/text/encoding/charmap
 golang.org/x/text/encoding/htmlindex
@@ -811,9 +806,9 @@ golang.org/x/tools/internal/typesinternal
 # golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
 golang.org/x/xerrors
 golang.org/x/xerrors/internal
-# golang.zx2c4.com/wireguard v0.0.20200121
+# golang.zx2c4.com/wireguard v0.0.0-20210427022245-097af6e1351b
 golang.zx2c4.com/wireguard/ipc/winpipe
-# golang.zx2c4.com/wireguard/wgctrl v0.0.0-20200609130330-bd2cb7843e1b
+# golang.zx2c4.com/wireguard/wgctrl v0.0.0-20210506160403-92e472f520a5
 ## explicit
 golang.zx2c4.com/wireguard/wgctrl
 golang.zx2c4.com/wireguard/wgctrl/internal/wginternal

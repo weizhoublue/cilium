@@ -7,7 +7,7 @@
 Weekly Community Meeting
 ========================
 
-The Cilium contributors gather every Monday at 8am PDT, 17:00 CEST, for a
+The Cilium contributors gather every Wednesday at 8am PDT, 17:00 CEST, for a
 one-hour Zoom call open to everyone. During that time, we discuss:
 
 - the statuses of the next releases for each supported Cilium release
@@ -79,7 +79,7 @@ and meeting links.
 ====================== ===================================== ============= ================================================================================
 SIG                    Meeting                               Slack         Description
 ====================== ===================================== ============= ================================================================================
-Datapath               Wednesdays, 08:00 PT                  #sig-datapath Owner of all eBPF- and Linux-kernel-related datapath code.
+Datapath               Thursdays, 08:00 PT                   #sig-datapath Owner of all eBPF- and Linux-kernel-related datapath code.
 Documentation          None                                  #sig-docs     All documentation related discussions
 Envoy                  On demand                             #sig-envoy    Envoy, Istio and maintenance of all L7 protocol parsers.
 Hubble                 During community meeting              #sig-hubble   Owner of all Hubble-related code: Server, UI, CLI and Relay.

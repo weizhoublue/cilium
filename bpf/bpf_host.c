@@ -459,6 +459,15 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
+/* If IPv4 fragmentation is disabled
+ * AND a IPv4 fragmented packet is received,
+ * then drop the packet.
+ */
+#ifndef ENABLE_IPV4_FRAGMENTS
+	if (ipv4_is_fragment(ip4))
+		return DROP_FRAG_NOSUPPORT;
+#endif
+
 #ifdef ENABLE_NODEPORT
 	if (!from_host) {
 		if (ctx_get_xfer(ctx) != XFER_PKT_NO_SVC &&
@@ -524,12 +533,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 		 * the local ip stack.
 		 */
 		if (ep->flags & ENDPOINT_F_HOST)
-#ifdef HOST_REDIRECT_TO_INGRESS
-			/* This is required for L7 proxy to send packets to the host. */
-			return redirect(HOST_IFINDEX, BPF_F_INGRESS);
-#else
 			return CTX_ACT_OK;
-#endif
 
 		return ipv4_local_delivery(ctx, ETH_HLEN, secctx, ip4, ep,
 					   METRIC_INGRESS, from_host);
@@ -568,10 +572,6 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	}
 #endif
 
-#ifdef HOST_REDIRECT_TO_INGRESS
-	return redirect(HOST_IFINDEX, BPF_F_INGRESS);
-#else
-
 	info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
 	if (info == NULL || info->sec_label == WORLD_ID) {
 		/* We have received a packet for which no ipcache entry exists,
@@ -599,7 +599,6 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	}
 #endif
 	return CTX_ACT_OK;
-#endif
 }
 
 static __always_inline int
@@ -702,7 +701,13 @@ do_netdev_encrypt_fib(struct __ctx_buff *ctx __maybe_unused,
 		      int *encrypt_iface __maybe_unused)
 {
 	int ret = 0;
-#ifdef BPF_HAVE_FIB_LOOKUP
+	/* Only do FIB lookup if both the BPF helper is supported and we know
+	 * the egress ineterface. If we don't have an egress interface,
+	 * typically in an environment with many egress devs than we have
+	 * to let the stack decide how to egress the packet. EKS is the
+	 * example of an environment with multiple egress interfaces.
+	 */
+#if defined(BPF_HAVE_FIB_LOOKUP) && defined(ENCRYPT_IFACE)
 	struct bpf_fib_lookup fib_params = {};
 	void *data, *data_end;
 	int err;
@@ -757,7 +762,7 @@ static __always_inline int do_netdev_encrypt(struct __ctx_buff *ctx, __u16 proto
 {
 	int encrypt_iface = 0;
 	int ret = 0;
-#if defined(ENCRYPT_IFACE)
+#if defined(ENCRYPT_IFACE) && defined(BPF_HAVE_FIB_LOOKUP)
 	encrypt_iface = ENCRYPT_IFACE;
 #endif
 	ret = do_netdev_encrypt_pools(ctx);
@@ -769,8 +774,16 @@ static __always_inline int do_netdev_encrypt(struct __ctx_buff *ctx, __u16 proto
 		return send_drop_notify_error(ctx, 0, ret, CTX_ACT_DROP, METRIC_INGRESS);
 
 	bpf_clear_meta(ctx);
+#ifdef BPF_HAVE_FIB_LOOKUP
+	/* Redirect only works if we have a fib lookup to set the MAC
+	 * addresses. Otherwise let the stack do the routing and fib
+	 * Note, without FIB lookup implemented the packet may have
+	 * incorrect dmac leaving bpf_host so will need to mark as
+	 * PACKET_HOST or otherwise fixup MAC addresses.
+	 */
 	if (encrypt_iface)
 		return redirect(encrypt_iface, 0);
+#endif
 	return CTX_ACT_OK;
 }
 
@@ -820,21 +833,6 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
 		int trace = TRACE_FROM_HOST;
 		bool from_proxy;
 
-#ifdef HOST_REDIRECT_TO_INGRESS
-		if (proto == bpf_htons(ETH_P_ARP)) {
-			union macaddr mac = HOST_IFINDEX_MAC;
-			union macaddr smac;
-			__be32 sip;
-			__be32 tip;
-
-			/* Pass any unknown ARP requests to the Linux stack */
-			if (!arp_validate(ctx, &mac, &smac, &sip, &tip))
-				return CTX_ACT_OK;
-
-			return arp_respond(ctx, &mac, tip, &smac, sip,
-					   BPF_F_INGRESS);
-		}
-#endif
 		from_proxy = inherit_identity_from_host(ctx, &identity);
 		if (from_proxy)
 			trace = TRACE_FROM_PROXY;
@@ -946,7 +944,7 @@ int from_netdev(struct __ctx_buff *ctx)
 
 /*
  * from-host is attached as a tc egress filter to the node's 'cilium_host'
- * interface, or to the primary Flannel device if present.
+ * interface if present.
  */
 __section("from-host")
 int from_host(struct __ctx_buff *ctx)
@@ -1059,7 +1057,7 @@ out:
 
 /*
  * to-host is attached as a tc ingress filter to both the 'cilium_host' and
- * 'cilium_net' devices, or to the primary Flannel device if present.
+ * 'cilium_net' devices if present.
  */
 __section("to-host")
 int to_host(struct __ctx_buff *ctx)
@@ -1087,6 +1085,15 @@ int to_host(struct __ctx_buff *ctx)
 		 */
 		traced = true;
 	}
+
+#ifdef ENABLE_IPSEC
+	/* Encryption stack needs this when IPSec headers are
+	 * rewritten without FIB helper because we do not yet
+	 * know correct MAC address which will cause the stack
+	 * to mark as PACKET_OTHERHOST and drop.
+	 */
+	ctx_change_type(ctx, PACKET_HOST);
+#endif
 
 	if (!traced)
 		send_trace_notify(ctx, TRACE_TO_STACK, srcID, 0, 0,

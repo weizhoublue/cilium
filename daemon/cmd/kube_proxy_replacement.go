@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -108,6 +109,12 @@ func initKubeProxyReplacementOptions() (strict bool) {
 			option.Config.NodePortMode == option.NodePortModeHybrid &&
 				option.Config.LoadBalancerDSRDispatch != option.DSRDispatchOption {
 			log.Fatalf("Invalid value for --%s: %s", option.LoadBalancerDSRDispatch, option.Config.LoadBalancerDSRDispatch)
+		}
+
+		if option.Config.NodePortMode == option.NodePortModeDSR &&
+			option.Config.LoadBalancerDSRL4Xlate != option.DSRL4XlateFrontend &&
+			option.Config.LoadBalancerDSRL4Xlate != option.DSRL4XlateBackend {
+			log.Fatalf("Invalid value for --%s: %s", option.LoadBalancerDSRL4Xlate, option.Config.LoadBalancerDSRL4Xlate)
 		}
 
 		if option.Config.LoadBalancerRSSv4CIDR != "" {
@@ -358,6 +365,11 @@ func initKubeProxyReplacementOptions() (strict bool) {
 			log.Fatalf("%s requires the agent to run with %s=%s.",
 				option.InstallNoConntrackIptRules, option.KubeProxyReplacement, option.KubeProxyReplacementStrict)
 		}
+
+		if !option.Config.EnableBPFMasquerade {
+			log.Fatalf("%s requires the agent to run with %s.",
+				option.InstallNoConntrackIptRules, option.EnableBPFMasquerade)
+		}
 	}
 
 	return
@@ -413,6 +425,8 @@ func probeCgroupSupportUDP(strict, ipv4 bool) {
 
 // handleNativeDevices tries to detect bpf_host devices (if needed).
 func handleNativeDevices(strict bool) {
+	expandDevices()
+
 	detectNodePortDevs := len(option.Config.Devices) == 0 &&
 		(option.Config.EnableNodePort || option.Config.EnableHostFirewall || option.Config.EnableBandwidthManager)
 	detectDirectRoutingDev := option.Config.EnableNodePort &&
@@ -494,9 +508,6 @@ func finishKubeProxyReplacementInit(isKubeProxyReplacementStrict bool) {
 	if !option.Config.EnableHostLegacyRouting {
 		msg := ""
 		switch {
-		// If we chain CNIs then all bets are off.
-		case option.Config.IsFlannelMasterDeviceSet():
-			msg = fmt.Sprintf("BPF host routing is incompatible with %s.", option.FlannelMasterDevice)
 		// Needs host stack for packet handling.
 		case option.Config.EnableIPSec:
 			msg = fmt.Sprintf("BPF host routing is incompatible with %s.", option.EnableIPSecName)
@@ -708,6 +719,34 @@ func detectNodeDevice(ifidxByAddr map[string]int) (string, error) {
 	}
 
 	return link.Attrs().Name, nil
+}
+
+// expandDevices expands all wildcard device names to concrete devices.
+// e.g. device "eth+" expands to "eth0,eth1" etc. Non-matching wildcards are ignored.
+func expandDevices() {
+	allLinks, err := netlink.LinkList()
+	if err != nil {
+		log.WithError(err).Fatal("Cannot list network devices via netlink")
+	}
+	expandedDevices := make(map[string]bool)
+	for _, iface := range option.Config.Devices {
+		if strings.HasSuffix(iface, "+") {
+			prefix := strings.TrimRight(iface, "+")
+			for _, link := range allLinks {
+				attrs := link.Attrs()
+				if strings.HasPrefix(attrs.Name, prefix) {
+					expandedDevices[attrs.Name] = true
+				}
+			}
+		} else {
+			expandedDevices[iface] = true
+		}
+	}
+	option.Config.Devices = make([]string, 0, len(expandedDevices))
+	for dev := range expandedDevices {
+		option.Config.Devices = append(option.Config.Devices, dev)
+	}
+	sort.Strings(option.Config.Devices)
 }
 
 // checkNodePortAndEphemeralPortRanges checks whether the ephemeral port range

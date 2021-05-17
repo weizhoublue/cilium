@@ -58,10 +58,6 @@ const (
 	// https://github.com/kubernetes/dns/blob/80fdd88276adba36a87c4f424b66fdf37cd7c9a8/pkg/dns/dns.go#L53
 	DNSHelperTimeout = 7 * time.Minute
 
-	// CIIntegrationFlannel contains the constant to be used when flannel is
-	// used in the CI.
-	CIIntegrationFlannel = "flannel"
-
 	// CIIntegrationEKSChaining contains the constants to be used when running tests on EKS with aws-cni in chaining mode.
 	CIIntegrationEKSChaining = "eks-chaining"
 
@@ -96,13 +92,17 @@ var (
 	defaultHelmOptions = map[string]string{
 		"image.repository":              "k8s1:5000/cilium/cilium-dev",
 		"image.tag":                     "latest",
+		"image.useDigest":               "false",
 		"preflight.image.repository":    "k8s1:5000/cilium/cilium-dev", // Set again in init to match agent.image!
 		"preflight.image.tag":           "latest",
+		"preflight.image.useDigest":     "false",
 		"operator.image.repository":     "k8s1:5000/cilium/operator",
 		"operator.image.tag":            "latest",
 		"operator.image.suffix":         "",
+		"operator.image.useDigest":      "false",
 		"hubble.relay.image.repository": "k8s1:5000/cilium/hubble-relay",
 		"hubble.relay.image.tag":        "latest",
+		"hubble.relay.image.useDigest":  "false",
 		"debug.enabled":                 "true",
 		"k8s.requireIPv4PodCIDR":        "true",
 		"pprof.enabled":                 "true",
@@ -123,12 +123,6 @@ var (
 		"nativeRoutingCIDR":      NativeRoutingCIDR,
 
 		"ipam.operator.clusterPoolIPv6PodCIDR": "fd02::/112",
-	}
-
-	flannelHelmOverrides = map[string]string{
-		"flannel.enabled": "true",
-		"ipv6.enabled":    "false",
-		"tunnel":          "disabled",
 	}
 
 	eksChainingHelmOverrides = map[string]string{
@@ -191,7 +185,6 @@ var (
 	// specific CI environment integrations.
 	// The key must be a string consisting of lower case characters.
 	helmOverrides = map[string]map[string]string{
-		CIIntegrationFlannel:     flannelHelmOverrides,
 		CIIntegrationEKSChaining: eksChainingHelmOverrides,
 		CIIntegrationEKS:         eksHelmOverrides,
 		CIIntegrationGKE:         gkeHelmOverrides,
@@ -2372,7 +2365,7 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 			opts["k8sServicePort"] = "6443"
 		}
 
-		if RunsOnNetNextOr419Kernel() {
+		if RunsOn419OrLaterKernel() {
 			opts["bpf.masquerade"] = "true"
 		}
 
@@ -2383,7 +2376,7 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 
 	// Disable unsupported features that will just generated unnecessary
 	// warnings otherwise.
-	if DoesNotRunOnNetNextOr419Kernel() {
+	if DoesNotRunOn419OrLaterKernel() {
 		addIfNotOverwritten(options, "kubeProxyReplacement", "disabled")
 		addIfNotOverwritten(options, "bpf.masquerade", "false")
 		addIfNotOverwritten(options, "sessionAffinity", "false")
@@ -2571,7 +2564,6 @@ func (kub *Kubectl) convertOptionsToLegacyOptions(options map[string]string) map
 		"enableCnpStatusUpdates":        "config.enableCnpStatusUpdates",
 		"etcd.leaseTTL":                 "global.etcd.leaseTTL",
 		"externalIPs.enabled":           "global.externalIPs.enabled",
-		"flannel.enabled":               "global.flannel.enabled",
 		"gke.enabled":                   "global.gke.enabled",
 		"hostFirewall":                  "global.hostFirewall",
 		"hostPort.enabled":              "global.hostPort.enabled",
@@ -3740,14 +3732,12 @@ func (kub *Kubectl) validateCilium() error {
 		return nil
 	})
 
-	if GetCurrentIntegration() != CIIntegrationFlannel {
-		g.Go(func() error {
-			if err := kub.ciliumHealthPreFlightCheck(); err != nil {
-				return fmt.Errorf("connectivity health is failing: %s", err)
-			}
-			return nil
-		})
-	}
+	g.Go(func() error {
+		if err := kub.ciliumHealthPreFlightCheck(); err != nil {
+			return fmt.Errorf("connectivity health is failing: %s", err)
+		}
+		return nil
+	})
 
 	g.Go(func() error {
 		err := kub.fillServiceCache()

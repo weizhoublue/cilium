@@ -93,14 +93,15 @@ MAX_BASE_OPTIONS += -DHAVE_LPM_TRIE_MAP_TYPE=1 -DHAVE_LRU_HASH_MAP_TYPE=1 \
 	-DENABLE_SESSION_AFFINITY=1 -DENABLE_DSR_ICMP_ERRORS=1 -DENABLE_DSR=1 \
 	-DENABLE_HOSTPORT=1 -DENABLE_LOADBALANCER -DENABLE_DSR_HYBRID=1 \
 	-DENABLE_DSR_ICMP_ERRORS=1 -DENABLE_IPV4_FRAGMENTS=1
-ifeq ("$(KERNEL)","netnext")
-# We need to define ENABLE_HOST_SERVICES_FULL to work around complexity issue #14234.
+ifeq ("$(KERNEL)","54")
+MAX_BASE_OPTIONS += -DENABLE_BANDWIDTH_MANAGER=1
+else ifeq ("$(KERNEL)","netnext")
 # We define ENABLE_CUSTOM_CALLS only for net-next (vs. net-next and 4.19) to work
 # around program size issue #15539.
 # We define ETH_HLEN only for net-next, as bpf_skb_change_head is non-available
 # on 4.{9,19}.
 MAX_BASE_OPTIONS += -DENABLE_TPROXY=1 -DENABLE_REDIRECT_FAST=1 -DENABLE_BANDWIDTH_MANAGER=1 \
-	-DENABLE_HOST_SERVICES_FULL=1 -DENABLE_CUSTOM_CALLS=1 -DETH_HLEN=0
+	-DENABLE_CUSTOM_CALLS=1 -DETH_HLEN=0
 endif
 endif
 
@@ -215,6 +216,7 @@ bpf_xdp.o: bpf_xdp.ll
 
 # The following option combinations are compile tested
 LXC_OPTIONS = \
+	 -DHOST_REDIRECT_TO_INGRESS: \
 	 -DALLOW_ICMP_FRAG_NEEDED: \
 	 -DSKIP_DEBUG: \
 	 -DHAVE_LPM_TRIE_MAP_TYPE: \

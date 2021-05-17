@@ -158,6 +158,9 @@ func init() {
           },
           "404": {
             "description": "Endpoints with provided parameters not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       }
@@ -190,6 +193,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -221,6 +227,9 @@ func init() {
           "409": {
             "description": "Endpoint already exists",
             "x-go-name": "Exists"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           },
           "500": {
             "description": "Endpoint creation failed",
@@ -262,6 +271,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -294,6 +306,9 @@ func init() {
           "404": {
             "description": "Endpoint does not exist"
           },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
+          },
           "500": {
             "description": "Endpoint update failed",
             "schema": {
@@ -325,6 +340,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -357,6 +375,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           },
           "500": {
             "description": "Update failed. Details in message.",
@@ -392,6 +413,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       }
@@ -416,6 +440,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -444,6 +471,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           },
           "500": {
             "description": "Error while updating labels",
@@ -479,6 +509,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       }
@@ -1961,6 +1994,15 @@ func init() {
         "cilium-version": {
           "type": "string"
         },
+        "encryption": {
+          "type": "object",
+          "properties": {
+            "wireguard": {
+              "description": "Status of the Wireguard agent",
+              "$ref": "#/definitions/WireguardStatus"
+            }
+          }
+        },
         "endpoint-list": {
           "type": "array",
           "items": {
@@ -1990,6 +2032,27 @@ func init() {
           "additionalProperties": {
             "type": "string"
           }
+        }
+      }
+    },
+    "EncryptionStatus": {
+      "description": "Status of transparent encryption\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Disabled",
+            "IPsec",
+            "Wireguard"
+          ]
+        },
+        "msg": {
+          "description": "Human readable status/error/warning message",
+          "type": "string"
+        },
+        "wireguard": {
+          "description": "Status of the Wireguard agent",
+          "$ref": "#/definitions/WireguardStatus"
         }
       }
     },
@@ -3788,6 +3851,10 @@ func init() {
           "description": "Status of all endpoint controllers",
           "$ref": "#/definitions/ControllerStatuses"
         },
+        "encryption": {
+          "description": "Status of transparent encryption",
+          "$ref": "#/definitions/EncryptionStatus"
+        },
         "host-routing": {
           "description": "Status of host routing",
           "$ref": "#/definitions/HostRouting"
@@ -3871,6 +3938,79 @@ func init() {
         },
         "labels": {
           "$ref": "#/definitions/Labels"
+        }
+      }
+    },
+    "WireguardInterface": {
+      "description": "Status of a Wireguard interface\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "listen-port": {
+          "description": "Port on which the Wireguard endpoint is exposed",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name of the interface",
+          "type": "string"
+        },
+        "peer-count": {
+          "description": "Number of peers configured on this interface",
+          "type": "integer"
+        },
+        "peers": {
+          "description": "Optional list of wireguard peers",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WireguardPeer"
+          }
+        },
+        "public-key": {
+          "description": "Public key of this interface",
+          "type": "string"
+        }
+      }
+    },
+    "WireguardPeer": {
+      "description": "Status of a Wireguard peer\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "allowed-ips": {
+          "description": "List of IPs which may be routed through this peer",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint": {
+          "description": "Endpoint on which we are connected to this peer",
+          "type": "string"
+        },
+        "last-handshake-time": {
+          "description": "Timestamp of the last handshake with this peer",
+          "type": "string",
+          "format": "date-time"
+        },
+        "public-key": {
+          "description": "Public key of this peer",
+          "type": "string"
+        },
+        "transfer-rx": {
+          "description": "Number of received bytes",
+          "type": "integer"
+        },
+        "transfer-tx": {
+          "description": "Number of sent bytes",
+          "type": "integer"
+        }
+      }
+    },
+    "WireguardStatus": {
+      "description": "Status of the Wireguard agent\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "interfaces": {
+          "description": "Wireguard interfaces managed by this Cilium instance",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WireguardInterface"
+          }
         }
       }
     }
@@ -4179,6 +4319,9 @@ func init() {
           },
           "404": {
             "description": "Endpoints with provided parameters not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       }
@@ -4215,6 +4358,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -4255,6 +4401,9 @@ func init() {
           "409": {
             "description": "Endpoint already exists",
             "x-go-name": "Exists"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           },
           "500": {
             "description": "Endpoint creation failed",
@@ -4300,6 +4449,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -4341,6 +4493,9 @@ func init() {
           "404": {
             "description": "Endpoint does not exist"
           },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
+          },
           "500": {
             "description": "Endpoint update failed",
             "schema": {
@@ -4376,6 +4531,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -4412,6 +4570,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           },
           "500": {
             "description": "Update failed. Details in message.",
@@ -4451,6 +4612,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       }
@@ -4479,6 +4643,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       },
@@ -4511,6 +4678,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           },
           "500": {
             "description": "Error while updating labels",
@@ -4550,6 +4720,9 @@ func init() {
           },
           "404": {
             "description": "Endpoint not found"
+          },
+          "429": {
+            "description": "Rate-limiting too many requests in the given time frame"
           }
         }
       }
@@ -6212,6 +6385,15 @@ func init() {
         "cilium-version": {
           "type": "string"
         },
+        "encryption": {
+          "type": "object",
+          "properties": {
+            "wireguard": {
+              "description": "Status of the Wireguard agent",
+              "$ref": "#/definitions/WireguardStatus"
+            }
+          }
+        },
         "endpoint-list": {
           "type": "array",
           "items": {
@@ -6241,6 +6423,36 @@ func init() {
           "additionalProperties": {
             "type": "string"
           }
+        }
+      }
+    },
+    "DebugInfoEncryption": {
+      "type": "object",
+      "properties": {
+        "wireguard": {
+          "description": "Status of the Wireguard agent",
+          "$ref": "#/definitions/WireguardStatus"
+        }
+      }
+    },
+    "EncryptionStatus": {
+      "description": "Status of transparent encryption\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Disabled",
+            "IPsec",
+            "Wireguard"
+          ]
+        },
+        "msg": {
+          "description": "Human readable status/error/warning message",
+          "type": "string"
+        },
+        "wireguard": {
+          "description": "Status of the Wireguard agent",
+          "$ref": "#/definitions/WireguardStatus"
         }
       }
     },
@@ -8306,6 +8518,10 @@ func init() {
           "description": "Status of all endpoint controllers",
           "$ref": "#/definitions/ControllerStatuses"
         },
+        "encryption": {
+          "description": "Status of transparent encryption",
+          "$ref": "#/definitions/EncryptionStatus"
+        },
         "host-routing": {
           "description": "Status of host routing",
           "$ref": "#/definitions/HostRouting"
@@ -8389,6 +8605,79 @@ func init() {
         },
         "labels": {
           "$ref": "#/definitions/Labels"
+        }
+      }
+    },
+    "WireguardInterface": {
+      "description": "Status of a Wireguard interface\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "listen-port": {
+          "description": "Port on which the Wireguard endpoint is exposed",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name of the interface",
+          "type": "string"
+        },
+        "peer-count": {
+          "description": "Number of peers configured on this interface",
+          "type": "integer"
+        },
+        "peers": {
+          "description": "Optional list of wireguard peers",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WireguardPeer"
+          }
+        },
+        "public-key": {
+          "description": "Public key of this interface",
+          "type": "string"
+        }
+      }
+    },
+    "WireguardPeer": {
+      "description": "Status of a Wireguard peer\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "allowed-ips": {
+          "description": "List of IPs which may be routed through this peer",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint": {
+          "description": "Endpoint on which we are connected to this peer",
+          "type": "string"
+        },
+        "last-handshake-time": {
+          "description": "Timestamp of the last handshake with this peer",
+          "type": "string",
+          "format": "date-time"
+        },
+        "public-key": {
+          "description": "Public key of this peer",
+          "type": "string"
+        },
+        "transfer-rx": {
+          "description": "Number of received bytes",
+          "type": "integer"
+        },
+        "transfer-tx": {
+          "description": "Number of sent bytes",
+          "type": "integer"
+        }
+      }
+    },
+    "WireguardStatus": {
+      "description": "Status of the Wireguard agent\n\n+k8s:deepcopy-gen=true",
+      "properties": {
+        "interfaces": {
+          "description": "Wireguard interfaces managed by this Cilium instance",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WireguardInterface"
+          }
         }
       }
     }

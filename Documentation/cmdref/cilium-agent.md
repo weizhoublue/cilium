@@ -18,6 +18,7 @@ cilium-agent [flags]
       --allow-localhost string                               Policy when to allow local stack to reach local endpoints { auto | always | policy } (default "auto")
       --annotate-k8s-node                                    Annotate Kubernetes node (default true)
       --api-rate-limit map                                   API rate limiting configuration (example: --rate-limit endpoint-create=rate-limit:10/m,rate-burst:2) (default map[])
+      --arping-refresh-period duration                       Period for remote node ARP entry refresh (set 0 to disable) (default 5m0s)
       --auto-create-cilium-node-resource                     Automatically create CiliumNode resource for own node on startup (default true)
       --auto-direct-node-routes                              Enable automatic L2 routing between nodes
       --bgp-announce-lb-ip                                   Announces service IPs of type LoadBalancer via BGP
@@ -36,6 +37,8 @@ cilium-agent [flags]
       --bpf-lb-bypass-fib-lookup                             Enable FIB lookup bypass optimization for nodeport reverse NAT handling (default true)
       --bpf-lb-dev-ip-addr-inherit string                    Device name which IP addr is inherited by devices running LB BPF program (--devices)
       --bpf-lb-dsr-dispatch string                           BPF load balancing DSR dispatch method ("opt", "ipip") (default "opt")
+      --bpf-lb-dsr-l4-xlate string                           BPF load balancing DSR L4 DNAT method for IPIP ("frontend", "backend") (default "frontend")
+      --bpf-lb-external-clusterip                            Enable external access to ClusterIP services (default false)
       --bpf-lb-maglev-hash-seed string                       Maglev cluster-wide hash seed (base64 encoded) (default "JLfvgnHc2kaSUFaI")
       --bpf-lb-maglev-table-size uint                        Maglev per service backend table size (parameter M) (default 16381)
       --bpf-lb-map-max int                                   Maximum number of entries in Cilium BPF lbmap (default 65536)
@@ -60,7 +63,7 @@ cilium-agent [flags]
       --datapath-mode string                                 Datapath mode name (default "veth")
   -D, --debug                                                Enable debugging mode
       --debug-verbose strings                                List of enabled verbose debug groups
-      --devices strings                                      List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall)
+      --devices strings                                      List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'
       --direct-routing-device string                         Device name used to connect nodes in direct routing mode (required only by BPF NodePort; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)
       --disable-cnp-status-updates                           Do not send CNP NodeStatus updates to the Kubernetes api-server (recommended to run with "cnp-node-status-gc-interval=0" in cilium-operator)
       --disable-conntrack                                    Disable connection tracking
@@ -75,6 +78,7 @@ cilium-agent [flags]
       --enable-bpf-masquerade                                Masquerade packets from endpoints leaving the host with BPF instead of iptables
       --enable-bpf-tproxy                                    Enable BPF-based proxy redirection, if support available
       --enable-custom-calls                                  Enable tail call hooks for custom eBPF programs
+      --enable-egress-gateway                                Enable egress gateway
       --enable-endpoint-health-checking                      Enable connectivity health checking between virtual endpoints (default true)
       --enable-endpoint-routes                               Use per endpoint routes instead of routing via cilium_host
       --enable-external-ips                                  Enable k8s service externalIPs feature (requires enabling enable-node-port) (default true)
@@ -120,14 +124,13 @@ cilium-agent [flags]
       --envoy-log string                                     Path to a separate Envoy log file, if any
       --exclude-local-address strings                        Exclude CIDR from being recognized as local address
       --fixed-identity-mapping map                           Key-value for the fixed identity mapping which allows to use reserved label for fixed identities (default map[])
-      --flannel-master-device string                         Installs a BPF program to allow for policy enforcement in the given network interface. Allows to run Cilium on top of other CNI plugins that provide networking, e.g. flannel, where for flannel, this value should be set with 'cni0'. [EXPERIMENTAL]
-      --flannel-uninstall-on-exit                            When used along the flannel-master-device flag, it cleans up all BPF programs installed when Cilium agent is terminated.
       --force-local-policy-eval-at-source                    Force policy evaluation of all local communication at the source endpoint (default true)
       --gops-port int                                        Port for gops server to listen on (default 9890)
   -h, --help                                                 help for cilium-agent
       --host-reachable-services-protos strings               Only enable reachability of services for host applications for specific protocols (default [tcp,udp])
       --http-idle-timeout uint                               Time after which a non-gRPC HTTP stream is considered failed unless traffic in the stream has been processed (in seconds); defaults to 0 (unlimited)
       --http-max-grpc-timeout uint                           Time after which a forwarded gRPC request is considered failed unless completed (in seconds). A "grpc-timeout" header may override this with a shorter value; defaults to 0 (unlimited)
+      --http-normalize-path                                  Use Envoy HTTP path normalization options, which currently includes RFC 3986 path normalization, Envoy merge slashes option, and unescaping and redirecting for paths that contain escaped slashes. These are necessary to keep path based access control functional, and should not interfere with normal operation. Set this to false only with caution. (default true)
       --http-request-timeout uint                            Time after which a forwarded HTTP request is considered failed unless completed (in seconds); Use 0 for unlimited (default 3600)
       --http-retry-count uint                                Number of retries performed after a forwarded request attempt fails (default 3)
       --http-retry-timeout uint                              Time after which a forwarded but uncompleted request is retried (connection failures are retried immediately); defaults to 0 (never)

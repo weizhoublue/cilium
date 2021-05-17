@@ -13,6 +13,7 @@
 {{- $enableIdentityMark := "true" -}}
 {{- $fragmentTracking := "true" -}}
 {{- $crdWaitTimeout := "5m" -}}
+{{- $defaultKubeProxyReplacement := "probe" -}}
 
 {{- /* Default values when 1.8 was initially deployed */ -}}
 {{- if semverCompare ">=1.8" (default "1.8" .Values.upgradeCompatibility) -}}
@@ -31,9 +32,15 @@
 {{- $defaultBpfCtAnyMax = 0 -}}
 {{- end -}}
 
+{{- /* Default values when 1.10 was initially deployed */ -}}
+{{- if semverCompare ">=1.10" (default "1.10" .Values.upgradeCompatibility) -}}
+{{- $defaultKubeProxyReplacement = "disabled" -}}
+{{- end -}}
+
 {{- $ipam := (coalesce .Values.ipam.mode $defaultIPAM) -}}
 {{- $bpfCtTcpMax := (coalesce .Values.bpf.ctTcpMax $defaultBpfCtTcpMax) -}}
 {{- $bpfCtAnyMax := (coalesce .Values.bpf.ctAnyMax $defaultBpfCtAnyMax) -}}
+{{- $kubeProxyReplacement := (coalesce .Values.kubeProxyReplacement $defaultKubeProxyReplacement) -}}
 
 apiVersion: v1
 kind: ConfigMap
@@ -289,6 +296,10 @@ data:
 {{- if hasKey .Values.bpf "lbBypassFIBLookup" }}
   bpf-lb-bypass-fib-lookup: {{ .Values.bpf.lbBypassFIBLookup | quote }}
 {{- end }}
+{{- if hasKey .Values.bpf "lbExternalClusterIP" }}
+  bpf-lb-external-clusterip: {{ .Values.bpf.lbExternalClusterIP | quote }}
+{{- end }}
+
   # Pre-allocation of map entries allows per-packet latency to be reduced, at
   # the expense of up-front memory allocation for the entries in the maps. The
   # default value below will minimize memory usage in the default installation;
@@ -363,19 +374,6 @@ data:
   auto-create-cilium-node-resource: "true"
 {{- end }}
 
-{{- if .Values.flannel.enabled }}
-  # Interface to be used when running Cilium on top of a CNI plugin.
-  # For flannel, use "cni0"
-  flannel-master-device: {{ .Values.flannel.masterDevice }}
-
-  # When running Cilium with policy enforcement enabled on top of a CNI plugin
-  # the BPF programs will be installed on the network interface specified in
-  # 'flannel-master-device' and on all network interfaces belonging to
-  # a container. When the Cilium DaemonSet is removed, the BPF programs will
-  # be kept in the interfaces unless this option is set to "true".
-  flannel-uninstall-on-exit: "{{ .Values.flannel.uninstallOnExit}}"
-{{- end }}
-
 {{- if hasKey .Values "l7Proxy" }}
   # Enables L7 proxy for L7 policy enforcement and visibility
   enable-l7-proxy: {{ .Values.l7Proxy | quote }}
@@ -422,22 +420,29 @@ data:
   enable-ip-masq-agent: "true"
 {{- end }}
 
-{{- if hasKey .Values "wireguard" }}
-{{- if .Values.wireguard.enabled }}
-  enable-wireguard: {{ .Values.wireguard.enabled | quote }}
-{{- end }}
+{{- if .Values.encryption.enabled }}
+  {{- if eq .Values.encryption.type "ipsec" }}
+  enable-ipsec: {{ .Values.encryption.enabled | quote }}
+
+    {{- if and .Values.encryption.ipsec.mountPath .Values.encryption.ipsec.keyFile }}
+  ipsec-key-file: {{ .Values.encryption.ipsec.mountPath }}/{{ .Values.encryption.ipsec.keyFile }}
+    {{- else }}
+  ipsec-key-file: {{ .Values.encryption.mountPath }}/{{ .Values.encryption.keyFile }}
+    {{- end }}
+    {{- if .Values.encryption.ipsec.interface }}
+  encrypt-interface: {{ .Values.encryption.ipsec.interface }}
+    {{- else if .Values.encryption.interface }}
+  encrypt-interface: {{ .Values.encryption.interface }}
+    {{- end }}
+
+    {{- if .Values.encryption.nodeEncryption }}
+  encrypt-node: {{ .Values.encryption.nodeEncryption | quote }}
+    {{- end }}
+  {{- else if eq .Values.encryption.type "wireguard" }}
+  enable-wireguard: {{ .Values.encryption.enabled | quote }}
+  {{- end }}
 {{- end }}
 
-{{- if .Values.encryption.enabled }}
-  enable-ipsec: {{ .Values.encryption.enabled | quote }}
-  ipsec-key-file: {{ .Values.encryption.mountPath }}/{{ .Values.encryption.keyFile }}
-{{- if hasKey .Values.encryption "interface" }}
-  encrypt-interface: {{ .Values.encryption.interface }}
-{{- end }}
-{{- if .Values.encryption.nodeEncryption }}
-  encrypt-node: {{ .Values.encryption.nodeEncryption | quote }}
-{{- end }}
-{{- end }}
 {{- if hasKey .Values "datapathMode" }}
 {{- if eq .Values.datapathMode "ipvlan" }}
   datapath-mode: ipvlan
@@ -488,12 +493,11 @@ data:
   devices: {{ join " " .Values.devices | quote }}
 {{- end }}
 
-{{- if hasKey .Values "kubeProxyReplacement" }}
-  kube-proxy-replacement:  {{ .Values.kubeProxyReplacement | quote }}
-{{- if ne .Values.kubeProxyReplacement "disabled" }}
+  kube-proxy-replacement:  {{ $kubeProxyReplacement | quote }}
+{{- if ne $kubeProxyReplacement "disabled" }}
   kube-proxy-replacement-healthz-bind-address: {{ default "" .Values.kubeProxyReplacementHealthzBindAddr | quote}}
 {{- end }}
-{{- end }}
+
 {{- if hasKey .Values "hostServices" }}
 {{- if .Values.hostServices.enabled }}
   enable-host-reachable-services: {{ .Values.hostServices.enabled | quote }}
@@ -503,17 +507,17 @@ data:
 {{- end }}
 {{- end }}
 {{- if hasKey .Values "hostPort" }}
-{{- if eq .Values.kubeProxyReplacement "partial" }}
+{{- if eq $kubeProxyReplacement "partial" }}
   enable-host-port: {{ .Values.hostPort.enabled | quote }}
 {{- end }}
 {{- end }}
 {{- if hasKey .Values "externalIPs" }}
-{{- if eq .Values.kubeProxyReplacement "partial" }}
+{{- if eq $kubeProxyReplacement "partial" }}
   enable-external-ips: {{ .Values.externalIPs.enabled | quote }}
 {{- end }}
 {{- end }}
 {{- if hasKey .Values "nodePort" }}
-{{- if eq .Values.kubeProxyReplacement "partial" }}
+{{- if eq $kubeProxyReplacement "partial" }}
   enable-node-port: {{ .Values.nodePort.enabled | quote }}
 {{- end }}
 {{- if hasKey .Values.nodePort "range" }}
@@ -571,6 +575,9 @@ data:
 {{- end }}
 {{- if hasKey .Values.k8s "requireIPv6PodCIDR" }}
   k8s-require-ipv6-pod-cidr: {{ .Values.k8s.requireIPv6PodCIDR | quote }}
+{{- end }}
+{{- if .Values.endpointStatus.enabled }}
+  endpoint-status: {{ required "endpointStatus.status required: policy, health, controllers, logs and / or state. For 2 or more options use a comma: \"policy, health\"" .Values.endpointStatus.status | quote }}
 {{- end }}
 {{- if and .Values.endpointRoutes .Values.endpointRoutes.enabled }}
   enable-endpoint-routes: {{ .Values.endpointRoutes.enabled | quote }}
@@ -675,6 +682,10 @@ data:
   disable-cnp-status-updates: {{ (not .Values.enableCnpStatusUpdates) | quote }}
 {{- else if (eq $defaultEnableCnpStatusUpdates "false") }}
   disable-cnp-status-updates: "true"
+{{- end }}
+
+{{- if .Values.egressGateway.enabled }}
+  enable-egress-gateway: "true"
 {{- end }}
 
 {{- if .Values.enableK8sEventHandover }}

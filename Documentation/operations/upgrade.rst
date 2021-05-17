@@ -337,6 +337,11 @@ Annotations:
   groups configuration of the ``eth0`` interface, pods may be associated with a
   different security group all of a sudden. In order to stay with Cilium's
   current behavior, set the value to ``1`` in the ``CiliumNode`` resource.
+* The legacy flannel integration has been deprecated. If you want to chain on
+  top of flannel, use the standard chaining method.
+* The default setting for ``kubeProxyReplacement`` has been changed from
+  ``probe`` to ``disabled``. For any new installation, if you want to use
+  kube-proxy replacement, set  ``kubeProxyReplacement`` to ``strict``.
 
 Removed Metrics/Labels
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -381,6 +386,8 @@ New Options
   Kubernetes environment or in a chained CNI setup.
 * ``allocator-list-timeout``: This option configures the timeout value for listing
   allocator state before exiting (default 3m0s).
+* With the deprecation of the legacy flannel integration, the options
+  ``flannel-master-device`` and ``flannel-uninstall-on-exit`` have been removed.
 
 Removed Options
 ~~~~~~~~~~~~~~~
@@ -409,6 +416,10 @@ Deprecated Options
   been deprecated in favor of ``enable-ipv4-masquerade`` and is planned to
   be removed in 1.11. For 1.10 release this option will have the same effect as
   ``enable-ipv4-masquerade`` where both options must not be used simultaneously.
+* Helm options ``encryption.keyFile``, ``encryption.mountPath``,
+  ``encryption.secretName`` and ``encryption.interface`` are now deprecated in
+  favor of ``encryption.ipsec.keyFile``, ``encryption.ipsec.mountPath``,
+  ``encryption.ipsec.secretName`` and ``encryption.ipsec.interface``.
 
 .. _1.9_upgrade_notes:
 
@@ -609,12 +620,6 @@ Full list of updated Helm values:
 | global.etcd.ssl                              | etcd.ssl                                   |
 +----------------------------------------------+--------------------------------------------+
 | global.externalIPs.enabled                   | externalIPs.enabled                        |
-+----------------------------------------------+--------------------------------------------+
-| global.flannel.enabled                       | flannel.enabled                            |
-+----------------------------------------------+--------------------------------------------+
-| global.flannel.masterDevice                  | flannel.masterDevice                       |
-+----------------------------------------------+--------------------------------------------+
-| global.flannel.uninstallOnExit               | flannel.uninstallOnExit                    |
 +----------------------------------------------+--------------------------------------------+
 | global.fragmentTracking                      | fragmentTracking                           |
 +----------------------------------------------+--------------------------------------------+
