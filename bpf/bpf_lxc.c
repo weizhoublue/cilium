@@ -646,7 +646,7 @@ ct_recreate4:
 		 * is local to the node. We'll redirect to bpf_host.c egress to
 		 * perform the reverse DNAT.
 		 */
-        // 如果 当初别人 通过 nodePort 访问本endpoint，那么，现在本endpoint 进行了回复
+        // 如果 当初别人 通过 本地node 的 nodePort 访问到 local endpoint，那么，现在本endpoint 进行了回复
         // 此时，直接 tail call bpf_host.c 的 CILIUM_CALL_IPV4_FROM_LXC，完成unNat ，redirect 给 物理网卡 发出
 		if (ct_state.node_port) {
 			ctx->tc_index |= TC_INDEX_F_SKIP_RECIRCULATION;
