@@ -1406,7 +1406,7 @@ int tail_ipv4_to_endpoint(struct __ctx_buff *ctx)
     // 如果流量 是从 ingress proxy 过来的，说明已经做过一次过来了，则 流量可进入pod
 	if (ret == POLICY_ACT_PROXY_REDIRECT)
         // 如果需要， 把 数据包 重定向 代理，实施 L7 ingress policy .
-        // redicrt 转给  cilium_host 的egress
+        // 优先尝试 ebpf-based  TPROXY， 直接转发给 envoy， 否则 redicrt 转给  cilium_host 的egress，使用iptables-based tproxy
 		ret = ctx_redirect_to_proxy_hairpin(ctx, proxy_port);
 out:
 	if (IS_ERR(ret))
