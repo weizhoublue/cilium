@@ -896,6 +896,7 @@ do_netdev(struct __ctx_buff *ctx, __u16 proto, const bool from_host)
             // 转发数据包
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_HOST);
 		} else {
+			 // 物理网卡 ingress 上的逻辑
 			ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_LXC);
 		}
 		/* We are not returning an error here to always allow traffic to
