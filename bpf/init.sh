@@ -14,6 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+# this init.sh is called by  https://github.com/cilium/cilium/blob/master/pkg/datapath/loader/base.go#L230
+
+
 # BPF template files directory
 LIB=$1
 # StateDir is the directory where runtime state of endpoints is stored
