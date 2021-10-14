@@ -483,7 +483,10 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 #endif /* ENABLE_NODEPORT */
 
 #ifdef ENABLE_HOST_FIREWALL
+	
 	if (from_host) {
+		// cilium_host 的 egress from-host 逻辑
+		
 		/* We're on the egress path of cilium_host. */
 		ret = ipv4_host_policy_egress(ctx, secctx, ipcache_srcid);
 		if (IS_ERR(ret))
@@ -533,7 +536,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 #else
 			return CTX_ACT_OK;
 #endif
-        //  直接重定向到 本地 另一个endpoint的 lxc egress
+                //  直接 tail call 到 本地 一个endpoint的 lxc to-container
 		return ipv4_local_delivery(ctx, ETH_HLEN, secctx, ip4, ep,
 					   METRIC_INGRESS, from_host);
 	}
