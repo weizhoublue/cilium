@@ -17,7 +17,7 @@ func (c *Client) CreateTransitGatewayRoute(ctx context.Context, params *CreateTr
 		params = &CreateTransitGatewayRouteInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayRoute", params, optFns, addOperationCreateTransitGatewayRouteMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayRoute", params, optFns, c.addOperationCreateTransitGatewayRouteMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -41,16 +41,18 @@ type CreateTransitGatewayRouteInput struct {
 	TransitGatewayRouteTableId *string
 
 	// Indicates whether to drop traffic that matches this route.
-	Blackhole bool
+	Blackhole *bool
 
 	// Checks whether you have the required permissions for the action, without
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The ID of the attachment.
 	TransitGatewayAttachmentId *string
+
+	noSmithyDocumentSerde
 }
 
 type CreateTransitGatewayRouteOutput struct {
@@ -60,9 +62,11 @@ type CreateTransitGatewayRouteOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCreateTransitGatewayRouteMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCreateTransitGatewayRouteMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCreateTransitGatewayRoute{}, middleware.After)
 	if err != nil {
 		return err

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -46,7 +35,7 @@ var srcEndpoint, dstEndpoint, srcK8sPod, dstK8sPod, srcK8sYaml, dstK8sYaml strin
 
 // policyTraceCmd represents the policy_trace command
 var policyTraceCmd = &cobra.Command{
-	Use:   "trace ( -s <label context> | --src-identity <security identity> | --src-endpoint <endpoint ID> | --src-k8s-pod <namespace:pod-name> | --src-k8s-yaml <path to YAML file> ) ( -d <label context> | --dst-identity <security identity> | --dst-endpoint <endpoint ID> | --dst-k8s-pod <namespace:pod-name> | --dst-k8s-yaml <path to YAML file>) [--dport <port>[/<protocol>]",
+	Use:   "trace ( -s <label context> | --src-identity <security identity> | --src-endpoint <endpoint ID> | --src-k8s-pod <namespace:pod-name> | --src-k8s-yaml <path to YAML file> ) ( -d <label context> | --dst-identity <security identity> | --dst-endpoint <endpoint ID> | --dst-k8s-pod <namespace:pod-name> | --dst-k8s-yaml <path to YAML file>) --dport <port>[/<protocol>]",
 	Short: "Trace a policy decision",
 	Long: `Verifies if the source is allowed to consume
 destination. Source / destination can be provided as endpoint ID, security ID, Kubernetes Pod, YAML file, set of LABELs. LABEL is represented as
@@ -78,7 +67,9 @@ If multiple sources and / or destinations are provided, each source is tested wh
 			dstSlices = append(dstSlices, dst)
 		}
 
-		if len(dports) > 0 {
+		if len(dports) == 0 {
+			Usagef(cmd, "Missing destination port/proto")
+		} else {
 			dPorts, err = parseL4PortsSlice(dports)
 			if err != nil {
 				Fatalf("Invalid destination port: %s", err)
@@ -269,7 +260,7 @@ func parseL4PortsSlice(slice []string) ([]*models.Port, error) {
 		case 2:
 			protoStr = strings.ToUpper(vSplit[1])
 			switch protoStr {
-			case models.PortProtocolTCP, models.PortProtocolUDP, models.PortProtocolANY:
+			case models.PortProtocolTCP, models.PortProtocolUDP, models.PortProtocolICMP, models.PortProtocolICMPV6, models.PortProtocolANY:
 			default:
 				return nil, fmt.Errorf("invalid protocol %q", protoStr)
 			}

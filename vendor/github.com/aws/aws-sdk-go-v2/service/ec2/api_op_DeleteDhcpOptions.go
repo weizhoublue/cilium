@@ -19,7 +19,7 @@ func (c *Client) DeleteDhcpOptions(ctx context.Context, params *DeleteDhcpOption
 		params = &DeleteDhcpOptionsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DeleteDhcpOptions", params, optFns, addOperationDeleteDhcpOptionsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DeleteDhcpOptions", params, optFns, c.addOperationDeleteDhcpOptionsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -40,15 +40,19 @@ type DeleteDhcpOptionsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type DeleteDhcpOptionsOutput struct {
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDeleteDhcpOptionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDeleteDhcpOptionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDeleteDhcpOptions{}, middleware.After)
 	if err != nil {
 		return err

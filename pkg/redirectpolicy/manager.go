@@ -193,7 +193,7 @@ func (rpm *Manager) DeleteRedirectPolicy(config LRPConfig) error {
 
 	switch storedConfig.lrpType {
 	case lrpConfigTypeSvc:
-		rpm.deletePolicyService(*storedConfig.serviceID)
+		rpm.deletePolicyService(storedConfig)
 	case lrpConfigTypeAddr:
 		for _, feM := range storedConfig.frontendMappings {
 			rpm.deletePolicyFrontend(storedConfig, feM.feAddr)
@@ -246,7 +246,7 @@ func (rpm *Manager) OnDeleteService(svcID k8s.ServiceID) {
 		return
 	}
 
-	rpm.deletePolicyService(svcID)
+	rpm.deleteService(svcID)
 }
 
 func (rpm *Manager) OnAddPod(pod *slimcorev1.Pod) {
@@ -373,6 +373,10 @@ func (rpm *Manager) getAndUpsertPolicySvcConfig(config *LRPConfig) {
 	case svcFrontendSinglePort:
 		// Get service frontend with the clusterIP and the policy config (unnamed) port.
 		ip := rpm.svcCache.GetServiceFrontendIP(*config.serviceID, lb.SVCTypeClusterIP)
+		if ip == nil {
+			// The LRP will be applied when the selected service is added later.
+			return
+		}
 		config.frontendMappings[0].feAddr.IP = ip
 		rpm.updateConfigSvcFrontend(config, config.frontendMappings[0].feAddr)
 
@@ -383,6 +387,10 @@ func (rpm *Manager) getAndUpsertPolicySvcConfig(config *LRPConfig) {
 			ports[i] = mapping.fePort
 		}
 		ip := rpm.svcCache.GetServiceFrontendIP(*config.serviceID, lb.SVCTypeClusterIP)
+		if ip == nil {
+			// The LRP will be applied when the selected service is added later.
+			return
+		}
 		for _, feM := range config.frontendMappings {
 			feM.feAddr.IP = ip
 			rpm.updateConfigSvcFrontend(config, feM.feAddr)
@@ -476,29 +484,51 @@ func (rpm *Manager) notifyPolicyBackendDelete(config *LRPConfig, frontendMapping
 }
 
 // deletePolicyService deletes internal state associated with the specified service.
-func (rpm *Manager) deletePolicyService(svcID k8s.ServiceID) {
-	if rp, ok := rpm.policyServices[svcID]; ok {
-		// Get the policy config that selects this service.
-		config := rpm.policyConfigs[rp]
-		for _, m := range config.frontendMappings {
-			rpm.deletePolicyFrontend(config, m.feAddr)
+func (rpm *Manager) deletePolicyService(config *LRPConfig) {
+	for _, m := range config.frontendMappings {
+		rpm.deletePolicyFrontend(config, m.feAddr)
+	}
+	switch config.frontendType {
+	case svcFrontendAll:
+		config.frontendMappings = nil
+	case svcFrontendSinglePort:
+		fallthrough
+	case svcFrontendNamedPorts:
+		for _, feM := range config.frontendMappings {
+			feM.feAddr.IP = net.IP{}
 		}
-		switch config.frontendType {
-		case svcFrontendAll:
-			config.frontendMappings = nil
-		case svcFrontendSinglePort:
-			fallthrough
-		case svcFrontendNamedPorts:
-			for _, feM := range config.frontendMappings {
-				feM.feAddr.IP = net.IP{}
-			}
-		}
-		// Retores the svc backends if there's still such a k8s svc.
-		swg := lock.NewStoppableWaitGroup()
-		if restored := rpm.svcCache.EnsureService(svcID, swg); restored {
-			log.WithFields(logrus.Fields{
-				logfields.K8sSvcID: svcID,
-			}).Debug("Restored service")
+	}
+	// Retores the svc backends if there's still such a k8s svc.
+	swg := lock.NewStoppableWaitGroup()
+	svcID := *config.serviceID
+	if restored := rpm.svcCache.EnsureService(svcID, swg); restored {
+		log.WithFields(logrus.Fields{
+			logfields.K8sSvcID: svcID,
+		}).Debug("Restored service")
+	}
+}
+
+func (rpm *Manager) deleteService(svcID k8s.ServiceID) {
+	var (
+		rp policyID
+		ok bool
+	)
+	if rp, ok = rpm.policyServices[svcID]; !ok {
+		return
+	}
+	// Get the policy config that selects this service.
+	config := rpm.policyConfigs[rp]
+	for _, m := range config.frontendMappings {
+		rpm.deletePolicyFrontend(config, m.feAddr)
+	}
+	switch config.frontendType {
+	case svcFrontendAll:
+		config.frontendMappings = nil
+	case svcFrontendSinglePort:
+		fallthrough
+	case svcFrontendNamedPorts:
+		for _, feM := range config.frontendMappings {
+			feM.feAddr.IP = net.IP{}
 		}
 	}
 }

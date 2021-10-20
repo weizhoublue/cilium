@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package linuxrouting
 
@@ -31,6 +20,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -286,38 +276,43 @@ func deleteRule(r route.Rule) error {
 }
 
 // retrieveIfIndexFromMAC finds the corresponding device index (ifindex) for a
-// given MAC address. This is useful for creating rules and routes in order to
-// specify the table. When the ifindex is found, the device is brought up and
-// its MTU is set.
-func retrieveIfIndexFromMAC(mac mac.MAC, mtu int) (index int, err error) {
-	var links []netlink.Link
+// given MAC address, excluding Linux slave devices. This is useful for
+// creating rules and routes in order to specify the table. When the ifindex is
+// found, the device is brought up and its MTU is set.
+func retrieveIfIndexFromMAC(mac mac.MAC, mtu int) (int, error) {
+	var link netlink.Link
 
-	links, err = netlink.LinkList()
+	links, err := netlink.LinkList()
 	if err != nil {
-		err = fmt.Errorf("unable to list interfaces: %s", err)
-		return
+		return -1, fmt.Errorf("unable to list interfaces: %w", err)
 	}
 
-	for _, link := range links {
-		if link.Attrs().HardwareAddr.String() == mac.String() {
-			index = link.Attrs().Index
-
-			if err = netlink.LinkSetMTU(link, mtu); err != nil {
-				err = fmt.Errorf("unable to change MTU of link %s to %d: %s", link.Attrs().Name, mtu, err)
-				return
+	for _, l := range links {
+		// Linux slave devices have the same MAC address as their master
+		// device, but we want the master device.
+		if l.Attrs().RawFlags&unix.IFF_SLAVE != 0 {
+			continue
+		}
+		if l.Attrs().HardwareAddr.String() == mac.String() {
+			if link != nil {
+				return -1, fmt.Errorf("several interfaces found with MAC %s: %s and %s", mac, link.Attrs().Name, l.Attrs().Name)
 			}
-
-			if err = netlink.LinkSetUp(link); err != nil {
-				err = fmt.Errorf("unable to up link %s: %s", link.Attrs().Name, err)
-				return
-			}
-
-			return
+			link = l
 		}
 	}
 
-	err = fmt.Errorf("interface with MAC %s not found", mac)
-	return
+	if link == nil {
+		return -1, fmt.Errorf("interface with MAC %s not found", mac)
+	}
+
+	if err = netlink.LinkSetMTU(link, mtu); err != nil {
+		return -1, fmt.Errorf("unable to change MTU of link %s to %d: %w", link.Attrs().Name, mtu, err)
+	}
+	if err = netlink.LinkSetUp(link); err != nil {
+		return -1, fmt.Errorf("unable to up link %s: %w", link.Attrs().Name, err)
+	}
+
+	return link.Attrs().Index, nil
 }
 
 // computeTableIDFromIfaceNumber returns a computed per-ENI route table ID for the given

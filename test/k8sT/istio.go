@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"time"
@@ -38,7 +26,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sIstioTest", func() {
 		// installed.
 		istioSystemNamespace = "istio-system"
 
-		istioVersion = "1.8.2"
+		istioVersion = "1.10.4"
 
 		// Modifiers for pre-release testing, normally empty
 		prerelease     = "" // "-beta.1"
@@ -48,10 +36,10 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sIstioTest", func() {
 		// - remind how to test with prerelease images in future
 		// - cause CI infra to prepull these images so that they do not
 		//   need to be pulled on demand during the test
-		// " --set values.pilot.image=docker.io/cilium/istio_pilot:1.8.2" +
-		// " --set values.global.proxy.image=docker.io/cilium/istio_proxy:1.8.2" +
-		// " --set values.global.proxy_init.image=docker.io/cilium/istio_proxy:1.8.2" +
-		// " --set values.global.proxy.logLevel=trace"
+		// " --set values.pilot.image=quay.io/cilium/istio_pilot:1.10.4" + prerelease +
+		// " --set values.global.proxy.image=quay.io/cilium/istio_proxy:1.10.4" + prerelease +
+		// " --set values.global.proxy_init.image=quay.io/cilium/istio_proxy:1.10.4" + prerelease +
+		// " --set values.global.proxy.logLevel=debug" +
 		// " --set values.global.logging.level=debug"
 		// " --set values.global.mtls.auto=false"
 		ciliumOptions = map[string]string{
@@ -64,6 +52,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sIstioTest", func() {
 		// Map for tested cilium-istioctl release targets if not GOOS-GOARCH
 		ciliumIstioctlOSes = map[string]string{
 			"darwin-amd64": "osx",
+			"darwin-arm64": "osx-arm64",
 		}
 
 		// istioServiceNames is the set of Istio services needed for the tests
@@ -77,8 +66,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sIstioTest", func() {
 		wgetCommand = fmt.Sprintf("wget --tries=2 --connect-timeout %d", helpers.CurlConnectTimeout)
 		curlCommand = fmt.Sprintf("curl --retry 2 --retry-connrefused --connect-timeout %d", helpers.CurlConnectTimeout)
 
-		kubectl      *helpers.Kubectl
-		uptimeCancel context.CancelFunc
+		kubectl *helpers.Kubectl
 
 		teardownTimeout = 10 * time.Minute
 
@@ -86,6 +74,10 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sIstioTest", func() {
 	)
 
 	BeforeAll(func() {
+		if helpers.SkipK8sVersions("<1.17.0") {
+			Skip(fmt.Sprintf("Istio %s requires at least K8s version 1.17", istioVersion))
+		}
+
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
 
 		By("Downloading cilium-istioctl")
@@ -113,6 +105,15 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sIstioTest", func() {
 		By("Deploying Istio")
 		res = kubectl.Exec("./cilium-istioctl install -y" + istioctlParams)
 		res.ExpectSuccess("unable to deploy Istio")
+		if !res.WasSuccessful() {
+			// AfterAll() is not called if BeforeAll() fails, have to clean up here explicitly
+			By("Deleting default namespace sidecar injection label")
+			_ = kubectl.NamespaceLabel(helpers.DefaultNamespace, "istio-injection-")
+			By("Deleting the Istio resources")
+			_ = kubectl.Exec(fmt.Sprintf("./cilium-istioctl manifest generate | %s delete -f -", helpers.KubectlCmd))
+			By("Deleting the istio-system namespace")
+			_ = kubectl.NamespaceDelete(istioSystemNamespace)
+		}
 	})
 
 	AfterAll(func() {
@@ -133,15 +134,7 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sIstioTest", func() {
 		kubectl.CloseSSHClient()
 	})
 
-	JustBeforeEach(func() {
-		var err error
-		uptimeCancel, err = kubectl.BackgroundReport("uptime")
-		Expect(err).To(BeNil(), "Cannot start background report process")
-	})
-
 	JustAfterEach(func() {
-		uptimeCancel()
-
 		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
 	})
 

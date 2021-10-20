@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package maps
 
@@ -146,7 +135,7 @@ func (ms *MapSweeper) RemoveDisabledMaps() {
 			"cilium_lb6_services",
 			"cilium_lb6_services_v2",
 			"cilium_lb6_rr_seq_v2",
-			"cilium_lb6_backends",
+			"cilium_lb6_backends_v2",
 			"cilium_lb6_reverse_sk",
 			"cilium_snat_v6_external",
 			"cilium_proxy6",
@@ -169,7 +158,7 @@ func (ms *MapSweeper) RemoveDisabledMaps() {
 			"cilium_lb4_services",
 			"cilium_lb4_services_v2",
 			"cilium_lb4_rr_seq_v2",
-			"cilium_lb4_backends",
+			"cilium_lb4_backends_v2",
 			"cilium_lb4_reverse_sk",
 			"cilium_snat_v4_external",
 			"cilium_proxy4",

@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
@@ -27,6 +17,7 @@ import (
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/policy/api/kafka"
+	"github.com/cilium/cilium/pkg/u8proto"
 
 	. "gopkg.in/check.v1"
 )
@@ -1057,6 +1048,183 @@ func (ds *PolicyTestSuite) TestL3Policy(c *C) {
 		}},
 	}.Sanitize()
 	c.Assert(err, Not(IsNil))
+}
+
+func (ds *PolicyTestSuite) TestICMPPolicy(c *C) {
+	var err error
+	toBar := &SearchContext{To: labels.ParseSelectLabelArray("bar")}
+	fromBar := &SearchContext{From: labels.ParseSelectLabelArray("bar")}
+
+	// A rule for ICMP
+	rule1 := &rule{
+		Rule: api.Rule{
+			EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
+			Ingress: []api.IngressRule{
+				{
+					ICMPs: api.ICMPRules{{
+						Fields: []api.ICMPField{{
+							Type: 8,
+						}},
+					}},
+				},
+			},
+			Egress: []api.EgressRule{
+				{
+					ICMPs: api.ICMPRules{{
+						Fields: []api.ICMPField{{
+							Type: 8,
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	expected := NewL4Policy(0)
+	expected.Ingress["8/ICMP"] = &L4Filter{
+		Port:     8,
+		Protocol: api.ProtoICMP,
+		U8Proto:  u8proto.ProtoIDs["icmp"],
+		Ingress:  true,
+		wildcard: wildcardCachedSelector,
+		L7RulesPerSelector: L7DataMap{
+			wildcardCachedSelector: nil,
+		},
+		DerivedFromRules: labels.LabelArrayList{nil},
+	}
+	expected.Egress["8/ICMP"] = &L4Filter{
+		Port:     8,
+		Protocol: api.ProtoICMP,
+		U8Proto:  u8proto.ProtoIDs["icmp"],
+		Ingress:  false,
+		wildcard: wildcardCachedSelector,
+		L7RulesPerSelector: L7DataMap{
+			wildcardCachedSelector: nil,
+		},
+		DerivedFromRules: labels.LabelArrayList{nil},
+	}
+
+	ingressState := traceState{}
+	egressState := traceState{}
+	res := NewL4Policy(0)
+	res.Ingress, err =
+		rule1.resolveIngressPolicy(testPolicyContext, toBar, &ingressState, L4PolicyMap{}, nil, nil)
+	c.Assert(err, IsNil)
+	c.Assert(res.Ingress, Not(IsNil))
+
+	res.Egress, err =
+		rule1.resolveEgressPolicy(testPolicyContext, fromBar, &egressState, L4PolicyMap{}, nil, nil)
+	c.Assert(err, IsNil)
+	c.Assert(res.Egress, Not(IsNil))
+
+	c.Assert(res, checker.Equals, expected)
+	c.Assert(ingressState.selectedRules, Equals, 1)
+	c.Assert(ingressState.matchedRules, Equals, 1)
+	c.Assert(egressState.selectedRules, Equals, 1)
+	c.Assert(egressState.matchedRules, Equals, 1)
+
+	res.Detach(testSelectorCache)
+	expected.Detach(testSelectorCache)
+
+	// A rule for Ports and ICMP
+	rule2 := &rule{
+		Rule: api.Rule{
+			EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
+			Ingress: []api.IngressRule{
+				{
+					ToPorts: []api.PortRule{{
+						Ports: []api.PortProtocol{
+							{Port: "80", Protocol: api.ProtoTCP},
+						},
+					}},
+					ICMPs: api.ICMPRules{{
+						Fields: []api.ICMPField{{
+							Type: 8,
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	expected = NewL4Policy(0)
+	expected.Ingress["80/TCP"] = &L4Filter{
+		Port:     80,
+		Protocol: api.ProtoTCP,
+		U8Proto:  u8proto.ProtoIDs["tcp"],
+		Ingress:  true,
+		wildcard: wildcardCachedSelector,
+		L7RulesPerSelector: L7DataMap{
+			wildcardCachedSelector: nil,
+		},
+		DerivedFromRules: labels.LabelArrayList{nil},
+	}
+	expected.Ingress["8/ICMP"] = &L4Filter{
+		Port:     8,
+		Protocol: api.ProtoICMP,
+		U8Proto:  u8proto.ProtoIDs["icmp"],
+		Ingress:  true,
+		wildcard: wildcardCachedSelector,
+		L7RulesPerSelector: L7DataMap{
+			wildcardCachedSelector: nil,
+		},
+		DerivedFromRules: labels.LabelArrayList{nil},
+	}
+
+	ingressState = traceState{}
+	res = NewL4Policy(0)
+	res.Ingress, err =
+		rule2.resolveIngressPolicy(testPolicyContext, toBar, &ingressState, L4PolicyMap{}, nil, nil)
+	c.Assert(err, IsNil)
+	c.Assert(res.Ingress, Not(IsNil))
+
+	c.Assert(res, checker.Equals, expected)
+	c.Assert(ingressState.selectedRules, Equals, 1)
+	c.Assert(ingressState.matchedRules, Equals, 1)
+
+	res.Detach(testSelectorCache)
+	expected.Detach(testSelectorCache)
+
+	// A rule for ICMPv6
+	rule3 := &rule{
+		Rule: api.Rule{
+			EndpointSelector: api.NewESFromLabels(labels.ParseSelectLabel("bar")),
+			Ingress: []api.IngressRule{
+				{
+					ICMPs: api.ICMPRules{{
+						Fields: []api.ICMPField{{
+							Family: "IPv6",
+							Type:   128,
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	expected = NewL4Policy(0)
+	expected.Ingress["128/ICMPV6"] = &L4Filter{
+		Port:     128,
+		Protocol: api.ProtoICMPv6,
+		U8Proto:  u8proto.ProtoIDs["icmpv6"],
+		Ingress:  true,
+		wildcard: wildcardCachedSelector,
+		L7RulesPerSelector: L7DataMap{
+			wildcardCachedSelector: nil,
+		},
+		DerivedFromRules: labels.LabelArrayList{nil},
+	}
+
+	ingressState = traceState{}
+	res = NewL4Policy(0)
+	res.Ingress, err =
+		rule3.resolveIngressPolicy(testPolicyContext, toBar, &ingressState, L4PolicyMap{}, nil, nil)
+	c.Assert(err, IsNil)
+	c.Assert(res.Ingress, Not(IsNil))
+
+	c.Assert(res, checker.Equals, expected)
+	c.Assert(ingressState.selectedRules, Equals, 1)
+	c.Assert(ingressState.matchedRules, Equals, 1)
 }
 
 // Tests the restrictions of combining certain label-based L3 and L4 policies.

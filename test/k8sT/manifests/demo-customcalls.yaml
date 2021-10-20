@@ -99,16 +99,12 @@ metadata:
 spec:
   containers:
   - name: cilium-builder
-    image: quay.io/cilium/cilium-builder:330ca61256fedd7b8cbfc34b31316c97d1880876@sha256:e535425dd77cf29f289fa402d8811491617e2b8fe741db4a36ca6acc590006c1
+    image: quay.io/cilium/cilium-builder:c665cccb172a00b1c6a1b51578110b50f91d124a@sha256:5f9de8de4047466d4b2aab92bba4c4a3f33bbf1d084656d7aad33eaf7b78ca2f
     workingDir: /cilium
     command: ["sleep"]
     args:
       - "1000h"
     securityContext:
-      capabilities:
-        add:
-        - NET_ADMIN
-        - SYS_MODULE
       privileged: true
     volumeMounts:
       - mountPath: /sys/fs/bpf

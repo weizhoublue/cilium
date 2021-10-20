@@ -18,7 +18,7 @@ func (c *Client) DescribePublicIpv4Pools(ctx context.Context, params *DescribePu
 		params = &DescribePublicIpv4PoolsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribePublicIpv4Pools", params, optFns, addOperationDescribePublicIpv4PoolsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribePublicIpv4Pools", params, optFns, c.addOperationDescribePublicIpv4PoolsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -45,13 +45,15 @@ type DescribePublicIpv4PoolsInput struct {
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
 
 	// The IDs of the address pools.
 	PoolIds []string
+
+	noSmithyDocumentSerde
 }
 
 type DescribePublicIpv4PoolsOutput struct {
@@ -65,9 +67,11 @@ type DescribePublicIpv4PoolsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribePublicIpv4PoolsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribePublicIpv4PoolsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribePublicIpv4Pools{}, middleware.After)
 	if err != nil {
 		return err
@@ -164,8 +168,8 @@ func NewDescribePublicIpv4PoolsPaginator(client DescribePublicIpv4PoolsAPIClient
 	}
 
 	options := DescribePublicIpv4PoolsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -194,7 +198,11 @@ func (p *DescribePublicIpv4PoolsPaginator) NextPage(ctx context.Context, optFns 
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribePublicIpv4Pools(ctx, &params, optFns...)
 	if err != nil {

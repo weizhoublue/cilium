@@ -21,11 +21,11 @@ Install a Master Node
 =====================
 
 The first step is to install a K3s master node making sure to disable support
-for the default CNI plugin:
+for the default CNI plugin and the built-in network policy enforcer:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--flannel-backend=none' sh -
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--flannel-backend=none --disable-network-policy' sh -
 
 Install Agent Nodes (Optional)
 ==============================
@@ -38,7 +38,7 @@ node using a node-token which can be found on the master node at
 Install K3s on agent nodes and join them to the master node making sure to
 replace the variables with values from your environment:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
     curl -sfL https://get.k3s.io | K3S_URL='https://${MASTER_IP}:6443' K3S_TOKEN=${NODE_TOKEN} sh -
 
@@ -48,17 +48,10 @@ Should you encounter any issues during the installation, please refer to the
 Please consult the Kubernetes :ref:`k8s_requirements` for information on  how
 you need to configure your Kubernetes cluster to operate with Cilium.
 
-Mount the eBPF Filesystem
-=========================
-On each node, run the following to mount the eBPF Filesystem:
-::
-
-     sudo mount bpffs -t bpf /sys/fs/bpf
-
 Install Cilium
 ==============
 
-.. include:: install-cli.rst
+.. include:: cli-download.rst
 
 Install Cilium by running:
 
@@ -66,6 +59,11 @@ Install Cilium by running:
 
     cilium install
 
-.. include:: k8s-install-validate.rst
+Validate the Installation
+=========================
+
+.. include:: cli-status.rst
+.. include:: cli-connectivity-test.rst
+
 .. include:: next-steps.rst
 

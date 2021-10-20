@@ -136,6 +136,7 @@ have it scrape all Hubble metrics from the endpoints automatically:
 
     scrape_configs:
       - job_name: 'kubernetes-endpoints'
+        scrape_interval: 30s
         kubernetes_sd_configs:
           - role: endpoints
         relabel_configs:
@@ -163,7 +164,7 @@ It will run Prometheus and Grafana in the ``cilium-monitoring`` namespace. If
 you have either enabled Cilium or Hubble metrics, they will automatically
 be scraped by Prometheus. You can then expose Grafana to access it via your browser.
 
-.. code:: bash
+.. code-block:: shell-session
 
     kubectl -n cilium-monitoring port-forward service/grafana --address 0.0.0.0 --address :: 3000:3000
 

@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Hubble
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package container
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sync/atomic"
@@ -29,11 +17,6 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
-)
-
-var (
-	// ErrInvalidRead indicates that the requested position can no longer be read.
-	ErrInvalidRead = errors.New("read position is no longer valid")
 )
 
 // Capacity is the interface that wraps Cap.
@@ -221,6 +204,21 @@ func (r *Ring) LastWrite() uint64 {
 	return atomic.LoadUint64(&r.write) - 1
 }
 
+func getLostEvent() *v1.Event {
+	now := time.Now().UTC()
+	return &v1.Event{
+		Timestamp: &timestamppb.Timestamp{
+			Seconds: now.Unix(),
+			Nanos:   int32(now.Nanosecond()),
+		},
+		Event: &flowpb.LostEvent{
+			Source:        flowpb.LostEventSource_HUBBLE_RING_BUFFER,
+			NumEventsLost: 1,
+			Cpu:           nil,
+		},
+	}
+}
+
 // read the *v1.Event from the given read position. Returns an error if
 // the position is not valid. A position is invalid either because it has
 // already been overwritten by the writer (in which case ErrInvalidRead is
@@ -269,7 +267,7 @@ func (r *Ring) read(read uint64) (*v1.Event, error) {
 		if event == nil {
 			// If the ring buffer is not yet fully populated, we treat nil
 			// as a value which is about to be overwritten
-			return nil, ErrInvalidRead
+			return getLostEvent(), nil
 		}
 		return event, nil
 	// Case: Reader ahead of writer
@@ -277,7 +275,7 @@ func (r *Ring) read(read uint64) (*v1.Event, error) {
 		return nil, io.EOF
 	// Case: Reader behind writer
 	default:
-		return nil, ErrInvalidRead
+		return getLostEvent(), nil
 	}
 }
 
@@ -376,19 +374,8 @@ func (r *Ring) readFrom(ctx context.Context, read uint64, ch chan<- *v1.Event) {
 		default:
 			// The writer overwrote the entry before we had time to read it.
 			// Send a ListEvent to notify the read-miss.
-			now := time.Now().UTC()
 			select {
-			case ch <- &v1.Event{
-				Timestamp: &timestamppb.Timestamp{
-					Seconds: int64(now.Unix()),
-					Nanos:   int32(now.Nanosecond()),
-				},
-				Event: &flowpb.LostEvent{
-					Source:        flowpb.LostEventSource_HUBBLE_RING_BUFFER,
-					NumEventsLost: 1,
-					Cpu:           nil,
-				},
-			}:
+			case ch <- getLostEvent():
 				continue
 			case <-ctx.Done():
 				return

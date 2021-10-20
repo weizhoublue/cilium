@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -29,6 +18,7 @@ import (
 	"github.com/cilium/cilium/api/v1/server/restapi"
 	"github.com/cilium/cilium/pkg/aws/eni"
 	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/cgroups"
 	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/components"
 	"github.com/cilium/cilium/pkg/controller"
@@ -180,7 +170,7 @@ func init() {
 		return
 	}
 
-	cobra.OnInitialize(option.InitConfig("Cilium", "ciliumd"))
+	cobra.OnInitialize(option.InitConfig(RootCmd, "Cilium", "ciliumd"))
 
 	// Reset the help function to also exit, as we block elsewhere in interrupts
 	// and would not exit when called with -h.
@@ -218,6 +208,9 @@ func init() {
 	flags.Int(option.AgentHealthPort, defaults.AgentHealthPort, "TCP port for agent health status API")
 	option.BindEnv(option.AgentHealthPort)
 
+	flags.Int(option.ClusterHealthPort, defaults.ClusterHealthPort, "TCP port for cluster-wide network connectivity health API")
+	option.BindEnv(option.ClusterHealthPort)
+
 	flags.StringSlice(option.AgentLabels, []string{}, "Additional labels to identify this agent")
 	option.BindEnv(option.AgentLabels)
 
@@ -233,6 +226,9 @@ func init() {
 	flags.Duration(option.ARPPingRefreshPeriod, 5*time.Minute, "Period for remote node ARP entry refresh (set 0 to disable)")
 	option.BindEnv(option.ARPPingRefreshPeriod)
 
+	flags.Bool(option.EnableL2NeighDiscovery, true, "Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec")
+	option.BindEnv(option.EnableL2NeighDiscovery)
+
 	flags.Bool(option.AutoCreateCiliumNodeResource, defaults.AutoCreateCiliumNodeResource, "Automatically create CiliumNode resource for own node on startup")
 	option.BindEnv(option.AutoCreateCiliumNodeResource)
 
@@ -244,10 +240,6 @@ func init() {
 
 	flags.String(option.CGroupRoot, "", "Path to Cgroup2 filesystem")
 	option.BindEnv(option.CGroupRoot)
-
-	flags.Bool(option.BPFCompileDebugName, true, "Enable debugging of the BPF compilation process. ")
-	flags.MarkDeprecated(option.BPFCompileDebugName, "This flag is no longer available and will be removed in v1.11")
-	option.BindEnv(option.BPFCompileDebugName)
 
 	flags.Bool(option.SockopsEnableName, defaults.SockopsEnable, "Enable sockops when kernel supported")
 	option.BindEnv(option.SockopsEnableName)
@@ -283,7 +275,7 @@ func init() {
 	flags.StringSlice(option.Devices, []string{}, "List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'")
 	option.BindEnv(option.Devices)
 
-	flags.String(option.DirectRoutingDevice, "", "Device name used to connect nodes in direct routing mode (required only by BPF NodePort; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)")
+	flags.String(option.DirectRoutingDevice, "", "Device name used to connect nodes in direct routing mode (used by BPF NodePort, BPF fast redirect; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)")
 	option.BindEnv(option.DirectRoutingDevice)
 
 	flags.String(option.LBDevInheritIPAddr, "", fmt.Sprintf("Device name which IP addr is inherited by devices running LB BPF program (--%s)", option.Devices))
@@ -355,6 +347,9 @@ func init() {
 
 	flags.String(option.EgressMasqueradeInterfaces, "", "Limit egress masquerading to interface selector")
 	option.BindEnv(option.EgressMasqueradeInterfaces)
+
+	flags.Bool(option.BPFSocketLBHostnsOnly, false, "Skip socket LB for services when inside a pod namespace, in favor of service LB at the pod interface. Socket LB is still used when in the host namespace. Required by service mesh (e.g., Istio, Linkerd).")
+	option.BindEnv(option.BPFSocketLBHostnsOnly)
 
 	flags.Bool(option.EnableHostReachableServices, false, "Enable reachability of services for host applications")
 	option.BindEnv(option.EnableHostReachableServices)
@@ -496,12 +491,6 @@ func init() {
 	option.BindEnv(option.K8sServiceCacheSize)
 	flags.MarkHidden(option.K8sServiceCacheSize)
 
-	// Remove in 1.11
-	flags.Bool(option.K8sForceJSONPatch, false, "When set uses JSON Patch to update CNP and CEP status in kube-apiserver")
-	option.BindEnv(option.K8sForceJSONPatch)
-	flags.MarkHidden(option.K8sForceJSONPatch)
-	flags.MarkDeprecated(option.K8sForceJSONPatch, "Marked for removal in Cilium 1.11 as this functionality is enabled by default since Kubernetes >= 1.13")
-
 	flags.String(option.K8sWatcherEndpointSelector, defaults.K8sWatcherEndpointSelector, "K8s endpoint watcher will watch for these k8s endpoints")
 	option.BindEnv(option.K8sWatcherEndpointSelector)
 
@@ -514,6 +503,9 @@ func init() {
 	flags.Duration(option.KVstoreLeaseTTL, defaults.KVstoreLeaseTTL, "Time-to-live for the KVstore lease.")
 	flags.MarkHidden(option.KVstoreLeaseTTL)
 	option.BindEnv(option.KVstoreLeaseTTL)
+
+	flags.Int(option.KVstoreMaxConsecutiveQuorumErrorsName, defaults.KVstoreMaxConsecutiveQuorumErrors, "Max acceptable kvstore consecutive quorum errors before the agent assumes permanent failure")
+	option.BindEnv(option.KVstoreMaxConsecutiveQuorumErrorsName)
 
 	flags.Duration(option.KVstorePeriodicSync, defaults.KVstorePeriodicSync, "Periodic KVstore synchronization interval")
 	option.BindEnv(option.KVstorePeriodicSync)
@@ -570,6 +562,14 @@ func init() {
 
 	flags.Bool(option.EnableLocalRedirectPolicy, false, "Enable Local Redirect Policy")
 	option.BindEnv(option.EnableLocalRedirectPolicy)
+
+	flags.Bool(option.EnableMKE, false, "Enable BPF kube-proxy replacement for MKE environments")
+	flags.MarkHidden(option.EnableMKE)
+	option.BindEnv(option.EnableMKE)
+
+	flags.String(option.CgroupPathMKE, "", "Cgroup v1 net_cls mount path for MKE environments")
+	flags.MarkHidden(option.CgroupPathMKE)
+	option.BindEnv(option.CgroupPathMKE)
 
 	flags.String(option.NodePortMode, option.NodePortModeSNAT, "BPF NodePort mode (\"snat\", \"dsr\", \"hybrid\")")
 	flags.MarkHidden(option.NodePortMode)
@@ -634,7 +634,13 @@ func init() {
 	flags.Bool(option.EnableHostFirewall, false, "Enable host network policies")
 	option.BindEnv(option.EnableHostFirewall)
 
-	flags.String(option.IPv4NativeRoutingCIDR, "", "Allows to explicitly specify the CIDR for native routing. This value corresponds to the configured cluster-cidr.")
+	flags.String(option.NativeRoutingCIDR, "",
+		fmt.Sprintf("Allows to explicitly specify the IPv4 CIDR for native routing. This value corresponds to the configured cluster-cidr. Deprecated in favor of --%s", option.IPv4NativeRoutingCIDR))
+	option.BindEnv(option.NativeRoutingCIDR)
+	flags.MarkHidden(option.NativeRoutingCIDR)
+	flags.MarkDeprecated(option.NativeRoutingCIDR, "This option will be removed in v1.12")
+
+	flags.String(option.IPv4NativeRoutingCIDR, "", "Allows to explicitly specify the IPv4 CIDR for native routing. This value corresponds to the configured cluster-cidr.")
 	option.BindEnv(option.IPv4NativeRoutingCIDR)
 
 	flags.String(option.LibDir, defaults.LibraryPath, "Directory path to store runtime build environment")
@@ -657,10 +663,6 @@ func init() {
 	flags.String(option.NAT46Range, defaults.DefaultNAT46Prefix, "IPv6 prefix to map IPv4 addresses to")
 	option.BindEnv(option.NAT46Range)
 
-	flags.Bool(option.Masquerade, true, "Masquerade packets from endpoints leaving the host")
-	option.BindEnv(option.Masquerade)
-	flags.MarkDeprecated(option.Masquerade, fmt.Sprintf("This option will be removed in v1.11 in favour of %s", option.EnableIPv4Masquerade))
-
 	flags.Bool(option.EnableIPv4Masquerade, true, "Masquerade IPv4 traffic from endpoints leaving the host")
 	option.BindEnv(option.EnableIPv4Masquerade)
 
@@ -669,6 +671,10 @@ func init() {
 
 	flags.Bool(option.EnableBPFMasquerade, false, "Masquerade packets from endpoints leaving the host with BPF instead of iptables")
 	option.BindEnv(option.EnableBPFMasquerade)
+
+	flags.String(option.DeriveMasqIPAddrFromDevice, "", "Device name from which Cilium derives the IP addr for BPF masquerade")
+	flags.MarkHidden(option.DeriveMasqIPAddrFromDevice)
+	option.BindEnv(option.DeriveMasqIPAddrFromDevice)
 
 	flags.Bool(option.EnableIPMasqAgent, false, "Enable BPF ip-masq-agent")
 	option.BindEnv(option.EnableIPMasqAgent)
@@ -739,6 +745,9 @@ func init() {
 
 	flags.StringP(option.TunnelName, "t", "", fmt.Sprintf("Tunnel mode {%s} (default \"vxlan\" for the \"veth\" datapath mode)", option.GetTunnelModes()))
 	option.BindEnv(option.TunnelName)
+
+	flags.Int(option.TunnelPortName, 0, fmt.Sprintf("Tunnel port (default %d for \"vxlan\" and %d for \"geneve\")", defaults.TunnelPortVXLAN, defaults.TunnelPortGeneve))
+	option.BindEnv(option.TunnelPortName)
 
 	flags.Int(option.TracePayloadlen, 128, "Length of payload to capture when tracing")
 	option.BindEnv(option.TracePayloadlen)
@@ -868,9 +877,6 @@ func init() {
 	flags.MarkHidden(option.SelectiveRegeneration)
 	option.BindEnv(option.SelectiveRegeneration)
 
-	flags.Bool(option.SkipCRDCreation, false, "Skip Kubernetes Custom Resource Definitions creations")
-	option.BindEnv(option.SkipCRDCreation)
-
 	flags.String(option.WriteCNIConfigurationWhenReady, "", fmt.Sprintf("Write the CNI configuration as specified via --%s to path when agent is ready", option.ReadCNIConfiguration))
 	option.BindEnv(option.WriteCNIConfigurationWhenReady)
 
@@ -904,10 +910,6 @@ func init() {
 
 	flags.StringSlice(option.HubbleTLSClientCAFiles, []string{}, "Paths to one or more public key files of client CA certificates to use for TLS with mutual authentication (mTLS). The files must contain PEM encoded data. When provided, this option effectively enables mTLS.")
 	option.BindEnv(option.HubbleTLSClientCAFiles)
-
-	flags.Int(option.HubbleFlowBufferSize, 0, "Maximum number of flows in Hubble's buffer.")
-	flags.MarkDeprecated(option.HubbleFlowBufferSize, fmt.Sprintf("Use %s instead.", option.HubbleEventBufferCapacity))
-	option.BindEnv(option.HubbleFlowBufferSize)
 
 	flags.Int(option.HubbleEventBufferCapacity, observeroption.Default.MaxFlows.AsInt(), "Capacity of Hubble events buffer. The provided value must be one less than an integer power of two and no larger than 65535 (ie: 1, 3, ..., 2047, 4095, ..., 65535)")
 	option.BindEnv(option.HubbleEventBufferCapacity)
@@ -993,6 +995,17 @@ func init() {
 
 	flags.Bool(option.ExternalClusterIPName, false, "Enable external access to ClusterIP services (default false)")
 	option.BindEnv(option.ExternalClusterIPName)
+
+	flags.IntSlice(option.VLANBPFBypass, []int{}, "List of explicitly allowed VLAN IDs, '0' id will allow all VLAN IDs")
+	option.BindEnv(option.VLANBPFBypass)
+
+	flags.Bool(option.EnableICMPRules, false, "Enable ICMP-based rule support for Cilium Network Policies")
+	flags.MarkHidden(option.EnableICMPRules)
+	option.BindEnv(option.EnableICMPRules)
+
+	flags.Bool(option.BypassIPAvailabilityUponRestore, false, "Bypasses the IP availability error within IPAM upon endpoint restore")
+	flags.MarkHidden(option.BypassIPAvailabilityUponRestore)
+	option.BindEnv(option.BypassIPAvailabilityUponRestore)
 
 	viper.BindPFlags(flags)
 }
@@ -1200,7 +1213,8 @@ func initEnv(cmd *cobra.Command) {
 	// the path to an already mounted filesystem instead. This is
 	// useful if the daemon is being round inside a namespace and the
 	// BPF filesystem is mapped into the slave namespace.
-	bpf.CheckOrMountFS(option.Config.BPFRoot, k8s.IsEnabled())
+	bpf.CheckOrMountFS(option.Config.BPFRoot)
+	cgroups.CheckOrMountCgrpFS(option.Config.CGroupRoot)
 
 	option.Config.Opts.SetBool(option.Debug, debugDatapath)
 	option.Config.Opts.SetBool(option.DebugLB, debugDatapath)
@@ -1244,7 +1258,7 @@ func initEnv(cmd *cobra.Command) {
 
 	switch option.Config.DatapathMode {
 	case datapathOption.DatapathModeVeth:
-		if name := viper.GetString(option.IpvlanMasterDevice); name != "undefined" {
+		if name := option.Config.IpvlanMasterDevice; name != "undefined" {
 			log.WithField(logfields.IpvlanMasterDevice, name).
 				Fatal("ipvlan master device cannot be set in the 'veth' datapath mode")
 		}
@@ -1252,7 +1266,7 @@ func initEnv(cmd *cobra.Command) {
 			option.Config.Tunnel = option.TunnelVXLAN
 		}
 	case datapathOption.DatapathModeIpvlan:
-		if option.Config.Tunnel != "" && option.Config.Tunnel != option.TunnelDisabled {
+		if option.Config.Tunnel != "" && option.Config.TunnelingEnabled() {
 			log.WithField(logfields.Tunnel, option.Config.Tunnel).
 				Fatal("tunnel cannot be set in the 'ipvlan' datapath mode")
 		}
@@ -1273,7 +1287,7 @@ func initEnv(cmd *cobra.Command) {
 		// the swagger API is that in future we might deprecate --device
 		// parameter with e.g. some auto-detection mechanism, thus for
 		// ipvlan it is desired to have a separate one, see PR #6608.
-		iface := viper.GetString(option.IpvlanMasterDevice)
+		iface := option.Config.IpvlanMasterDevice
 		if iface == "undefined" {
 			log.WithField(logfields.IpvlanMasterDevice, option.Config.Devices[0]).
 				Fatal("ipvlan master device must be specified in the 'ipvlan' datapath mode")
@@ -1288,6 +1302,10 @@ func initEnv(cmd *cobra.Command) {
 		option.Config.Ipvlan.OperationMode = connector.OperationModeL3
 		if option.Config.InstallIptRules {
 			option.Config.Ipvlan.OperationMode = connector.OperationModeL3S
+		} else {
+			log.WithFields(logrus.Fields{
+				logfields.URL: "https://github.com/cilium/cilium/issues/12879",
+			}).Warn("IPtables rule configuration has been disabled. This may affect policy and forwarding, see the URL for more details.")
 		}
 	case datapathOption.DatapathModeLBOnly:
 		log.Info("Running in LB-only mode")
@@ -1312,7 +1330,7 @@ func initEnv(cmd *cobra.Command) {
 		log.Fatal("L7 proxy requires iptables rules (--install-iptables-rules=\"true\")")
 	}
 
-	if option.Config.EnableIPSec && option.Config.Tunnel != option.TunnelDisabled {
+	if option.Config.EnableIPSec && option.Config.TunnelingEnabled() {
 		if err := ipsec.ProbeXfrmStateOutputMask(); err != nil {
 			log.WithError(err).Fatal("IPSec with tunneling requires support for xfrm state output masks (Linux 4.19 or later).")
 		}
@@ -1321,7 +1339,7 @@ func initEnv(cmd *cobra.Command) {
 	// IPAMENI IPSec is configured from Reinitialize() to pull in devices
 	// that may be added or removed at runtime.
 	if option.Config.EnableIPSec &&
-		option.Config.Tunnel == option.TunnelDisabled &&
+		!option.Config.TunnelingEnabled() &&
 		len(option.Config.EncryptInterface) == 0 &&
 		option.Config.IPAM != ipamOption.IPAMENI {
 		link, err := linuxdatapath.NodeDeviceNameWithDefaultRoute()
@@ -1331,7 +1349,7 @@ func initEnv(cmd *cobra.Command) {
 		option.Config.EncryptInterface = append(option.Config.EncryptInterface, link)
 	}
 
-	if option.Config.Tunnel != option.TunnelDisabled && option.Config.EnableAutoDirectRouting {
+	if option.Config.TunnelingEnabled() && option.Config.EnableAutoDirectRouting {
 		log.Fatalf("%s cannot be used with tunneling. Packets must be routed through the tunnel device.", option.EnableAutoDirectRoutingName)
 	}
 
@@ -1406,7 +1424,7 @@ func initEnv(cmd *cobra.Command) {
 
 	if option.Config.LocalRouterIPv4 != "" || option.Config.LocalRouterIPv6 != "" {
 		// TODO(weil0ng): add a proper check for ipam in PR# 15429.
-		if option.Config.Tunnel != option.TunnelDisabled {
+		if option.Config.TunnelingEnabled() {
 			log.Fatalf("Cannot specify %s or %s in tunnel mode.", option.LocalRouterIPv4, option.LocalRouterIPv6)
 		}
 		if !option.Config.EnableEndpointRoutes {
@@ -1433,7 +1451,7 @@ func initEnv(cmd *cobra.Command) {
 		// InstallNoConntrackIptRules can only be enabled in direct
 		// routing mode as in tunneling mode the encapsulated traffic is
 		// already skipping netfilter conntrack.
-		if option.Config.Tunnel != option.TunnelDisabled {
+		if option.Config.TunnelingEnabled() {
 			log.Fatalf("%s requires the agent to run in direct routing mode.", option.InstallNoConntrackIptRules)
 		}
 
@@ -1451,15 +1469,27 @@ func initEnv(cmd *cobra.Command) {
 	if option.Config.BGPAnnounceLBIP {
 		option.Config.EnableNodePort = true
 		log.Infof("Auto-set BPF NodePort (%q) because LB IP announcements via BGP depend on it.", option.EnableNodePort)
+	}
 
-		if option.Config.K8sEnableK8sEndpointSlice {
-			option.Config.K8sEnableK8sEndpointSlice = false
-			log.WithFields(logrus.Fields{
-				logfields.URL: "https://github.com/metallb/metallb/issues/811",
-			}).Warnf(
-				"Disabling EndpointSlice support (%q) due to incompatibility with BGP mode. "+
-					"Cilium will fallback to using the original Endpoint resource.",
-				option.K8sEnableEndpointSlice,
+	// Ensure that the user does not turn on this mode unless it's for an IPAM
+	// mode which support the bypass.
+	if option.Config.BypassIPAvailabilityUponRestore {
+		switch option.Config.IPAMMode() {
+		case ipamOption.IPAMENI:
+			log.Info(
+				"Running with bypass of IP not available errors upon endpoint " +
+					"restore. Be advised that this mode is intended to be " +
+					"temporary to ease upgrades. Consider restarting the pods " +
+					"which have IPs not from the pool.",
+			)
+		default:
+			option.Config.BypassIPAvailabilityUponRestore = false
+			log.Warnf(
+				"Bypassing IP allocation upon endpoint restore (%q) is enabled with"+
+					"unintended IPAM modes. This bypass is only intended "+
+					"to work for CRD-based IPAM modes such as ENI. Disabling "+
+					"bypass.",
+				option.BypassIPAvailabilityUponRestore,
 			)
 		}
 	}
@@ -1697,6 +1727,11 @@ func runDaemon() {
 		log.WithError(err).Warn("Failed to send agent start monitor message")
 	}
 
+	// clean up all arp PERM entries that might have previously set by
+	// a Cilium instance
+	if !d.datapath.Node().NodeNeighDiscoveryEnabled() {
+		d.datapath.Node().NodeCleanNeighbors()
+	}
 	// Start periodical arping to refresh neighbor table
 	if d.datapath.Node().NodeNeighDiscoveryEnabled() && option.Config.ARPPingRefreshPeriod != 0 {
 		d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.Node())
@@ -1726,7 +1761,7 @@ func runDaemon() {
 
 	if k8s.IsEnabled() {
 		bootstrapStats.k8sInit.Start()
-		k8s.Client().MarkNodeReady(nodeTypes.GetName())
+		k8s.Client().MarkNodeReady(d.k8sWatcher, nodeTypes.GetName())
 		bootstrapStats.k8sInit.End(true)
 	}
 

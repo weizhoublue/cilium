@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Hubble
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package container
@@ -23,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	flowpb "github.com/cilium/cilium/api/v1/flow"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
 
 	"github.com/stretchr/testify/assert"
@@ -81,11 +72,6 @@ func TestRingReader_Previous(t *testing.T) {
 			count:   1,
 			wantErr: io.EOF,
 		},
-		{
-			start:   ^uint64(0),
-			count:   1,
-			wantErr: ErrInvalidRead,
-		},
 	}
 	for _, tt := range tests {
 		name := fmt.Sprintf("read %d, start at position %d", tt.count, tt.start)
@@ -106,6 +92,25 @@ func TestRingReader_Previous(t *testing.T) {
 			assert.Nil(t, reader.Close())
 		})
 	}
+}
+
+func TestRingReader_PreviousLost(t *testing.T) {
+	ring := NewRing(Capacity15)
+	for i := 0; i < 15; i++ {
+		ring.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
+	}
+	reader := NewRingReader(ring, ^uint64(0))
+	expected := &v1.Event{
+		Event: &flowpb.LostEvent{
+			Source:        flowpb.LostEventSource_HUBBLE_RING_BUFFER,
+			NumEventsLost: 1,
+			Cpu:           nil,
+		},
+	}
+	actual, err := reader.Previous()
+	assert.NoError(t, err)
+	assert.Equal(t, expected.GetLostEvent(), actual.GetLostEvent())
+	assert.Nil(t, reader.Close())
 }
 
 func TestRingReader_Next(t *testing.T) {
@@ -150,10 +155,6 @@ func TestRingReader_Next(t *testing.T) {
 				{Timestamp: &timestamppb.Timestamp{Seconds: 13}},
 			},
 		}, {
-			start:   ^uint64(0),
-			count:   1,
-			wantErr: ErrInvalidRead,
-		}, {
 			start:   14,
 			count:   1,
 			wantErr: io.EOF,
@@ -178,6 +179,25 @@ func TestRingReader_Next(t *testing.T) {
 			assert.Nil(t, reader.Close())
 		})
 	}
+}
+
+func TestRingReader_NextLost(t *testing.T) {
+	ring := NewRing(Capacity15)
+	for i := 0; i < 15; i++ {
+		ring.Write(&v1.Event{Timestamp: &timestamppb.Timestamp{Seconds: int64(i)}})
+	}
+	expected := &v1.Event{
+		Event: &flowpb.LostEvent{
+			Source:        flowpb.LostEventSource_HUBBLE_RING_BUFFER,
+			NumEventsLost: 1,
+			Cpu:           nil,
+		},
+	}
+	reader := NewRingReader(ring, ^uint64(0))
+	actual, err := reader.Next()
+	assert.NoError(t, err)
+	assert.Equal(t, expected.GetLostEvent(), actual.GetLostEvent())
+	assert.Nil(t, reader.Close())
 }
 
 func TestRingReader_NextFollow(t *testing.T) {
@@ -269,11 +289,13 @@ func TestRingReader_NextFollow_WithEmptyRing(t *testing.T) {
 	reader := NewRingReader(ring, ring.LastWriteParallel())
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan *v1.Event)
+	done := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
 		case c <- reader.NextFollow(ctx):
 		}
+		close(done)
 	}()
 	select {
 	case <-c:
@@ -282,5 +304,6 @@ func TestRingReader_NextFollow_WithEmptyRing(t *testing.T) {
 		// the call blocked, we're good
 	}
 	cancel()
+	<-done
 	assert.Nil(t, reader.Close())
 }

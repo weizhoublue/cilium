@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Hubble
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package seven
@@ -118,14 +108,14 @@ func TestDecodeL7HTTPRecord(t *testing.T) {
 		},
 	}
 	serviceGetter := &testutils.FakeServiceGetter{
-		OnGetServiceByAddr: func(ip net.IP, port uint16) (service pb.Service, ok bool) {
+		OnGetServiceByAddr: func(ip net.IP, port uint16) *pb.Service {
 			if ip.Equal(net.ParseIP(fakeDestinationEndpoint.IPv4)) && (port == fakeDestinationEndpoint.Port) {
-				return pb.Service{
+				return &pb.Service{
 					Name:      "service-1234",
 					Namespace: "default",
-				}, true
+				}
 			}
-			return
+			return nil
 		},
 	}
 
@@ -492,5 +482,6 @@ func Test_decodeVerdict(t *testing.T) {
 	assert.Equal(t, pb.Verdict_FORWARDED, decodeVerdict(accesslog.VerdictForwarded))
 	assert.Equal(t, pb.Verdict_DROPPED, decodeVerdict(accesslog.VerdictDenied))
 	assert.Equal(t, pb.Verdict_ERROR, decodeVerdict(accesslog.VerdictError))
+	assert.Equal(t, pb.Verdict_REDIRECTED, decodeVerdict(accesslog.VerdictRedirected))
 	assert.Equal(t, pb.Verdict_VERDICT_UNKNOWN, decodeVerdict("bad"))
 }

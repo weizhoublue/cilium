@@ -629,7 +629,7 @@ int tail_nodeport_nat_ipv6(struct __ctx_buff *ctx)
 	bool l2_hdr_required = true;
 
 	target.addr = tmp;
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 	if (dir == NAT_DIR_EGRESS) {
 		struct remote_endpoint_info *info;
 		union v6addr *dst;
@@ -686,7 +686,7 @@ int tail_nodeport_nat_ipv6(struct __ctx_buff *ctx)
 		ret = DROP_MISSED_TAIL_CALL;
 		goto drop_err;
 	}
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 	if (fib_params.l.ifindex == ENCAP_IFINDEX)
 		goto out_send;
 #endif
@@ -961,7 +961,7 @@ static __always_inline int rev_nodeport_lb6(struct __ctx_buff *ctx, int *ifindex
 		bpf_mark_snat_done(ctx);
 
 		*ifindex = ct_state.ifindex;
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 		{
 			union v6addr *dst = (union v6addr *)&ip6->daddr;
 			struct remote_endpoint_info *info;
@@ -1069,7 +1069,7 @@ declare_tailcall_if(__or(__and(is_defined(ENABLE_IPV4),
 		    CILIUM_CALL_IPV6_ENCAP_NODEPORT_NAT)
 int tail_handle_nat_fwd_ipv6(struct __ctx_buff *ctx)
 {
-#if defined(ENCAP_IFINDEX) && defined(IS_BPF_OVERLAY)
+#if defined(TUNNEL_MODE) && defined(IS_BPF_OVERLAY)
 	union v6addr addr = { .p1 = 0 };
 	BPF_V6(addr, ROUTER_IP);
 #else
@@ -1085,9 +1085,16 @@ static __always_inline bool nodeport_uses_dsr4(const struct ipv4_ct_tuple *tuple
 	return nodeport_uses_dsr(tuple->nexthdr);
 }
 
-/* Returns true if the packet must be SNAT-ed. In addition, sets "addr" to
- * SNAT IP addr, and if a packet is sent from an endpoint, sets "from_endpoint"
- * to true.
+/* The function contains a core logic for deciding whether an egressing packet
+ * has to be SNAT-ed. Currently, the function targets the following flows:
+ *
+ *	- From pod to outside to masquerade requests
+ *	  when --enable-bpf-masquerade=true.
+ *	- From host to outside to track (and masquerade) flows which
+ *	  can conflict with NodePort BPF.
+ *
+ * The function sets "addr" to the SNAT IP addr, and "from_endpoint" to true
+ * if the packet is sent from a local endpoint.
  */
 static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 					   bool *from_endpoint __maybe_unused)
@@ -1095,6 +1102,8 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 	struct endpoint_info *ep __maybe_unused;
 	void *data, *data_end;
 	struct iphdr *ip4;
+	struct ipv4_ct_tuple tuple __maybe_unused = {};
+	bool is_reply __maybe_unused = false;
 
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return false;
@@ -1122,7 +1131,7 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 	 * overlapping tuples, e.g. applications in hostns reusing
 	 * source IPs we SNAT in NodePort and BPF-masq.
 	 */
-#if defined(ENCAP_IFINDEX) && defined(IS_BPF_OVERLAY)
+#if defined(TUNNEL_MODE) && defined(IS_BPF_OVERLAY)
 	if (ip4->saddr == IPV4_GATEWAY) {
 		*addr = IPV4_GATEWAY;
 		return true;
@@ -1143,7 +1152,7 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 		return true;
 	}
 # endif
-#endif /* defined(ENCAP_IFINDEX) && defined(IS_BPF_OVERLAY) */
+#endif /* defined(TUNNEL_MODE) && defined(IS_BPF_OVERLAY) */
 
 
 #ifdef ENABLE_MASQUERADE /* SNAT local pod to world packets */
@@ -1156,7 +1165,7 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 # endif
 #ifdef IPV4_SNAT_EXCLUSION_DST_CIDR
 	/* Do not MASQ if a dst IP belongs to a pods CIDR
-	 * (native-routing-cidr if specified, otherwise local pod CIDR).
+	 * (ipv4-native-routing-cidr if specified, otherwise local pod CIDR).
 	 * The check is performed before we determine that a packet is
 	 * sent from a local pod, as this check is cheaper than
 	 * the map lookup done in the latter check.
@@ -1185,7 +1194,7 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 			if (map_lookup_elem(&IP_MASQ_AGENT_IPV4, &pfx))
 				return false;
 #endif
-#ifndef ENCAP_IFINDEX
+#ifndef TUNNEL_MODE
 			/* In the tunnel mode, a packet from a local ep
 			 * to a remote node is not encap'd, and is sent
 			 * via a native dev. Therefore, such packet has
@@ -1198,6 +1207,20 @@ static __always_inline bool snat_v4_needed(struct __ctx_buff *ctx, __be32 *addr,
 			if (info->sec_label == REMOTE_NODE_ID)
 				return false;
 #endif
+
+			tuple.nexthdr = ip4->protocol;
+			tuple.daddr = ip4->daddr;
+			tuple.saddr = ip4->saddr;
+
+			/* The packet is a reply, which means that outside
+			 * has initiated the connection, so no need to SNAT
+			 * the reply.
+			 */
+			if (!ct_is_reply4(get_ct_map4(&tuple), ctx,
+					  ETH_HLEN + ipv4_hdrlen(ip4),
+					  &tuple, &is_reply) &&
+			    is_reply)
+				return false;
 
 			*addr = IPV4_MASQUERADE;
 			return true;
@@ -1612,7 +1635,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 	bool l2_hdr_required = true;
 
 	target.addr = IPV4_DIRECT_ROUTING;
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 	if (dir == NAT_DIR_EGRESS) {
 		struct remote_endpoint_info *info;
 
@@ -1671,7 +1694,7 @@ int tail_nodeport_nat_ipv4(struct __ctx_buff *ctx)
 		ret = DROP_MISSED_TAIL_CALL;
 		goto drop_err;
 	}
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 	if (fib_params.l.ifindex == ENCAP_IFINDEX)
 		goto out_send;
 #endif
@@ -1915,6 +1938,8 @@ redo_local:
  * a remote backend and we got here after reverse SNAT from the
  * tail_nodeport_nat_ipv4().
  *
+ * Also, reverse NAT handling return path egress-gw traffic.
+ *
  * CILIUM_CALL_IPV{4,6}_NODEPORT_REVNAT is plugged into CILIUM_MAP_CALLS
  * of the bpf_host, bpf_overlay and of the bpf_lxc.
  */
@@ -1930,6 +1955,7 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 	union macaddr *dmac = NULL;
 	__u32 monitor = 0;
 	bool l2_hdr_required = true;
+	__u32 tunnel_endpoint __maybe_unused = 0;
 
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
@@ -1941,6 +1967,31 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 	l4_off = l3_off + ipv4_hdrlen(ip4);
 	csum_l4_offset_and_flags(tuple.nexthdr, &csum_off);
 
+#if defined(ENABLE_EGRESS_GATEWAY) && !defined(TUNNEL_MODE)
+	/* Traffic from clients to egress gateway nodes reaches said gateways
+	 * by a vxlan tunnel. If we are not using TUNNEL_MODE, we need to
+	 * identify reverse traffic from the gateway to clients and also steer
+	 * it via the vxlan tunnel to avoid issues with iptables dropping these
+	 * packets. We do this in the code below, by performing a lookup in the
+	 * egress gateway map using a reverse address tuple. A match means that
+	 * the corresponding forward traffic was forwarded to the egress gateway
+	 * via the tunnel.
+	 */
+	{
+		struct egress_info *einfo;
+
+		einfo = lookup_ip4_egress_endpoint(ip4->daddr, ip4->saddr);
+		if (einfo) {
+			struct remote_endpoint_info *info;
+
+			info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
+			if (info && info->tunnel_endpoint != 0) {
+				tunnel_endpoint = info->tunnel_endpoint;
+				goto encap_redirect;
+			}
+		}
+	}
+#endif /* ENABLE_EGRESS_GATEWAY */
 	ret = ct_lookup4(get_ct_map4(&tuple), &tuple, ctx, l4_off, CT_INGRESS, &ct_state,
 			 &monitor);
 
@@ -1957,26 +2008,14 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 		bpf_mark_snat_done(ctx);
 
 		*ifindex = ct_state.ifindex;
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 		{
 			struct remote_endpoint_info *info;
 
 			info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
 			if (info != NULL && info->tunnel_endpoint != 0) {
-				ret = __encap_with_nodeid(ctx, info->tunnel_endpoint,
-							  SECLABEL, TRACE_PAYLOAD_LEN);
-				if (ret)
-					return ret;
-
-				*ifindex = ENCAP_IFINDEX;
-
-				/* fib lookup not necessary when going over tunnel. */
-				if (eth_store_daddr(ctx, fib_params.dmac, 0) < 0)
-					return DROP_WRITE_ERROR;
-				if (eth_store_saddr(ctx, fib_params.smac, 0) < 0)
-					return DROP_WRITE_ERROR;
-
-				return CTX_ACT_OK;
+				tunnel_endpoint = info->tunnel_endpoint;
+				goto encap_redirect;
 			}
 		}
 #endif
@@ -2026,6 +2065,23 @@ static __always_inline int rev_nodeport_lb4(struct __ctx_buff *ctx, int *ifindex
 	}
 
 	return CTX_ACT_OK;
+
+#if defined(ENABLE_EGRESS_GATEWAY) || defined(TUNNEL_MODE)
+encap_redirect:
+	ret = __encap_with_nodeid(ctx, tunnel_endpoint, SECLABEL, TRACE_PAYLOAD_LEN);
+	if (ret)
+		return ret;
+
+	*ifindex = ENCAP_IFINDEX;
+
+	/* fib lookup not necessary when going over tunnel. */
+	if (eth_store_daddr(ctx, fib_params.dmac, 0) < 0)
+		return DROP_WRITE_ERROR;
+	if (eth_store_saddr(ctx, fib_params.smac, 0) < 0)
+		return DROP_WRITE_ERROR;
+
+	return CTX_ACT_OK;
+#endif
 }
 
 __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_NODEPORT_REVNAT)

@@ -1,18 +1,8 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package endpoint
 
@@ -52,8 +42,8 @@ func (s *EndpointSuite) TestPolicyLog(c *C) {
 	policyLogger.Info("testing policy logging")
 
 	// Test logging with integrated nil check, no fields
-	ep.policyDebug(nil, "testing policyDebug")
-	ep.policyDebug(logrus.Fields{"testField": "Test Value"}, "policyDebug with fields")
+	ep.PolicyDebug(nil, "testing PolicyDebug")
+	ep.PolicyDebug(logrus.Fields{"testField": "Test Value"}, "PolicyDebug with fields")
 
 	// Disable option
 	ep.Options.SetValidated(option.DebugPolicy, option.OptionDisabled)
@@ -66,6 +56,6 @@ func (s *EndpointSuite) TestPolicyLog(c *C) {
 	buf, err := os.ReadFile(filepath.Join(option.Config.StateDir, "endpoint-policy.log"))
 	c.Assert(err, IsNil)
 	c.Assert(bytes.Contains(buf, []byte("testing policy logging")), Equals, true)
-	c.Assert(bytes.Contains(buf, []byte("testing policyDebug")), Equals, true)
+	c.Assert(bytes.Contains(buf, []byte("testing PolicyDebug")), Equals, true)
 	c.Assert(bytes.Contains(buf, []byte("Test Value")), Equals, true)
 }

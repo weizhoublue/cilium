@@ -16,9 +16,11 @@ package controller
 
 import (
 	"reflect"
+	"sync/atomic"
 
 	"go.universe.tf/metallb/pkg/allocator"
 	"go.universe.tf/metallb/pkg/config"
+	"go.universe.tf/metallb/pkg/k8s"
 	"go.universe.tf/metallb/pkg/k8s/types"
 
 	"github.com/go-kit/kit/log"
@@ -29,11 +31,11 @@ type Controller struct {
 	Client service
 	IPs    *allocator.Allocator
 
-	synced bool
+	synced uint32
 	config *config.Config
 }
 
-func (c *Controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _ *v1.Endpoints) types.SyncState {
+func (c *Controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _ k8s.EpsOrSlices) types.SyncState {
 	l.Log("event", "startUpdate", "msg", "start of service update")
 	defer l.Log("event", "endUpdate", "msg", "end of service update")
 
@@ -102,7 +104,7 @@ func (c *Controller) SetConfig(l log.Logger, cfg *config.Config) types.SyncState
 }
 
 func (c *Controller) MarkSynced(l log.Logger) {
-	c.synced = true
+	atomic.StoreUint32(&c.synced, 1)
 	l.Log("event", "stateSynced", "msg", "controller synced, can allocate IPs now")
 }
 

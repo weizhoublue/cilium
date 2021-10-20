@@ -48,6 +48,10 @@ export 'TUNNEL_MODE_STRING'=${TUNNEL_MODE_STRING:-"-t vxlan"}
 # Replies Yes to all prompts asked in this script
 export 'YES_TO_ALL'=${YES_TO_ALL:-"0"}
 
+# Don't build the tree inside the VMs (faster)
+# Example use as: make -j$(nproc) && NO_BUILD=1 ./contrib/vagrant/start.sh
+export 'NO_BUILD'=${NO_BUILD:-"0"}
+
 # Internal variables used in the Vagrantfile
 export 'CILIUM_SCRIPT'=true
 # Sets the directory where the temporary setup scripts are created
@@ -304,7 +308,7 @@ function write_cilium_cfg() {
 
     cilium_options="\
       --debug --pprof --enable-hubble --hubble-listen-address :4244 --enable-k8s-event-handover \
-      --k8s-require-ipv4-pod-cidr --enable-bandwidth-manager --kube-proxy-replacement probe \
+      --k8s-require-ipv4-pod-cidr --enable-bandwidth-manager --kube-proxy-replacement=disabled \
       --enable-remote-node-identity"
     cilium_operator_options=" --debug"
 
@@ -616,56 +620,40 @@ function createVm(){
     fi
 }
 
-#get number of running VM(s)
+# Check if there are already running VMs.
 runningVm=$(VBoxManage list runningvms | awk 'END{ print NR }')
 VMName=$(VBoxManage list runningvms | awk 'NR==1{print $1}' |  cut -d "\"" -f 2)
 if [ "$VMName" ]; then
-    echo
-    echo "Detected running VMs that might cause conflict"
-    echo
+    echo "Detected running VMs that might cause conflict:"
     VBoxManage list runningvms
 
-    #option to stop, delete VM(s) or ignore and continue
     echo
-    printf "Do you wish to stop, destroy the VM(s) or ignore and continue? [s/d/C]  "
+    printf "Do you wish to stop, destroy the VM(s) or ignore and continue? [s/d/C] "
     read optn
 
     case "$optn" in
         "s" )
-            #stop the VM(s)
+            # Stop all VMs
             for ((i=1; i<=$runningVm; i=i+1))
             do
                 VMName=$(VBoxManage list runningvms | awk 'NR==1{print $1}' |  cut -d "\"" -f 2)
-                echo
                 VBoxManage controlvm $VMName poweroff
-                printf "\n$VMName stopped\n"
+                printf "$VMName stopped\n"
             done
-            printf "\n$runningVm VM(s) stopped successfully\n"
-            printf "Tip: Try running vagrant status to check status\n\n"
+            printf "\n$runningVm VM(s) successfully stopped\n"
         ;;
         "d" )
-            #destroy the VM(s)
+            # Destroy all VMs
             for ((i=1; i<=$runningVm; i=i+1))
             do
                 VMName=$(VBoxManage list runningvms | awk 'NR==1{print $1}' |  cut -d "\"" -f 2)
-                echo
                 VBoxManage controlvm $VMName poweroff
                 VBoxManage unregistervm $VMName --delete
-                printf "\n$VMName destroyed\n"
+                printf "$VMName destroyed\n"
             done
-            printf "\n$runningVm VM(s) destroyed successfully\n"
-            printf "Tip: Try running vagrant status to check status\n\n"
-        ;;
-        "C" | * )
-            #continue and default case
-            echo
-            #value to start.sh is passed to function createVm
-            createVm $1
+            printf "\n$runningVm VM(s) successfully destroyed\n"
         ;;
     esac
-else
     echo
-    echo
-    #value to start.sh is passed to function createVm
-    createVm $1
 fi
+createVm $1

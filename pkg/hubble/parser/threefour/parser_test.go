@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Hubble
-// Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package threefour
@@ -30,9 +19,12 @@ import (
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
+	"github.com/cilium/cilium/pkg/hubble/parser/errors"
 	"github.com/cilium/cilium/pkg/hubble/testutils"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/monitor"
 	"github.com/cilium/cilium/pkg/monitor/api"
@@ -52,6 +44,17 @@ var log *logrus.Logger
 func init() {
 	log = logrus.New()
 	log.SetOutput(io.Discard)
+}
+
+func TestL34DecodeEmpty(t *testing.T) {
+	parser, err := New(log, &testutils.NoopEndpointGetter, &testutils.NoopIdentityGetter,
+		&testutils.NoopDNSGetter, &testutils.NoopIPGetter, &testutils.NoopServiceGetter)
+	require.NoError(t, err)
+
+	var d []byte
+	f := &flowpb.Flow{}
+	err = parser.Decode(d, f)
+	assert.Equal(t, err, errors.ErrEmptyData)
 }
 
 func TestL34Decode(t *testing.T) {
@@ -79,6 +82,16 @@ func TestL34Decode(t *testing.T) {
 					Identity:     5678,
 					PodName:      "pod-10.16.236.178",
 					PodNamespace: "default",
+					Pod: &slim_corev1.Pod{
+						ObjectMeta: slim_metav1.ObjectMeta{
+							OwnerReferences: []slim_metav1.OwnerReference{
+								{
+									Kind: "ReplicaSet",
+									Name: "pod",
+								},
+							},
+						},
+					},
 				}, true
 			}
 			return nil, false
@@ -119,20 +132,20 @@ func TestL34Decode(t *testing.T) {
 		},
 	}
 	serviceGetter := &testutils.FakeServiceGetter{
-		OnGetServiceByAddr: func(ip net.IP, port uint16) (service flowpb.Service, ok bool) {
+		OnGetServiceByAddr: func(ip net.IP, port uint16) *flowpb.Service {
 			if ip.Equal(net.ParseIP("192.168.33.11")) && (port == 6443) {
-				return flowpb.Service{
+				return &flowpb.Service{
 					Name:      "service-1234",
 					Namespace: "remote",
-				}, true
+				}
 			}
 			if ip.Equal(net.ParseIP("10.16.236.178")) && (port == 54222) {
-				return flowpb.Service{
+				return &flowpb.Service{
 					Name:      "service-4321",
 					Namespace: "default",
-				}, true
+				}
 			}
-			return
+			return nil
 		},
 	}
 	identityCache := &testutils.NoopIdentityGetter
@@ -986,7 +999,7 @@ func TestDebugCapture(t *testing.T) {
 	dbg = monitor.DebugCapture{
 		Type:    api.MessageTypeCapture,
 		SubType: monitor.DbgCaptureProxyPost,
-		Arg1:    byteorder.HostToNetwork(uint32(1234)).(uint32),
+		Arg1:    byteorder.HostToNetwork32(1234),
 	}
 	data, err = testutils.CreateL3L4Payload(dbg)
 	require.NoError(t, err)

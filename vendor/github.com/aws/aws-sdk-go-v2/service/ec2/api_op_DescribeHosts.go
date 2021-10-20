@@ -21,7 +21,7 @@ func (c *Client) DescribeHosts(ctx context.Context, params *DescribeHostsInput, 
 		params = &DescribeHostsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeHosts", params, optFns, addOperationDescribeHostsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeHosts", params, optFns, c.addOperationDescribeHostsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -67,10 +67,12 @@ type DescribeHostsInput struct {
 	// nextToken value. This value can be between 5 and 500. If maxResults is given a
 	// larger value than 500, you receive an error. You cannot specify this parameter
 	// and the host IDs parameter in the same request.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token to use to retrieve the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeHostsOutput struct {
@@ -84,9 +86,11 @@ type DescribeHostsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeHostsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeHostsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeHosts{}, middleware.After)
 	if err != nil {
 		return err
@@ -183,8 +187,8 @@ func NewDescribeHostsPaginator(client DescribeHostsAPIClient, params *DescribeHo
 	}
 
 	options := DescribeHostsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -213,7 +217,11 @@ func (p *DescribeHostsPaginator) NextPage(ctx context.Context, optFns ...func(*O
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeHosts(ctx, &params, optFns...)
 	if err != nil {

@@ -57,6 +57,25 @@ the list below has to be deleted to prevent conflicts.
 
    kubectl -n kube-system delete daemonset <terway>
 
+The next step is to remove CRD below created by ``terway*`` CNI
+
+.. code-block:: shell-session
+
+    kubectl delete crd \
+        ciliumclusterwidenetworkpolicies.cilium.io \
+        ciliumendpoints.cilium.io \
+        ciliumidentities.cilium.io \
+        ciliumnetworkpolicies.cilium.io \
+        ciliumnodes.cilium.io \
+        bgpconfigurations.crd.projectcalico.org \
+        clusterinformations.crd.projectcalico.org \
+        felixconfigurations.crd.projectcalico.org \
+        globalnetworkpolicies.crd.projectcalico.org \
+        globalnetworksets.crd.projectcalico.org \
+        hostendpoints.crd.projectcalico.org \
+        ippools.crd.projectcalico.org \
+        networkpolicies.crd.projectcalico.org
+
 
 Create AlibabaCloud Secrets
 ===========================
@@ -98,7 +117,7 @@ These keys need to have certain `RAM Permissions
         {
           "Action": [
             "vpc:DescribeVSwitches",
-            "vpc:ListTagResources",
+            "vpc:ListTagResources"
           ],
           "Resource": [
             "*"
@@ -165,8 +184,8 @@ Deploy Cilium release via Helm:
    the security groups for pod ENIs are derived from the primary ENI
    (``eth0``).
 
-
 .. include:: k8s-install-validate.rst
+
 .. include:: next-steps.rst
 
 .. _alibabacloud_eni_limitations:

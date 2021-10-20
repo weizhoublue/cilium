@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package policy
 
@@ -34,7 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/u8proto"
-	"github.com/cilium/proxy/go/cilium/api"
+	cilium "github.com/cilium/proxy/go/cilium/api"
 
 	"github.com/sirupsen/logrus"
 )
@@ -329,8 +318,8 @@ func (l4 *L4Filter) GetPort() uint16 {
 //                                caller must replace the ProxyPort with the actual
 //                                listening port number.
 // Note: It is possible for two selectors to select the same security ID.
-// To give priority for L7 redirection (e.g., for visibility purposes), we use
-// RedirectPreferredInsert() instead of directly inserting the value to the map.
+// To give priority for deny and L7 redirection (e.g., for visibility purposes), we use
+// DenyPreferredInsert() instead of directly inserting the value to the map.
 // PolicyOwner (aka Endpoint) is locked during this call.
 func (l4Filter *L4Filter) ToMapState(policyOwner PolicyOwner, direction trafficdirection.TrafficDirection) MapState {
 	port := uint16(l4Filter.Port)
@@ -426,8 +415,8 @@ func (l4Filter *L4Filter) ToMapState(policyOwner PolicyOwner, direction trafficd
 }
 
 // IdentitySelectionUpdated implements CachedSelectionUser interface
-// This call is made while holding name manager and selector cache
-// locks, must beware of deadlocking!
+// This call is made from a single goroutine in FIFO order to keep add
+// and delete events ordered properly. No locks are held.
 //
 // The caller is responsible for making sure the same identity is not
 // present in both 'added' and 'deleted'.

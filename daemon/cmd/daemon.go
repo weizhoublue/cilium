@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -29,13 +18,12 @@ import (
 	"github.com/cilium/cilium/pkg/bandwidth"
 	"github.com/cilium/cilium/pkg/bgp/speaker"
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/cgroups"
+	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/clustermesh"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/counter"
 	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
 	"github.com/cilium/cilium/pkg/datapath"
-	linuxdatapath "github.com/cilium/cilium/pkg/datapath/linux"
 	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
@@ -123,6 +111,8 @@ type Daemon struct {
 
 	monitorAgent *monitoragent.Agent
 	ciliumHealth *health.CiliumHealth
+
+	deviceManager *DeviceManager
 
 	// dnsNameManager tracks which api.FQDNSelector are present in policy which
 	// apply to locally running endpoints.
@@ -261,6 +251,34 @@ func createPrefixLengthCounter() *counter.PrefixLengthCounter {
 	return counter.DefaultPrefixLengthCounter(max6, max4)
 }
 
+// restoreCiliumHostIPs completes the `cilium_host` IP restoration process
+// (part 2/2). This function is called after fully syncing with K8s to ensure
+// that the most up-to-date information has been retrieved. At this point, the
+// daemon is aware of all the necessary information to restore the appropriate
+// IP.
+func restoreCiliumHostIPs(ipv6 bool, fromK8s net.IP) {
+	var (
+		cidr   *cidr.CIDR
+		fromFS net.IP
+	)
+
+	if ipv6 {
+		cidr = node.GetIPv6AllocRange()
+		fromFS = node.GetIPv6Router()
+	} else {
+		switch option.Config.IPAMMode() {
+		case ipamOption.IPAMCRD, ipamOption.IPAMENI, ipamOption.IPAMAzure, ipamOption.IPAMAlibabaCloud:
+			// The native routing CIDR is the pod CIDR in these IPAM modes.
+			cidr = option.Config.GetIPv4NativeRoutingCIDR()
+		default:
+			cidr = node.GetIPv4AllocRange()
+		}
+		fromFS = node.GetInternalIPv4Router()
+	}
+
+	node.RestoreHostIPs(ipv6, fromK8s, fromFS, cidr)
+}
+
 // NewDaemon creates and returns a new Daemon with the parameters set in c.
 func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointmanager.EndpointManager, dp datapath.Datapath) (*Daemon, *endpointRestoreState, error) {
 
@@ -284,7 +302,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	if option.Config.ReadCNIConfiguration != "" {
 		netConf, err = cnitypes.ReadNetConf(option.Config.ReadCNIConfiguration)
 		if err != nil {
-			log.WithError(err).Fatal("Unable to read CNI configuration")
+			return nil, nil, fmt.Errorf("unable to read CNI configuration: %w", err)
 		}
 
 		if netConf.MTU != 0 {
@@ -295,7 +313,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 
 	apiLimiterSet, err := rate.NewAPILimiterSet(option.Config.APIRateLimit, apiRateLimitDefaults, &apiRateLimitingMetrics{})
 	if err != nil {
-		log.WithError(err).Fatal("Unable to configure API rate limiting")
+		return nil, nil, fmt.Errorf("unable to configure API rate limiting: %w", err)
 	}
 
 	// Do the partial kube-proxy replacement initialization before creating BPF
@@ -304,7 +322,10 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	// detection, might disable BPF NodePort and friends. But this is fine, as
 	// the feature does not influence the decision which BPF maps should be
 	// created.
-	isKubeProxyReplacementStrict := initKubeProxyReplacementOptions()
+	isKubeProxyReplacementStrict, err := initKubeProxyReplacementOptions()
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to initialize Kube proxy replacement options: %w", err)
+	}
 
 	ctmap.InitMapInfo(option.Config.CTMapEntriesGlobalTCP, option.Config.CTMapEntriesGlobalAny,
 		option.Config.EnableIPv4, option.Config.EnableIPv6, option.Config.EnableNodePort)
@@ -319,7 +340,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 
 	if option.Config.DryMode == false {
 		if err := bpf.ConfigureResourceLimits(); err != nil {
-			log.WithError(err).Fatal("Unable to set memory resource limits")
+			return nil, nil, fmt.Errorf("unable to set memory resource limits: %w", err)
 		}
 	}
 
@@ -337,7 +358,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	mtuConfig = mtu.NewConfiguration(
 		authKeySize,
 		option.Config.EnableIPSec,
-		option.Config.Tunnel != option.TunnelDisabled,
+		option.Config.TunnelingEnabled(),
 		option.Config.EnableWireguard,
 		configuredMTU,
 		externalIP,
@@ -368,9 +389,14 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		netConf:           netConf,
 		mtuConfig:         mtuConfig,
 		datapath:          dp,
+		deviceManager:     NewDeviceManager(),
 		nodeDiscovery:     nd,
 		endpointCreations: newEndpointCreationManager(),
 		apiLimiterSet:     apiLimiterSet,
+	}
+
+	if option.Config.RunMonitorAgent {
+		d.monitorAgent = monitoragent.NewAgent(ctx)
 	}
 
 	d.configModifyQueue = eventqueue.NewEventQueueBuffered("config-modify-queue", ConfigModifyQueueSize)
@@ -380,8 +406,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 
 	d.rec, err = recorder.NewRecorder(d.ctx, &d)
 	if err != nil {
-		log.WithError(err).Error("Error while initializing BPF pcap recorder")
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("error while initializing BPF pcap recorder: %w", err)
 	}
 
 	d.identityAllocator = cache.NewCachingIdentityAllocator(&d)
@@ -419,6 +444,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		d.egressPolicyManager,
 		option.Config,
 	)
+	nd.RegisterK8sNodeGetter(d.k8sWatcher)
 
 	d.redirectPolicyManager.RegisterSvcCache(&d.k8sWatcher.K8sSvcCache)
 	d.redirectPolicyManager.RegisterGetStores(d.k8sWatcher)
@@ -452,8 +478,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	err = d.initMaps()
 	bootstrapStats.mapsInit.EndError(err)
 	if err != nil {
-		log.WithError(err).Error("Error while opening/creating BPF maps")
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("error while opening/creating BPF maps: %w", err)
 	}
 
 	// Read the service IDs of existing services from the BPF map and
@@ -464,7 +489,9 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	// Also, create missing v2 services from the corresponding legacy ones.
 	if option.Config.RestoreState && !option.Config.DryMode {
 		bootstrapStats.restore.Start()
-		d.svc.RestoreServices()
+		if err := d.svc.RestoreServices(); err != nil {
+			log.WithError(err).Warn("Failed to restore services from BPF maps")
+		}
 		bootstrapStats.restore.End(true)
 	}
 
@@ -538,14 +565,21 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 			return nil, restoredEndpoints, err
 		}
 
+		// Launch the K8s node watcher so we can start receiving node events.
+		// Launching the k8s node watcher at this stage will prevent all agents
+		// from performing Gets directly into kube-apiserver to get the most up
+		// to date version of the k8s node. This allows for better scalability
+		// in large clusters.
+		d.k8sWatcher.NodesInit(k8s.Client())
+
 		if option.Config.IPAM == ipamOption.IPAMClusterPool {
 			// Create the CiliumNode custom resource. This call will block until
 			// the custom resource has been created
 			d.nodeDiscovery.UpdateCiliumNodeResource()
 		}
 
-		if err := k8s.WaitForNodeInformation(); err != nil {
-			log.WithError(err).Fatal("Unable to connect to get node spec from apiserver")
+		if err := k8s.WaitForNodeInformation(d.ctx, d.k8sWatcher); err != nil {
+			return nil, nil, fmt.Errorf("unable to connect to get node spec from apiserver: %w", err)
 		}
 
 		// Kubernetes demands that the localhost can always reach local
@@ -562,7 +596,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 
 	if wgAgent := dp.WireguardAgent(); option.Config.EnableWireguard {
 		if err := wgAgent.Init(mtuConfig); err != nil {
-			log.WithError(err).Fatal("Failed to initialize wireguard agent")
+			return nil, nil, fmt.Errorf("failed to initialize wireguard agent: %w", err)
 		}
 	}
 
@@ -576,18 +610,20 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	// This is because the device detection requires self (Cilium)Node object,
 	// and the k8s service watcher depends on option.Config.EnableNodePort flag
 	// which can be modified after the device detection.
-	handleNativeDevices(isKubeProxyReplacementStrict)
+	if err := d.deviceManager.Detect(); err != nil {
+		if areDevicesRequired() {
+			// Fail hard if devices are required to function.
+			return nil, nil, fmt.Errorf("failed to detect devices: %w", err)
+		}
+		log.WithError(err).Warn("failed to detect devices, disabling BPF NodePort")
+		disableNodePort()
+	}
 	finishKubeProxyReplacementInit(isKubeProxyReplacementStrict)
 
-	// Cgroup v2 hierarchy root used for attachment is different when running on Kind.
-	runsOnKind := option.Config.EnableHostReachableServices &&
-		strings.HasPrefix(node.GetProviderID(), "kind://")
-	cgroups.CheckOrMountCgrpFS(option.Config.CGroupRoot, runsOnKind)
-
-	// Launch the K8s watchers in parallel as we continue to process other
-	// daemon options.
 	if k8s.IsEnabled() {
 		bootstrapStats.k8sInit.Start()
+		// Launch the K8s watchers in parallel as we continue to process other
+		// daemon options.
 		d.k8sCachesSynced = d.k8sWatcher.InitK8sSubsystem(d.ctx)
 		bootstrapStats.k8sInit.End(true)
 	}
@@ -597,7 +633,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	// happen after invoking initKubeProxyReplacementOptions().
 	if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade &&
 		(!option.Config.EnableNodePort || option.Config.EgressMasqueradeInterfaces != "" || !option.Config.EnableRemoteNodeIdentity ||
-			(option.Config.Tunnel != option.TunnelDisabled && !hasFullHostReachableServices())) {
+			(option.Config.TunnelingEnabled() && !hasFullHostReachableServices())) {
 
 		var msg string
 		switch {
@@ -608,7 +644,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 			msg = fmt.Sprintf("BPF masquerade requires remote node identities (--%s=\"true\").",
 				option.EnableRemoteNodeIdentity)
 		// Remove the check after https://github.com/cilium/cilium/issues/12544 is fixed
-		case option.Config.Tunnel != option.TunnelDisabled && !hasFullHostReachableServices():
+		case option.Config.TunnelingEnabled() && !hasFullHostReachableServices():
 			msg = fmt.Sprintf("BPF masquerade requires --%s to be fully enabled (TCP and UDP).",
 				option.EnableHostReachableServices)
 		case option.Config.EgressMasqueradeInterfaces != "":
@@ -630,15 +666,15 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade {
 		// TODO(brb) nodeport + ipvlan constraints will be lifted once the SNAT BPF code has been refactored
 		if option.Config.DatapathMode == datapathOption.DatapathModeIpvlan {
-			log.Fatalf("BPF masquerade works only in veth mode (--%s=\"%s\"", option.DatapathMode, datapathOption.DatapathModeVeth)
+			return nil, nil, fmt.Errorf("BPF masquerade works only in veth mode (--%s=\"%s\"", option.DatapathMode, datapathOption.DatapathModeVeth)
 		}
 		if err := node.InitBPFMasqueradeAddrs(option.Config.Devices); err != nil {
-			log.WithError(err).Fatal("Failed to determine BPF masquerade IPv4 addrs")
+			return nil, nil, fmt.Errorf("failed to determine BPF masquerade IPv4 addrs: %w", err)
 		}
 	} else if option.Config.EnableIPMasqAgent {
-		log.Fatalf("BPF ip-masq-agent requires --%s=\"true\" and --%s=\"true\"", option.Masquerade, option.EnableBPFMasquerade)
+		return nil, nil, fmt.Errorf("BPF ip-masq-agent requires --%s=\"true\" and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableBPFMasquerade)
 	} else if option.Config.EnableEgressGateway {
-		log.Fatalf("Egress Gateway requires --%s=\"true\" and --%s=\"true\"", option.Masquerade, option.EnableBPFMasquerade)
+		return nil, nil, fmt.Errorf("egress gateway requires --%s=\"true\" and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableBPFMasquerade)
 	} else if !option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade {
 		// There is not yet support for option.Config.EnableIPv6Masquerade
 		log.Infof("Auto-disabling %q feature since IPv4 masquerading was generally disabled",
@@ -647,21 +683,15 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	}
 	if option.Config.EnableIPMasqAgent {
 		if !option.Config.EnableIPv4 {
-			log.Fatalf("BPF ip-masq-agent requires IPv4 support (--%s=\"true\")", option.EnableIPv4Name)
+			return nil, nil, fmt.Errorf("BPF ip-masq-agent requires IPv4 support (--%s=\"true\")", option.EnableIPv4Name)
 		}
 		if !probe.HaveFullLPM() {
-			log.Fatal("BPF ip-masq-agent needs kernel 4.16 or newer")
+			return nil, nil, fmt.Errorf("BPF ip-masq-agent needs kernel 4.16 or newer")
 		}
 	}
 	if option.Config.EnableHostFirewall && len(option.Config.Devices) == 0 {
-		device, err := linuxdatapath.NodeDeviceNameWithDefaultRoute()
-		if err != nil {
-			msg := "Host firewall's external facing device could not be determined. Use --%s to specify."
-			log.WithError(err).Fatalf(msg, option.Devices)
-		}
-		log.WithField(logfields.Interface, device).
-			Info("Using auto-derived device for host firewall")
-		option.Config.Devices = []string{device}
+		msg := "host firewall's external facing device could not be determined. Use --%s to specify."
+		return nil, nil, fmt.Errorf(msg, option.Devices)
 	}
 
 	bootstrapStats.cleanup.Start()
@@ -680,15 +710,22 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		bootstrapStats.kvstore.End(true)
 	}
 
+	// Fetch the router (`cilium_host`) IPs in case they were set a priori from
+	// the Kubernetes or CiliumNode resource in the K8s subsystem from call
+	// k8s.WaitForNodeInformation(). These will be used later after starting
+	// IPAM initialization to finish off the `cilium_host` IP restoration (part
+	// 2/2).
+	router4FromK8s, router6FromK8s := node.GetInternalIPv4Router(), node.GetIPv6Router()
+
 	// Configure IPAM without using the configuration yet.
 	d.configureIPAM()
 
 	if option.Config.JoinCluster {
 		if k8s.IsEnabled() {
-			log.Fatalf("Cannot join a Cilium cluster (--%s) when configured as a Kubernetes node", option.JoinClusterName)
+			return nil, nil, fmt.Errorf("cannot join a Cilium cluster (--%s) when configured as a Kubernetes node", option.JoinClusterName)
 		}
 		if option.Config.KVStore == "" {
-			log.Fatalf("Joining a Cilium cluster (--%s) requires kvstore (--%s) be set", option.JoinClusterName, option.KVStore)
+			return nil, nil, fmt.Errorf("joining a Cilium cluster (--%s) requires kvstore (--%s) be set", option.JoinClusterName, option.KVStore)
 		}
 		agentLabels := labels.NewLabelsFromModel(option.Config.AgentLabels).K8sStringMap()
 		if option.Config.K8sNamespace != "" {
@@ -709,6 +746,18 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 
 	// Start IPAM
 	d.startIPAM()
+
+	// After the IPAM is started, in particular IPAM modes (CRD, ENI, Alibaba)
+	// which use the VPC CIDR as the pod CIDR, we must attempt restoring the
+	// router IPs from the K8s resources if we weren't able to restore them
+	// from the fs. We must do this after IPAM because we must wait until the
+	// K8s resources have been synced. Part 2/2 of restoration.
+	if option.Config.EnableIPv4 {
+		restoreCiliumHostIPs(false, router4FromK8s)
+	}
+	if option.Config.EnableIPv6 {
+		restoreCiliumHostIPs(true, router6FromK8s)
+	}
 
 	// restore endpoints before any IPs are allocated to avoid eventual IP
 	// conflicts later on, otherwise any IP conflict will result in the
@@ -781,8 +830,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	err = d.init()
 	bootstrapStats.bpfBase.EndError(err)
 	if err != nil {
-		log.WithError(err).Error("Error while initializing daemon")
-		return nil, restoredEndpoints, err
+		return nil, restoredEndpoints, fmt.Errorf("error while initializing daemon: %w", err)
 	}
 
 	// iptables rules can be updated only after d.init() intializes the iptables above.
@@ -791,16 +839,15 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		return nil, restoredEndpoints, err
 	}
 
-	// We can only start monitor agent once cilium_event has been set up.
+	// We can only attach the monitor agent once cilium_event has been set up.
 	if option.Config.RunMonitorAgent {
-		monitorAgent, err := monitoragent.NewAgent(d.ctx, defaults.MonitorBufferPages)
+		err = d.monitorAgent.AttachToEventsMap(defaults.MonitorBufferPages)
 		if err != nil {
 			return nil, nil, err
 		}
-		d.monitorAgent = monitorAgent
 
 		if option.Config.EnableMonitor {
-			err = monitoragent.ServeMonitorAPI(monitorAgent)
+			err = monitoragent.ServeMonitorAPI(d.monitorAgent)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -902,7 +949,7 @@ func (d *Daemon) Close() {
 func (d *Daemon) TriggerReloadWithoutCompile(reason string) (*sync.WaitGroup, error) {
 	log.Debugf("BPF reload triggered from %s", reason)
 	if err := d.Datapath().Loader().Reinitialize(d.ctx, d, d.mtuConfig.GetDeviceMTU(), d.Datapath(), d.l7Proxy); err != nil {
-		return nil, fmt.Errorf("Unable to recompile base programs from %s: %s", reason, err)
+		return nil, fmt.Errorf("unable to recompile base programs from %s: %s", reason, err)
 	}
 
 	regenRequest := &regeneration.ExternalRegenerationMetadata{
@@ -937,7 +984,9 @@ func changedOption(key string, value option.OptionSetting, data interface{}) {
 	d := data.(*Daemon)
 	if key == option.Debug {
 		// Set the debug toggle (this can be a no-op)
-		logging.ConfigureLogLevel(d.DebugEnabled())
+		if d.DebugEnabled() {
+			logging.SetLogLevelToDebug()
+		}
 		// Reflect log level change to proxies
 		proxy.ChangeLogLevel(logging.GetLevel(logging.DefaultLogger))
 	}

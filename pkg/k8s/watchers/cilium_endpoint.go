@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package watchers
 
@@ -221,16 +210,22 @@ func (k *K8sWatcher) endpointDeleted(endpoint *types.CiliumEndpoint) {
 		namedPortsChanged := false
 		for _, pair := range endpoint.Networking.Addressing {
 			if pair.IPV4 != "" {
-				portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV4, source.CustomResource)
-				if portsChanged {
-					namedPortsChanged = true
+				k8sMeta := ipcache.IPIdentityCache.GetK8sMetadata(pair.IPV4)
+				if k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
+					portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV4, source.CustomResource)
+					if portsChanged {
+						namedPortsChanged = true
+					}
 				}
 			}
 
 			if pair.IPV6 != "" {
-				portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV6, source.CustomResource)
-				if portsChanged {
-					namedPortsChanged = true
+				k8sMeta := ipcache.IPIdentityCache.GetK8sMetadata(pair.IPV6)
+				if k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
+					portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV6, source.CustomResource)
+					if portsChanged {
+						namedPortsChanged = true
+					}
 				}
 			}
 		}

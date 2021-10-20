@@ -1,16 +1,5 @@
-// Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2020-2021 Authors of Cilium
 
 package lbmap
 
@@ -20,6 +9,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/types"
 )
 
@@ -84,9 +74,9 @@ func initAffinity(params InitParams) {
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
 type AffinityMatchKey struct {
-	BackendID uint32 `align:"backend_id"`
-	RevNATID  uint16 `align:"rev_nat_id"`
-	Pad       uint16 `align:"pad"`
+	BackendID loadbalancer.BackendID `align:"backend_id"`
+	RevNATID  uint16                 `align:"rev_nat_id"`
+	Pad       uint16                 `align:"pad"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -96,7 +86,7 @@ type AffinityMatchValue struct {
 }
 
 // NewAffinityMatchKey creates the AffinityMatch key
-func NewAffinityMatchKey(revNATID uint16, backendID uint32) *AffinityMatchKey {
+func NewAffinityMatchKey(revNATID uint16, backendID loadbalancer.BackendID) *AffinityMatchKey {
 	return &AffinityMatchKey{
 		BackendID: backendID,
 		RevNATID:  revNATID,
@@ -127,14 +117,14 @@ func (k *AffinityMatchKey) ToNetwork() *AffinityMatchKey {
 	n := *k
 	// For some reasons rev_nat_index is stored in network byte order in
 	// the SVC BPF maps
-	n.RevNATID = byteorder.HostToNetwork(n.RevNATID).(uint16)
+	n.RevNATID = byteorder.HostToNetwork16(n.RevNATID)
 	return &n
 }
 
 // ToHost returns the key in the host byte order
 func (k *AffinityMatchKey) ToHost() *AffinityMatchKey {
 	h := *k
-	h.RevNATID = byteorder.NetworkToHost(h.RevNATID).(uint16)
+	h.RevNATID = byteorder.NetworkToHost16(h.RevNATID)
 	return &h
 }
 

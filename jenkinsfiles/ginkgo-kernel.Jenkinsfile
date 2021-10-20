@@ -27,7 +27,12 @@ pipeline {
     stages {
         stage('Set build name') {
             when {
-                not {environment name: 'GIT_BRANCH', value: 'origin/master'}
+                not {
+                    anyOf {
+                        environment name: 'ghprbPullTitle', value: null
+                        environment name: 'ghprbPullLink', value: null
+                    }
+                }
             }
             steps {
                    script {
@@ -90,7 +95,7 @@ pipeline {
                         env.DOCKER_TAG = env.DOCKER_TAG + "-race"
                         env.RACE = 1
                         env.LOCKDEBUG = 1
-                        env.BASE_IMAGE = "quay.io/cilium/cilium-runtime:8fe001a11f25ad9e6676c19b0431f83c893fbab4@sha256:921ab4bf310f562ce7d4aea1f5c2bc8651f273f1a93b36c71b9cb9954869ef68"
+                        env.BASE_IMAGE = "quay.io/cilium/cilium-runtime:f6698fe61dbe11019946e5cf5a92077cc8d4a6a9@sha256:9acfa5f4c64482d3dbe19c319f135f5e856f02b479b5eba06efa8691d74e1d4d"
                     }
                 }
             }
@@ -176,7 +181,7 @@ pipeline {
                         retry(25) {
                             sleep(time: 60)
                             sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/cilium-ci/tag/${DOCKER_TAG}/images"'
-                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/operator-ci/tag/${DOCKER_TAG}/images"'
+                            sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/operator-generic-ci/tag/${DOCKER_TAG}/images"'
                             sh 'curl --silent -f -lSL "https://quay.io/api/v1/repository/cilium/hubble-relay-ci/tag/${DOCKER_TAG}/images"'
                         }
                     }
@@ -233,7 +238,7 @@ pipeline {
             }
             steps {
                 sh 'env'
-                sh 'cd ${TESTDIR}; HOME=${GOPATH} ginkgo --focus="${FOCUS}" -v --failFast=${FAILFAST} -- -cilium.provision=false -cilium.timeout=${GINKGO_TIMEOUT} -cilium.kubeconfig=${TESTDIR}/vagrant-kubeconfig -cilium.passCLIEnvironment=true -cilium.runQuarantined=${RUN_QUARANTINED} -cilium.image=${CILIUM_IMAGE} -cilium.tag=${CILIUM_TAG} -cilium.operator-image=${CILIUM_OPERATOR_IMAGE} -cilium.operator-tag=${CILIUM_OPERATOR_TAG} -cilium.hubble-relay-image=${HUBBLE_RELAY_IMAGE} -cilium.hubble-relay-tag=${HUBBLE_RELAY_TAG} -cilium.operator-suffix="-ci"'
+                sh 'cd ${TESTDIR}; HOME=${GOPATH} ginkgo --focus="${FOCUS}" --tags=integration_tests -v --failFast=${FAILFAST} -- -cilium.provision=false -cilium.timeout=${GINKGO_TIMEOUT} -cilium.kubeconfig=${TESTDIR}/vagrant-kubeconfig -cilium.passCLIEnvironment=true -cilium.runQuarantined=${RUN_QUARANTINED} -cilium.image=${CILIUM_IMAGE} -cilium.tag=${CILIUM_TAG} -cilium.operator-image=${CILIUM_OPERATOR_IMAGE} -cilium.operator-tag=${CILIUM_OPERATOR_TAG} -cilium.hubble-relay-image=${HUBBLE_RELAY_IMAGE} -cilium.hubble-relay-tag=${HUBBLE_RELAY_TAG} -cilium.operator-suffix="-ci"'
             }
             post {
                 always {

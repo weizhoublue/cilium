@@ -25,7 +25,7 @@ func (c *Client) ModifyInstanceMetadataOptions(ctx context.Context, params *Modi
 		params = &ModifyInstanceMetadataOptionsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ModifyInstanceMetadataOptions", params, optFns, addOperationModifyInstanceMetadataOptionsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ModifyInstanceMetadataOptions", params, optFns, c.addOperationModifyInstanceMetadataOptionsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ type ModifyInstanceMetadataOptionsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// This parameter enables or disables the HTTP metadata endpoint on your instances.
 	// If the parameter is not specified, the existing state is maintained. If you
@@ -54,11 +54,14 @@ type ModifyInstanceMetadataOptionsInput struct {
 	// metadata.
 	HttpEndpoint types.InstanceMetadataEndpointState
 
+	// Enables or disables the IPv6 endpoint for the instance metadata service.
+	HttpProtocolIpv6 types.InstanceMetadataProtocolState
+
 	// The desired HTTP PUT response hop limit for instance metadata requests. The
 	// larger the number, the further instance metadata requests can travel. If no
 	// parameter is specified, the existing state is maintained. Possible values:
 	// Integers from 1 to 64
-	HttpPutResponseHopLimit int32
+	HttpPutResponseHopLimit *int32
 
 	// The state of token usage for your instance metadata requests. If the parameter
 	// is not specified in the request, the default state is optional. If the state is
@@ -71,6 +74,8 @@ type ModifyInstanceMetadataOptionsInput struct {
 	// credential always returns the version 2.0 credentials; the version 1.0
 	// credentials are not available.
 	HttpTokens types.HttpTokensState
+
+	noSmithyDocumentSerde
 }
 
 type ModifyInstanceMetadataOptionsOutput struct {
@@ -83,9 +88,11 @@ type ModifyInstanceMetadataOptionsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationModifyInstanceMetadataOptionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationModifyInstanceMetadataOptionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpModifyInstanceMetadataOptions{}, middleware.After)
 	if err != nil {
 		return err

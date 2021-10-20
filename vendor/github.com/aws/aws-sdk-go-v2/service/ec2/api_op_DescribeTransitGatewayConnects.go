@@ -18,7 +18,7 @@ func (c *Client) DescribeTransitGatewayConnects(ctx context.Context, params *Des
 		params = &DescribeTransitGatewayConnectsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayConnects", params, optFns, addOperationDescribeTransitGatewayConnectsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayConnects", params, optFns, c.addOperationDescribeTransitGatewayConnectsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ type DescribeTransitGatewayConnectsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters. The possible values are:
 	//
@@ -58,13 +58,15 @@ type DescribeTransitGatewayConnectsInput struct {
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
 
 	// The IDs of the attachments.
 	TransitGatewayAttachmentIds []string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeTransitGatewayConnectsOutput struct {
@@ -78,9 +80,11 @@ type DescribeTransitGatewayConnectsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeTransitGatewayConnectsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeTransitGatewayConnectsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeTransitGatewayConnects{}, middleware.After)
 	if err != nil {
 		return err
@@ -178,8 +182,8 @@ func NewDescribeTransitGatewayConnectsPaginator(client DescribeTransitGatewayCon
 	}
 
 	options := DescribeTransitGatewayConnectsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -208,7 +212,11 @@ func (p *DescribeTransitGatewayConnectsPaginator) NextPage(ctx context.Context, 
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeTransitGatewayConnects(ctx, &params, optFns...)
 	if err != nil {

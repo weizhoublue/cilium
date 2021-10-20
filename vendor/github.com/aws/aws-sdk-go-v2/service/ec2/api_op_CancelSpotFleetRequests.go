@@ -23,7 +23,7 @@ func (c *Client) CancelSpotFleetRequests(ctx context.Context, params *CancelSpot
 		params = &CancelSpotFleetRequestsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CancelSpotFleetRequests", params, optFns, addOperationCancelSpotFleetRequestsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CancelSpotFleetRequests", params, optFns, c.addOperationCancelSpotFleetRequestsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -45,13 +45,15 @@ type CancelSpotFleetRequestsInput struct {
 	// canceled successfully.
 	//
 	// This member is required.
-	TerminateInstances bool
+	TerminateInstances *bool
 
 	// Checks whether you have the required permissions for the action, without
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of CancelSpotFleetRequests.
@@ -65,9 +67,11 @@ type CancelSpotFleetRequestsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCancelSpotFleetRequestsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCancelSpotFleetRequestsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCancelSpotFleetRequests{}, middleware.After)
 	if err != nil {
 		return err

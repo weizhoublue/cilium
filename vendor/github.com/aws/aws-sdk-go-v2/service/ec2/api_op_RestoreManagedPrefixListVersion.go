@@ -18,7 +18,7 @@ func (c *Client) RestoreManagedPrefixListVersion(ctx context.Context, params *Re
 		params = &RestoreManagedPrefixListVersionInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "RestoreManagedPrefixListVersion", params, optFns, addOperationRestoreManagedPrefixListVersionMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "RestoreManagedPrefixListVersion", params, optFns, c.addOperationRestoreManagedPrefixListVersionMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ type RestoreManagedPrefixListVersionInput struct {
 	// The current version number for the prefix list.
 	//
 	// This member is required.
-	CurrentVersion int64
+	CurrentVersion *int64
 
 	// The ID of the prefix list.
 	//
@@ -43,13 +43,15 @@ type RestoreManagedPrefixListVersionInput struct {
 	// The version to restore.
 	//
 	// This member is required.
-	PreviousVersion int64
+	PreviousVersion *int64
 
 	// Checks whether you have the required permissions for the action, without
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type RestoreManagedPrefixListVersionOutput struct {
@@ -59,9 +61,11 @@ type RestoreManagedPrefixListVersionOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationRestoreManagedPrefixListVersionMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationRestoreManagedPrefixListVersionMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpRestoreManagedPrefixListVersion{}, middleware.After)
 	if err != nil {
 		return err

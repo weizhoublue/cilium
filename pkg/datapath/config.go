@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package datapath
 
@@ -92,6 +81,10 @@ type CompileTimeConfiguration interface {
 
 	// IsHost returns true if the endpoint is the host endpoint.
 	IsHost() bool
+
+	// DisableSIPVerification returns true if the endpoint wishes to skip
+	// source IP verification
+	DisableSIPVerification() bool
 }
 
 // EndpointConfiguration provides datapath implementations a clean interface
@@ -127,8 +120,8 @@ type ConfigWriter interface {
 // packet sent from a local endpoint to an IP address belonging to the CIDR
 // should not be SNAT'd.
 func RemoteSNATDstAddrExclusionCIDRv4() *cidr.CIDR {
-	if c := option.Config.IPv4NativeRoutingCIDR(); c != nil {
-		// native-routing-cidr is set, so use it
+	if c := option.Config.GetIPv4NativeRoutingCIDR(); c != nil {
+		// ipv4-native-routing-cidr is set, so use it
 		return c
 	}
 

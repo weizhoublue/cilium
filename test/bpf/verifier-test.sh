@@ -19,15 +19,28 @@ set -eo pipefail
 DEV="cilium-probe"
 DIR=$(dirname $0)/../../bpf
 MAPTOOL=$(dirname $0)/../../tools/maptool/maptool
+# all known bpf programs (object files).
+# ALL_PROGS will be tested again source files to find non-tested bpf code
 ALL_TC_PROGS="bpf_lxc bpf_host bpf_network bpf_overlay"
-TC_PROGS=${TC_PROGS:-$ALL_TC_PROGS}
 ALL_CG_PROGS="bpf_sock sockops/bpf_sockops sockops/bpf_redir"
-CG_PROGS=${CG_PROGS:-$ALL_CG_PROGS}
 ALL_XDP_PROGS="bpf_xdp"
-XDP_PROGS=${XDP_PROGS:-$ALL_XDP_PROGS}
 IGNORED_PROGS="bpf_alignchecker tests/bpf_ct_tests custom/bpf_custom"
 ALL_PROGS="${IGNORED_PROGS} ${ALL_CG_PROGS} ${ALL_TC_PROGS} ${ALL_XDP_PROGS}"
+
+# if {TC,CG,XDP}_PROGS is set (even if empty) use the existing value.
+# Otherwise, use ALL_{TC,CG,XDP}
+if [[ ! -v TC_PROGS ]]; then
+    TC_PROGS=$ALL_TC_PROGS
+fi
+if [[ ! -v CG_PROGS ]]; then
+    CG_PROGS=$ALL_CG_PROGS
+fi
+if [[ ! -v XDP_PROGS ]]; then
+    XDP_PROGS=$ALL_XDP_PROGS
+fi
+
 VERBOSE=false
+FORCE=false
 RUN_ALL_TESTS=false
 
 BPFFS=${BPFFS:-"/sys/fs/bpf"}
@@ -72,7 +85,7 @@ function load_prog {
 	echo "=> Loading ${name}..."
 	if $VERBOSE; then
 		# Redirect stderr to stdout to assist caller parsing
-		${loader} $args verbose 2>&1
+		${loader} $args verbose 2>&1 || $FORCE
 	else
 		# Only run verbose mode if loading fails.
 		${loader} $args 2>/dev/null \
@@ -156,23 +169,6 @@ function cg_prog_type_init {
 	fi
 }
 
-function load_sock_prog {
-	prog=$1
-	pinpath=$2
-	prog_type=$3
-	attach_type=$4
-	section=$5
-
-	local args="pin $pinpath obj ${prog}.o type $prog_type \
-		    attach_type $attach_type sec $section"
-	if $VERBOSE; then
-		$TC exec bpf $args verbose 2>&1
-	else
-		$TC exec bpf $args 2>/dev/null \
-		|| $TC exec bpf $args verbose
-	fi
-}
-
 function load_sockops_prog {
 	prog="$1"
 	pinpath="$2"
@@ -192,7 +188,7 @@ function load_sockops_prog {
 
 	echo "=> Loading ${p}.c:${section}..."
 	if $VERBOSE; then
-		$BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args 2>&1
+		$BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args 2>&1 || $FORCE
 	else
 		$BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args 2>/dev/null \
 		|| $BPFTOOL -m prog load "$prog.o" "$pinpath" $map_args
@@ -268,6 +264,9 @@ function handle_args {
 		-v|--verbose)
 			VERBOSE=true
 			shift;;
+		-f|--force)
+			FORCE=true
+			shift;;
 		*)
 			echo "Unrecognized argument '$1'" 1>&2
 			exit 1
@@ -300,9 +299,15 @@ function main {
 		$TC qdisc replace dev ${DEV} clsact
 	fi
 
-	load_tc
-	load_cg
-	load_xdp
+	if [ -n "$TC_PROGS" ]; then
+		load_tc
+	fi
+	if [ -n "$CG_PROGS" ]; then
+		load_cg
+	fi
+	if [ -n "$XDP_PROGS" ]; then
+		load_xdp
+	fi
 }
 
 main "$@"

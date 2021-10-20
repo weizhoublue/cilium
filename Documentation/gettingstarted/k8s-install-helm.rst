@@ -58,7 +58,7 @@ Install Cilium
 
        .. code-block:: shell-session
 
-          NATIVE_CIDR="$(gcloud container clusters describe "${NAME} --zone "${ZONE}" --format 'value(clusterIpv4Cidr)')"
+          NATIVE_CIDR="$(gcloud container clusters describe "${NAME}" --zone "${ZONE}" --format 'value(clusterIpv4Cidr)')"
           echo $NATIVE_CIDR
 
        Deploy Cilium release via Helm:
@@ -155,7 +155,7 @@ Install Cilium
 
           kubectl -n kube-system delete daemonset aws-node
 
-       **Intall Cilium:**
+       **Install Cilium:**
 
        Deploy Cilium release via Helm:
 
@@ -188,11 +188,11 @@ Install Cilium
           ``tunnel=disabled`` from the helm command will configure Cilium to
           use overlay routing mode (which is the helm default).
 
+         Some Linux distributions use a different interface naming convention.
+         If you use masquerading with the option ``egressMasqueradeInterfaces=eth0``,
+         remember to replace ``eth0`` with the proper interface name.
+
        Cilium is now deployed and you are ready to scale-up the cluster:
-
-       .. code-block:: shell-session
-
-          eksctl create nodegroup --cluster test-cluster --nodes 2
 
     .. group-tab:: OpenShift
 
@@ -221,14 +221,6 @@ Install Cilium
 
        .. include:: requirements-k3s.rst
 
-       **Mount the eBPF Filesystem:**
-
-       On each node, run the following to mount the eBPF Filesystem:
-
-       .. code-block:: shell-session
-
-          sudo mount bpffs -t bpf /sys/fs/bpf
-      
        **Install Cilium:**
 
        .. parsed-literal::
@@ -237,5 +229,7 @@ Install Cilium
              --namespace $CILIUM_NAMESPACE
 
 .. include:: k8s-install-restart-pods.rst
+
 .. include:: k8s-install-validate.rst
+
 .. include:: next-steps.rst

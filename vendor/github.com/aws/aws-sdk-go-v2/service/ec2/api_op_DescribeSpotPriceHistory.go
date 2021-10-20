@@ -25,7 +25,7 @@ func (c *Client) DescribeSpotPriceHistory(ctx context.Context, params *DescribeS
 		params = &DescribeSpotPriceHistoryInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeSpotPriceHistory", params, optFns, addOperationDescribeSpotPriceHistoryMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeSpotPriceHistory", params, optFns, c.addOperationDescribeSpotPriceHistoryMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ type DescribeSpotPriceHistoryInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The date and time, up to the current date, from which to stop retrieving the
 	// price history data, in UTC format (for example, YYYY-MM-DDTHH:MM:SSZ).
@@ -79,7 +79,7 @@ type DescribeSpotPriceHistoryInput struct {
 	// The maximum number of results to return in a single call. Specify a value
 	// between 1 and 1000. The default value is 1000. To retrieve the remaining
 	// results, make another call with the returned NextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next set of results.
 	NextToken *string
@@ -90,6 +90,8 @@ type DescribeSpotPriceHistoryInput struct {
 	// The date and time, up to the past 90 days, from which to start retrieving the
 	// price history data, in UTC format (for example, YYYY-MM-DDTHH:MM:SSZ).
 	StartTime *time.Time
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of DescribeSpotPriceHistory.
@@ -104,9 +106,11 @@ type DescribeSpotPriceHistoryOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeSpotPriceHistoryMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeSpotPriceHistoryMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeSpotPriceHistory{}, middleware.After)
 	if err != nil {
 		return err
@@ -204,8 +208,8 @@ func NewDescribeSpotPriceHistoryPaginator(client DescribeSpotPriceHistoryAPIClie
 	}
 
 	options := DescribeSpotPriceHistoryPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -234,7 +238,11 @@ func (p *DescribeSpotPriceHistoryPaginator) NextPage(ctx context.Context, optFns
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeSpotPriceHistory(ctx, &params, optFns...)
 	if err != nil {

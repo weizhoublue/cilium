@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package metrics holds prometheus metrics objects and related utility functions. It
 // does not abstract away the prometheus client but the caller rarely needs to
@@ -31,7 +20,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -1457,15 +1445,6 @@ func DumpMetrics() ([]*models.Metric, error) {
 // Error2Outcome converts an error to LabelOutcome
 func Error2Outcome(err error) string {
 	if err != nil {
-		return LabelValueOutcomeFail
-	}
-
-	return LabelValueOutcomeSuccess
-}
-
-// Errno2Outcome converts a unix.Errno to LabelOutcome
-func Errno2Outcome(errno unix.Errno) string {
-	if errno != 0 {
 		return LabelValueOutcomeFail
 	}
 

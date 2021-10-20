@@ -18,7 +18,7 @@ func (c *Client) SearchLocalGatewayRoutes(ctx context.Context, params *SearchLoc
 		params = &SearchLocalGatewayRoutesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "SearchLocalGatewayRoutes", params, optFns, addOperationSearchLocalGatewayRoutesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "SearchLocalGatewayRoutes", params, optFns, c.addOperationSearchLocalGatewayRoutesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ type SearchLocalGatewayRoutesInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
@@ -52,6 +52,8 @@ type SearchLocalGatewayRoutesInput struct {
 
 	// The token for the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type SearchLocalGatewayRoutesOutput struct {
@@ -65,9 +67,11 @@ type SearchLocalGatewayRoutesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationSearchLocalGatewayRoutesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationSearchLocalGatewayRoutesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpSearchLocalGatewayRoutes{}, middleware.After)
 	if err != nil {
 		return err

@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package types
@@ -102,6 +92,9 @@ func (t *CNITypesSuite) TestReadCNIConfENIWithPlugins(c *check.C) {
         "security-groups":[
           "sg-xxx"
         ],
+        "subnet-ids":[
+          "subnet-xxx"
+        ],
         "subnet-tags":{
           "foo":"true"
         }
@@ -120,6 +113,7 @@ func (t *CNITypesSuite) TestReadCNIConfENIWithPlugins(c *check.C) {
 			PreAllocate:         5,
 			FirstInterfaceIndex: &firstInterfaceIndex,
 			SecurityGroups:      []string{"sg-xxx"},
+			SubnetIDs:           []string{"subnet-xxx"},
 			SubnetTags: map[string]string{
 				"foo": "true",
 			},
@@ -138,6 +132,10 @@ func (t *CNITypesSuite) TestReadCNIConfENI(c *check.C) {
     "pre-allocate": 16,
     "first-interface-index": 2,
     "security-groups": [ "sg1", "sg2" ],
+    "subnet-ids":[
+      "subnet-1",
+      "subnet-2"
+    ],
     "subnet-tags": {
       "key1": "val1",
       "key2": "val2"
@@ -158,6 +156,7 @@ func (t *CNITypesSuite) TestReadCNIConfENI(c *check.C) {
 			PreAllocate:         16,
 			FirstInterfaceIndex: &firstInterfaceIndex,
 			SecurityGroups:      []string{"sg1", "sg2"},
+			SubnetIDs:           []string{"subnet-1", "subnet-2"},
 			SubnetTags: map[string]string{
 				"key1": "val1",
 				"key2": "val2",
@@ -183,6 +182,9 @@ func (t *CNITypesSuite) TestReadCNIConfENIv2WithPlugins(c *check.C) {
         "security-groups":[
           "sg-xxx"
         ],
+        "subnet-ids":[
+          "subnet-xxx"
+        ],
         "subnet-tags":{
           "foo":"true"
         }
@@ -203,6 +205,7 @@ func (t *CNITypesSuite) TestReadCNIConfENIv2WithPlugins(c *check.C) {
 		ENI: eniTypes.ENISpec{
 			FirstInterfaceIndex: &firstInterfaceIndex,
 			SecurityGroups:      []string{"sg-xxx"},
+			SubnetIDs:           []string{"subnet-xxx"},
 			SubnetTags: map[string]string{
 				"foo": "true",
 			},

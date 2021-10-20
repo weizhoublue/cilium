@@ -1,21 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -169,18 +159,18 @@ func createGzip(dbgDir string, sendArchiveToStdout bool) (string, error) {
 	return target, nil
 }
 
+// Note that `auth-trunc` is also a relevant pattern, but we already match on the more generic
+// `auth` pattern.
+var isEncryptionKey = regexp.MustCompile("(auth|enc|aead|comp)(.*[[:blank:]](0[xX][[:xdigit:]]+))?")
+
 // hashEncryptionKeys processes the buffer containing the output of `ip -s xfrm state`.
 // It searches for IPsec keys in the output and replaces them by their hash.
-func hashEncryptionKeys(output string) string {
-	var finalOutput []string
-	// Split the result as a slice of strings.
-	lines := strings.Split(output, "\n")
+func hashEncryptionKeys(output []byte) []byte {
+	var b bytes.Buffer
+	lines := bytes.Split(output, []byte("\n"))
 	// Search for lines containing encryption keys.
-	// Note that `auth-trunc` is also a relevant pattern, but we already match on
-	// the more generic `auth` pattern.
-	for _, line := range lines {
-		r, _ := regexp.Compile("(auth|enc|aead|comp)(.*[[:blank:]](0[xX][[:xdigit:]]+))?")
-		// r.FindStringSubmatchIndex(line) will return:
+	for i, line := range lines {
+		// isEncryptionKey.FindStringSubmatchIndex(line) will return:
 		// - [], if the global pattern is not found
 		// - a slice of integers, if the global pattern is found. The
 		//   first two integers are the start and end offsets of the
@@ -192,18 +182,23 @@ func hashEncryptionKeys(output string) string {
 		// the hexadecimal string (the third submatch) will be at index
 		// 6 and 7 in the slice. They may be equal to -1 if the
 		// submatch, marked as optional ('?'), is not found.
-		matched := r.FindStringSubmatchIndex(line)
+		matched := isEncryptionKey.FindSubmatchIndex(line)
 		if matched != nil && matched[6] > 0 {
 			key := line[matched[6]:matched[7]]
 			h := sha256.New()
-			h.Write([]byte(key))
-			hashedKey := hex.EncodeToString(h.Sum(nil))
-			line = line[:matched[6]] + "[hash:" + hashedKey + "]" + line[matched[7]:]
+			h.Write(key)
+			sum := h.Sum(nil)
+			hashedKey := make([]byte, hex.EncodedLen(len(sum)))
+			hex.Encode(hashedKey, sum)
+			fmt.Fprintf(&b, "%s[hash:%s]%s", line[:matched[6]], hashedKey, line[matched[7]:])
 		} else if matched != nil && matched[6] < 0 {
-			line = "[redacted]"
+			b.WriteString("[redacted]")
+		} else {
+			b.Write(line)
 		}
-		finalOutput = append(finalOutput, line)
+		if i < len(lines)-1 {
+			b.WriteByte('\n')
+		}
 	}
-
-	return strings.Join(finalOutput, "\n")
+	return b.Bytes()
 }

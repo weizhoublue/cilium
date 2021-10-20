@@ -43,17 +43,17 @@ Reference steps for the template
 
 #. Checkout the desired stable branch and pull it:
 
-   ::
+   .. code-block:: shell-session
 
        git checkout v1.0; git pull
 
 #. Run the release preparation script:
 
-   ::
+   .. code-block:: shell-session
 
        contrib/release/start-release.sh
 
-  .. note::
+   .. note::
 
        Check to see if the ``AUTHORS`` file has any formatting errors (for
        instance, indentation mismatches) as well as duplicate contributor
@@ -69,7 +69,7 @@ Reference steps for the template
 
 #. Prepare a pull request for the changes:
 
-   ::
+   .. code-block:: shell-session
 
       contrib/release/submit-release.sh
 
@@ -79,13 +79,13 @@ Reference steps for the template
 
 #. Checkout out the stable branch and pull your merged changes:
 
-   ::
+   .. code-block:: shell-session
 
        git checkout v1.0; git pull
 
 #. Create and push release tags to GitHub:
 
-   ::
+   .. code-block:: shell-session
 
       contrib/release/tag-release.sh
 
@@ -101,30 +101,22 @@ Reference steps for the template
 
 #. Once the release images are pushed, pull the image digests and prepare a PR with the official release image digests:
 
-   ::
+   .. code-block:: shell-session
 
       contrib/release/post-release.sh <URL of workflow run from the release link above>
 
    This will leave a file with the format ``digest-vX.Y.Z.txt`` in the local
    directory which can be used to prepare the release in the next step.
 
-#. `Publish a GitHub release <https://github.com/cilium/cilium/releases/>`_:
-
-   Following the steps above, the release draft will already be prepared.
-   Preview the description and then publish the release.
-
-   #. Copy the official docker manifests for the release from the previous step
-      into the end of the Github release announcement.
-
-#. Prepare Helm changes for the release using the `Cilium Helm Charts Repository <https://github.com/cilium/charts/>`_
+#. Prepare Helm changes for the release using the `Cilium Helm Charts Repository <https://github.com/cilium/charts/>`__
    and push the changes into that repository (not the main cilium repository):
 
-   ::
+   .. code-block:: shell-session
 
       ./prepare_artifacts.sh /path/to/cilium/repository/checked/out/to/release/commit
       git push
 
-#. Prepare Helm changes for the dev version of the branch using the `Cilium Helm Charts Repository <https://github.com/cilium/charts/>`_
+#. Prepare Helm changes for the dev version of the branch using the `Cilium Helm Charts Repository <https://github.com/cilium/charts/>`__
    for the vX.Y helm charts, and push the changes into that repository (not the main cilium repository):
 
    In the ``cilium/cilium`` repository:
@@ -135,13 +127,24 @@ Reference steps for the template
 
    In the ``cilium/charts`` repository:
 
-   ::
+   .. code-block:: shell-session
 
       ./prepare_artifacts.sh /path/to/cilium/repository/checked/out/to/release/commit
       git push
 
    After pushing you can revert all the changes made in the local branch
    ``x.y-dev`` from ``cilium/cilium``.
+
+#. Wait for the `Cilium Helm Charts Workflow <https://github.com/cilium/charts/actions>`__
+   to successfully deploy a cluster using the new Helm charts.
+
+#. `Publish a GitHub release <https://github.com/cilium/cilium/releases/>`_:
+
+   Following the steps above, the release draft will already be prepared.
+   Preview the description and then publish the release.
+
+   #. Copy the official docker manifests for the release from the previous step
+      into the end of the Github release announcement.
 
 #. Announce the release in the ``#general`` channel on Slack. Sample text:
 
@@ -156,11 +159,11 @@ Reference steps for the template
 
 #. Create a new git branch based on the master branch to update ``README.rst``:
 
-   ::
+   .. code-block:: shell-session
 
-      git checkout -b pr/bump-readme-vX.Y.Z origin/master
-      contrib/release/bump-readme.sh
-      # (Commit changes & submit PR)
+      $ git checkout -b pr/bump-readme-vX.Y.Z origin/master
+      $ contrib/release/bump-readme.sh
+      $ # (Commit changes & submit PR)
 
 #. Bump the version of Cilium used in the Cilium upgrade tests to use the new release
 
@@ -175,13 +178,13 @@ Reference steps for the template
    on the ``1.8`` line, this step should be performed. Once ``1.9`` is out for
    example, then this is no longer required for ``1.8`` or earlier releases.
 
-   ::
+   .. code-block:: shell-session
 
        contrib/release/bump-docker-stable.sh X.Y.Z
 
 #. Check if all docker images are available before announcing the release:
 
-   ::
+   .. code-block:: shell-session
 
       make -C install/kubernetes/ check-docker-images
 

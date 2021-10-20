@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ebpf
 
@@ -31,8 +20,15 @@ type MapSpec = ciliumebpf.MapSpec
 
 const (
 	PerCPUHash = ciliumebpf.PerCPUHash
+	Array      = ciliumebpf.Array
+	HashOfMaps = ciliumebpf.HashOfMaps
 
 	PinByName = ciliumebpf.PinByName
+)
+
+var (
+	ErrKeyNotExist = ciliumebpf.ErrKeyNotExist
+	LoadPinnedMap  = ciliumebpf.LoadPinnedMap
 )
 
 // IterateCallback represents the signature of the callback function expected by
@@ -56,6 +52,37 @@ func NewMap(spec *MapSpec) *Map {
 	}
 }
 
+// OpenMap opens the given bpf map and generates the Map object based on the
+// information stored in the bpf map.
+func OpenMap(mapName string) (*Map, error) {
+	path := bpf.MapPath(mapName)
+
+	newMap, err := LoadPinnedMap(path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	m := &Map{
+		Map:  newMap,
+		path: path,
+	}
+
+	registerMap(m)
+
+	return m, nil
+}
+
+func MapFromID(id int) (*Map, error) {
+	newMap, err := ciliumebpf.NewMapFromID(ciliumebpf.MapID(id))
+	if err != nil {
+		return nil, err
+	}
+
+	return &Map{
+		Map: newMap,
+	}, nil
+}
+
 // OpenOrCreate tries to open or create the eBPF map identified by the spec in
 // the Map object.
 func (m *Map) OpenOrCreate() error {
@@ -64,6 +91,10 @@ func (m *Map) OpenOrCreate() error {
 
 	if m.Map != nil {
 		return nil
+	}
+
+	if m.spec == nil {
+		return fmt.Errorf("cannot create map: nil map spec")
 	}
 
 	opts := ciliumebpf.MapOptions{

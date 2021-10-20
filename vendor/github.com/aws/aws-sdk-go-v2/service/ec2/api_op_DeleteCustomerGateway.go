@@ -17,7 +17,7 @@ func (c *Client) DeleteCustomerGateway(ctx context.Context, params *DeleteCustom
 		params = &DeleteCustomerGatewayInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DeleteCustomerGateway", params, optFns, addOperationDeleteCustomerGatewayMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DeleteCustomerGateway", params, optFns, c.addOperationDeleteCustomerGatewayMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -39,15 +39,19 @@ type DeleteCustomerGatewayInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type DeleteCustomerGatewayOutput struct {
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDeleteCustomerGatewayMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDeleteCustomerGatewayMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDeleteCustomerGateway{}, middleware.After)
 	if err != nil {
 		return err

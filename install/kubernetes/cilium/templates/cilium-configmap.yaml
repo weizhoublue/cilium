@@ -17,19 +17,19 @@
 
 {{- /* Default values when 1.8 was initially deployed */ -}}
 {{- if semverCompare ">=1.8" (default "1.8" .Values.upgradeCompatibility) -}}
-{{- $defaultEnableCnpStatusUpdates = "false" -}}
-{{- $defaultBpfMapDynamicSizeRatio = 0.0025 -}}
-{{- $defaultBpfMasquerade = "true" -}}
-{{- $defaultBpfClockProbe = "true" -}}
-{{- $defaultIPAM = "cluster-pool" -}}
-{{- $defaultSessionAffinity = "true" -}}
-{{- if .Values.ipv4.enabled }}
-{{- $defaultOperatorApiServeAddr = "127.0.0.1:9234" -}}
-{{- else -}}
-{{- $defaultOperatorApiServeAddr = "[::1]:9234" -}}
-{{- end }}
-{{- $defaultBpfCtTcpMax = 0 -}}
-{{- $defaultBpfCtAnyMax = 0 -}}
+  {{- $defaultEnableCnpStatusUpdates = "false" -}}
+  {{- $defaultBpfMapDynamicSizeRatio = 0.0025 -}}
+  {{- $defaultBpfMasquerade = "true" -}}
+  {{- $defaultBpfClockProbe = "true" -}}
+  {{- $defaultIPAM = "cluster-pool" -}}
+  {{- $defaultSessionAffinity = "true" -}}
+  {{- if .Values.ipv4.enabled }}
+    {{- $defaultOperatorApiServeAddr = "127.0.0.1:9234" -}}
+  {{- else -}}
+    {{- $defaultOperatorApiServeAddr = "[::1]:9234" -}}
+  {{- end }}
+  {{- $defaultBpfCtTcpMax = 0 -}}
+  {{- $defaultBpfCtAnyMax = 0 -}}
 {{- end -}}
 
 {{- /* Default values when 1.10 was initially deployed */ -}}
@@ -41,7 +41,7 @@
 {{- $bpfCtTcpMax := (coalesce .Values.bpf.ctTcpMax $defaultBpfCtTcpMax) -}}
 {{- $bpfCtAnyMax := (coalesce .Values.bpf.ctAnyMax $defaultBpfCtAnyMax) -}}
 {{- $kubeProxyReplacement := (coalesce .Values.kubeProxyReplacement $defaultKubeProxyReplacement) -}}
-
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -53,29 +53,29 @@ data:
   # storage. This can either be provided with an external kvstore or with the
   # help of cilium-etcd-operator which operates an etcd cluster automatically.
   kvstore: etcd
-{{- if .Values.etcd.k8sService }}
+  {{- if .Values.etcd.k8sService }}
   kvstore-opt: '{"etcd.config": "/var/lib/etcd-config/etcd.config", "etcd.operator": "true"}'
-{{- else }}
+  {{- else }}
   kvstore-opt: '{"etcd.config": "/var/lib/etcd-config/etcd.config"}'
-{{- end }}
+  {{- end }}
 
   # This etcd-config contains the etcd endpoints of your cluster. If you use
   # TLS please make sure you follow the tutorial in https://cilium.link/etcd-config
   etcd-config: |-
     ---
     endpoints:
-{{- if .Values.etcd.managed }}
+      {{- if .Values.etcd.managed }}
       - https://cilium-etcd-client.{{ .Release.Namespace }}.svc:2379
-{{- else }}
-{{- range .Values.etcd.endpoints }}
+      {{- else }}
+      {{- range .Values.etcd.endpoints }}
       - {{ . }}
-{{- end }}
-{{- end }}
-{{- if or .Values.etcd.ssl .Values.etcd.managed }}
+      {{- end }}
+      {{- end }}
+    {{- if or .Values.etcd.ssl .Values.etcd.managed }}
     trusted-ca-file: '/var/lib/etcd-secrets/etcd-client-ca.crt'
     key-file: '/var/lib/etcd-secrets/etcd-client.key'
     cert-file: '/var/lib/etcd-secrets/etcd-client.crt'
-{{- end }}
+    {{- end }}
 {{- end }}
 
 {{- if hasKey .Values "conntrackGCInterval" }}
@@ -107,6 +107,11 @@ data:
   cilium-endpoint-gc-interval: "{{ .Values.operator.endpointGCInterval }}"
 {{- end }}
 
+{{- if hasKey .Values "disableEndpointCRD" }}
+  # Disable the usage of CiliumEndpoint CRD
+  disable-endpoint-crd: "{{ .Values.disableEndpointCRD }}"
+{{- end }}
+
 {{- if hasKey .Values "identityChangeGracePeriod" }}
   # identity-change-grace-period is the grace period that needs to pass
   # before an endpoint that has changed its identity will start using
@@ -133,6 +138,12 @@ data:
   # for cilium-health.
   agent-health-port: "{{ .Values.healthPort }}"
 {{- end }}
+
+{{- if hasKey .Values "clusterHealthPort" }}
+  # Set the TCP port for the agent health API. This port is used for cilium-health.
+  cluster-health-port: "{{ .Values.clusterHealthPort }}"
+{{- end }}
+
 {{- if hasKey .Values "policyEnforcementMode" }}
   # The agent can be put into the following three policy enforcement modes
   # default, always and never.
@@ -170,6 +181,10 @@ data:
   # is scheduled.
   operator-prometheus-serve-addr: ":{{ .Values.operator.prometheus.port }}"
   enable-metrics: "true"
+{{- end }}
+
+{{- if .Values.operator.skipCRDCreation }}
+  skip-crd-creation: "true"
 {{- end }}
 
   # Enable IPv4 addressing. If enabled, all endpoints are allocated an IPv4
@@ -343,13 +358,15 @@ data:
   tunnel: {{ .Values.tunnel }}
 {{- end }}
 
+{{- if hasKey .Values "tunnelPort" }}
+  tunnel-port: "{{ .Values.tunnelPort }}"
+{{- end }}
+
 {{- if .Values.eni.enabled }}
   enable-endpoint-routes: "true"
   auto-create-cilium-node-resource: "true"
 {{- if .Values.eni.updateEC2AdapterLimitViaAPI }}
   update-ec2-adapter-limit-via-api: "true"
-  # The below value is deprecated and will be removed in a future release, see https://github.com/cilium/cilium/issues/12396
-  update-ec2-apdater-limit-via-api: "true"
 {{- end }}
 {{- if .Values.eni.awsReleaseExcessIPs }}
   aws-release-excess-ips: "true"
@@ -378,9 +395,6 @@ data:
   # Enables L7 proxy for L7 policy enforcement and visibility
   enable-l7-proxy: {{ .Values.l7Proxy | quote }}
 {{- end }}
-
-  # wait-bpf-mount makes init container wait until bpf filesystem is mounted
-  wait-bpf-mount: "{{ .Values.bpf.waitForMount }}"
 
 {{- if ne .Values.cni.chainingMode "none" }}
   # Enable chaining with another CNI plugin
@@ -474,7 +488,9 @@ data:
 {{- end }}
 
 {{- if hasKey .Values "nativeRoutingCIDR" }}
-  native-routing-cidr: {{ .Values.nativeRoutingCIDR }}
+  ipv4-native-routing-cidr: {{ .Values.nativeRoutingCIDR }}
+{{- else if hasKey .Values "ipv4NativeRoutingCIDR" }}
+  ipv4-native-routing-cidr: {{ .Values.ipv4NativeRoutingCIDR }}
 {{- end }}
 
 {{- if hasKey .Values "fragmentTracking" }}
@@ -483,8 +499,8 @@ data:
   enable-ipv4-fragment-tracking: "false"
 {{- end }}
 
-{{- if .Values.hostFirewall }}
-  enable-host-firewall: {{ .Values.hostFirewall | quote }}
+{{- if and .Values.hostFirewall .Values.hostFirewall.enabled }}
+  enable-host-firewall: {{ .Values.hostFirewall.enabled | quote }}
 {{- end}}
 
 {{- if hasKey .Values "devices" }}
@@ -504,6 +520,9 @@ data:
 {{- end }}
 {{- if ne .Values.hostServices.protocols "tcp,udp" }}
   host-reachable-services-protos: {{ .Values.hostServices.protocols }}
+{{- end }}
+{{- if hasKey .Values.hostServices "hostNamespaceOnly" }}
+  bpf-lb-sock-hostns-only: {{ .Values.hostServices.hostNamespaceOnly | quote }}
 {{- end }}
 {{- end }}
 {{- if hasKey .Values "hostPort" }}
@@ -526,22 +545,29 @@ data:
 {{- if hasKey .Values.nodePort "directRoutingDevice" }}
   direct-routing-device: {{ .Values.nodePort.directRoutingDevice | quote }}
 {{- end }}
-{{- if .Values.nodePort.enableHealthCheck }}
+{{- if hasKey .Values.nodePort "enableHealthCheck" }}
   enable-health-check-nodeport: {{ .Values.nodePort.enableHealthCheck | quote}}
 {{- end }}
   node-port-bind-protection: {{ .Values.nodePort.bindProtection | quote }}
   enable-auto-protect-node-port-range: {{ .Values.nodePort.autoProtectPortRange | quote }}
 {{- end }}
 {{- if hasKey .Values "loadBalancer" }}
+{{- if .Values.loadBalancer.standalone }}
+  datapath-mode: lb-only
+{{- end }}
 {{- if hasKey .Values.loadBalancer "mode" }}
-  node-port-mode: {{ .Values.loadBalancer.mode | quote }}
+  bpf-lb-mode: {{ .Values.loadBalancer.mode | quote }}
 {{- end }}
 {{- if hasKey .Values.loadBalancer "algorithm" }}
   bpf-lb-algorithm: {{ .Values.loadBalancer.algorithm | quote }}
 {{- end }}
 {{- if hasKey .Values.loadBalancer "acceleration" }}
-  node-port-acceleration: {{ .Values.loadBalancer.acceleration | quote }}
+  bpf-lb-acceleration: {{ .Values.loadBalancer.acceleration | quote }}
 {{- end }}
+{{- if hasKey .Values.loadBalancer "dsrDispatch" }}
+  bpf-lb-dsr-dispatch: {{ .Values.loadBalancer.dsrDispatch | quote }}
+{{- end }}
+
 {{- end }}
 {{- if hasKey .Values.maglev "tableSize" }}
   bpf-lb-maglev-table-size: {{ .Values.maglev.tableSize | quote}}
@@ -556,6 +582,15 @@ data:
 {{- end }}
 {{- if .Values.svcSourceRangeCheck }}
   enable-svc-source-range-check: {{ .Values.svcSourceRangeCheck | quote }}
+{{- end }}
+
+{{- if hasKey .Values "l2NeighDiscovery" }}
+{{- if hasKey .Values.l2NeighDiscovery "enabled" }}
+  enable-l2-neigh-discovery: {{ .Values.l2NeighDiscovery.enabled | quote }}
+{{- end }}
+{{- if hasKey .Values.l2NeighDiscovery "refreshPeriod" }}
+  arping-refresh-period: {{ .Values.l2NeighDiscovery.refreshPeriod | quote }}
+{{- end }}
 {{- end }}
 
 {{- if and .Values.pprof .Values.pprof.enabled }}
@@ -600,7 +635,7 @@ data:
 {{- if hasKey .Values "healthChecking" }}
   enable-health-checking: {{ .Values.healthChecking | quote }}
 {{- end }}
-{{- if .Values.etcd.managed }}
+{{- if or .Values.wellKnownIdentities.enabled .Values.etcd.managed }}
   enable-well-known-identities: "true"
 {{- else }}
   enable-well-known-identities: "false"
@@ -713,12 +748,21 @@ data:
 {{- end }}
 
 {{- if and .Values.bgp.enabled (not .Values.bgp.announce.loadbalancerIP) }}
-{{ fail "BGP was enabled, but no announcements were enabled. Please enable one or more announcements." }}
+  {{ fail "BGP was enabled, but no announcements were enabled. Please enable one or more announcements." }}
 {{- else if and .Values.bgp.enabled .Values.bgp.announce.loadbalancerIP }}
   bgp-announce-lb-ip: {{ .Values.bgp.announce.loadbalancerIP | quote }}
 {{- end }}
 
+{{- if hasKey .Values.cgroup "hostRoot" }}
+  cgroup-root: {{ .Values.cgroup.hostRoot | quote }}
+{{- end }}
+
+{{- if hasKey .Values.bpf "vlanBypass" }}
+  # A space separated list of explicitly allowed vlan id's
+  vlan-bpf-bypass: {{ .Values.bpf.vlanBypass | join " " | quote }}
+{{- end }}
+
 {{- if .Values.extraConfig }}
-{{ toYaml .Values.extraConfig | indent 2 }}
+  {{ toYaml .Values.extraConfig | nindent 2 }}
 {{- end }}
 {{- end }}

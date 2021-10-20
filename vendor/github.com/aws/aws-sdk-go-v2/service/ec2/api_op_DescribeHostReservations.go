@@ -18,7 +18,7 @@ func (c *Client) DescribeHostReservations(ctx context.Context, params *DescribeH
 		params = &DescribeHostReservationsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeHostReservations", params, optFns, addOperationDescribeHostReservationsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeHostReservations", params, optFns, c.addOperationDescribeHostReservationsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -59,10 +59,12 @@ type DescribeHostReservationsInput struct {
 	// remaining results can be seen by sending another request with the returned
 	// nextToken value. This value can be between 5 and 500. If maxResults is given a
 	// larger value than 500, you receive an error.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token to use to retrieve the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeHostReservationsOutput struct {
@@ -76,9 +78,11 @@ type DescribeHostReservationsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeHostReservationsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeHostReservationsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeHostReservations{}, middleware.After)
 	if err != nil {
 		return err
@@ -177,8 +181,8 @@ func NewDescribeHostReservationsPaginator(client DescribeHostReservationsAPIClie
 	}
 
 	options := DescribeHostReservationsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -207,7 +211,11 @@ func (p *DescribeHostReservationsPaginator) NextPage(ctx context.Context, optFns
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeHostReservations(ctx, &params, optFns...)
 	if err != nil {

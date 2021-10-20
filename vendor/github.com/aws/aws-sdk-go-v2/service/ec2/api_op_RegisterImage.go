@@ -61,7 +61,7 @@ func (c *Client) RegisterImage(ctx context.Context, params *RegisterImageInput, 
 		params = &RegisterImageInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "RegisterImage", params, optFns, addOperationRegisterImageMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "RegisterImage", params, optFns, c.addOperationRegisterImageMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -112,13 +112,13 @@ type RegisterImageInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// Set to true to enable enhanced networking with ENA for the AMI and any instances
 	// that you launch from the AMI. This option is supported only for HVM AMIs.
 	// Specifying this option with a PV AMI can make instances launched from the AMI
 	// unreachable.
-	EnaSupport bool
+	EnaSupport *bool
 
 	// The full path to your AMI manifest in Amazon S3 storage. The specified bucket
 	// must have the aws-exec-read canned access control list (ACL) to ensure that it
@@ -145,6 +145,8 @@ type RegisterImageInput struct {
 
 	// The type of virtualization (hvm | paravirtual). Default: paravirtual
 	VirtualizationType *string
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of RegisterImage.
@@ -155,9 +157,11 @@ type RegisterImageOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationRegisterImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationRegisterImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpRegisterImage{}, middleware.After)
 	if err != nil {
 		return err

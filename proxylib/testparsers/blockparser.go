@@ -1,22 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package testparsers
 
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strconv"
 
 	. "github.com/cilium/cilium/proxylib/proxylib"
@@ -56,12 +46,12 @@ func getBlock(data [][]byte) ([]byte, int, int, error) {
 	var block bytes.Buffer
 
 	offset := 0
-	block_len := 0
-	have_length := false
+	blockLen := 0
+	haveLength := false
 	missing := 0
 
 	for _, s := range data {
-		if !have_length {
+		if !haveLength {
 			index := bytes.IndexByte(s[offset:], ':')
 			if index < 0 {
 				block.Write(s[offset:])
@@ -76,22 +66,24 @@ func getBlock(data [][]byte) ([]byte, int, int, error) {
 				// indicating the length of the frame AFTER the ':'
 				if lenUint64, err := strconv.ParseUint(block.String(), 10, 64); err != nil {
 					return block.Bytes(), 0, 0, err
+				} else if lenUint64 > math.MaxInt {
+					return block.Bytes(), 0, 0, fmt.Errorf("block length overflow")
 				} else {
-					block_len = int(lenUint64)
+					blockLen = int(lenUint64)
 				}
-				if block_len <= block.Len() {
-					return block.Bytes(), 0, 0, fmt.Errorf("Block length too short")
+				if blockLen <= block.Len() {
+					return block.Bytes(), 0, 0, fmt.Errorf("block length too short")
 				}
-				have_length = true
-				missing = block_len - block.Len()
+				haveLength = true
+				missing = blockLen - block.Len()
 			}
 		}
-		if have_length {
+		if haveLength {
 			s_len := len(s) - offset
 
 			if missing <= s_len {
 				block.Write(s[offset : offset+missing])
-				return block.Bytes(), block_len, 0, nil
+				return block.Bytes(), blockLen, 0, nil
 			} else {
 				block.Write(s[offset:])
 				missing -= s_len
@@ -100,7 +92,7 @@ func getBlock(data [][]byte) ([]byte, int, int, error) {
 		offset = 0
 	}
 
-	return block.Bytes(), block_len, missing, nil
+	return block.Bytes(), blockLen, missing, nil
 }
 
 //

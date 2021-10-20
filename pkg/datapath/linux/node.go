@@ -1,25 +1,16 @@
-// Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
 package linux
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 
@@ -52,6 +43,15 @@ const (
 	success      = "success"
 	failed       = "failed"
 )
+
+const (
+	neighFileName = "neigh-link.json"
+)
+
+// NeighLink contains the details of a NeighLink
+type NeighLink struct {
+	Name string `json:"link-name"`
+}
 
 type linuxNodeHandler struct {
 	mutex                  lock.Mutex
@@ -777,7 +777,7 @@ func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeType
 			// issued arping after us, as it might have a more recent hwAddr value.
 			return
 		}
-		n.neighLastPingByNextHop[nextHopStr] = time.Now()
+		n.neighLastPingByNextHop[nextHopStr] = now
 		if prevHwAddr, found := n.neighByNextHop[nextHopStr]; found && prevHwAddr.String() == hwAddr.String() {
 			// Nothing to update, return early to avoid calling to netlink. This
 			// is based on the assumption that n.neighByNextHop gets populated
@@ -1367,6 +1367,8 @@ func (n *linuxNodeHandler) NodeConfigurationChanged(newConfig datapath.LocalNode
 	if n.nodeConfig.EnableIPv4 {
 		ifaceName := ""
 		switch {
+		case !option.Config.EnableL2NeighDiscovery:
+			n.enableNeighDiscovery = false
 		case option.Config.EnableNodePort:
 			mac, err := link.GetHardwareAddr(option.Config.DirectRoutingDevice)
 			if err != nil {
@@ -1391,6 +1393,17 @@ func (n *linuxNodeHandler) NodeConfigurationChanged(newConfig datapath.LocalNode
 				return fmt.Errorf("cannot find link by name %s for neigh discovery: %w",
 					ifaceName, err)
 			}
+
+			// Store neighDiscoveryLink so that we can remove the ARP
+			// PERM entries when cilium-agent starts with neigh discovery
+			// disabled next time.
+			err = storeNeighLink(option.Config.StateDir, ifaceName)
+			if err != nil {
+				log.WithError(err).Warning("Unable to store neigh discovery iface." +
+					" Removing ARP PERM entries upon cilium-agent init when neigh" +
+					" discovery is disabled will not work.")
+			}
+
 			// neighDiscoveryLink can be accessed by a concurrent insertNeighbor
 			// goroutine.
 			n.neighLock.Lock()
@@ -1479,6 +1492,118 @@ func (n *linuxNodeHandler) NodeNeighborRefresh(ctx context.Context, nodeToRefres
 	case <-ctx.Done():
 	case <-refreshComplete:
 	}
+}
+
+// NodeCleanNeighbors cleans all neighbor entries of previously used neighbor
+// discovery link interfaces. It should be used when the agent changes the state
+// from `n.enableNeighDiscovery = true` to `n.enableNeighDiscovery = false`.
+func (n *linuxNodeHandler) NodeCleanNeighbors() {
+	linkName, err := loadNeighLink(option.Config.StateDir)
+	if err != nil {
+		log.WithError(err).Error("Unable to load neigh discovery iface name" +
+			" for removing ARP PERM entries")
+		return
+	}
+	if len(linkName) == 0 {
+		return
+	}
+
+	// Delete the file after cleaning up neighbor list if we were able to clean
+	// up all neighbors.
+	successClean := true
+	defer func() {
+		if successClean {
+			os.Remove(filepath.Join(option.Config.StateDir, neighFileName))
+		}
+	}()
+
+	l, err := netlink.LinkByName(linkName)
+	if err != nil {
+		// If the link is not found we don't need to keep retrying cleaning
+		// up the neihbor entries so we can keep successClean=true
+		if _, ok := err.(netlink.LinkNotFoundError); !ok {
+			log.WithError(err).WithFields(logrus.Fields{
+				logfields.Device: linkName,
+			}).Error("Unable to remove PERM ARP entries of network device")
+			successClean = false
+		}
+		return
+	}
+
+	neighList, err := netlink.NeighListExecute(netlink.Ndmsg{
+		Family: netlink.FAMILY_V4,
+		Index:  uint32(l.Attrs().Index),
+		State:  netlink.NUD_PERMANENT,
+	})
+	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			logfields.Device:    linkName,
+			logfields.LinkIndex: l.Attrs().Index,
+		}).Error("Unable to list PERM ARP entries for removal of network device")
+		successClean = false
+		return
+	}
+
+	var successRemoval, errRemoval int
+	for _, neigh := range neighList {
+		err := netlink.NeighDel(&neigh)
+		if err != nil {
+			log.WithError(err).WithFields(logrus.Fields{
+				logfields.Device:    linkName,
+				logfields.LinkIndex: l.Attrs().Index,
+				"neighbor":          neigh.String(),
+			}).Errorf("Unable to remove PERM ARP entry of network device. "+
+				"Consider removing this entry manually with 'ip neigh del %s dev %s'", neigh.IP.String(), linkName)
+			errRemoval++
+			successClean = false
+		} else {
+			successRemoval++
+		}
+	}
+	if successRemoval != 0 {
+		log.WithFields(logrus.Fields{
+			logfields.Count: successRemoval,
+		}).Info("Removed PERM ARP entries previously installed by cilium-agent")
+	}
+	if errRemoval != 0 {
+		log.WithFields(logrus.Fields{
+			logfields.Count: errRemoval,
+		}).Warning("Unable to remove PERM ARP entries previously installed by cilium-agent")
+	}
+}
+
+func storeNeighLink(dir string, name string) error {
+	configFileName := filepath.Join(dir, neighFileName)
+	f, err := os.Create(configFileName)
+	if err != nil {
+		return fmt.Errorf("unable to create '%s': %w", configFileName, err)
+	}
+	defer f.Close()
+	nl := NeighLink{Name: name}
+	err = json.NewEncoder(f).Encode(nl)
+	if err != nil {
+		return fmt.Errorf("unable to encode '%+v': %w", nl, err)
+	}
+	return nil
+}
+
+func loadNeighLink(dir string) (string, error) {
+	configFileName := filepath.Join(dir, neighFileName)
+	f, err := os.Open(configFileName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("unable to open '%s': %w", configFileName, err)
+	}
+	defer f.Close()
+	var nl NeighLink
+
+	err = json.NewDecoder(f).Decode(&nl)
+	if err != nil {
+		return "", fmt.Errorf("unable to decode '%s': %w", configFileName, err)
+	}
+	return nl.Name, nil
 }
 
 // NodeDeviceNameWithDefaultRoute returns the node's device name which

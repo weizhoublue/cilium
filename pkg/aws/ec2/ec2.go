@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ec2
 
@@ -180,7 +169,7 @@ func parseENI(iface *ec2_types.NetworkInterface, vpcs ipamTypes.VirtualNetworkMa
 	}
 
 	if iface.Attachment != nil {
-		eni.Number = int(iface.Attachment.DeviceIndex)
+		eni.Number = int(aws.ToInt32(iface.Attachment.DeviceIndex))
 
 		if iface.Attachment.InstanceId != nil {
 			instanceID = aws.ToString(iface.Attachment.InstanceId)
@@ -209,7 +198,7 @@ func parseENI(iface *ec2_types.NetworkInterface, vpcs ipamTypes.VirtualNetworkMa
 	}
 
 	for _, ip := range iface.PrivateIpAddresses {
-		if ip.PrivateIpAddress != nil && !ip.Primary {
+		if ip.PrivateIpAddress != nil && !aws.ToBool(ip.Primary) {
 			eni.Addresses = append(eni.Addresses, aws.ToString(ip.PrivateIpAddress))
 		}
 	}
@@ -332,7 +321,7 @@ func (c *Client) GetSubnets(ctx context.Context) (ipamTypes.SubnetMap, error) {
 		subnet := &ipamTypes.Subnet{
 			ID:                 aws.ToString(s.SubnetId),
 			CIDR:               c,
-			AvailableAddresses: int(s.AvailableIpAddressCount),
+			AvailableAddresses: int(aws.ToInt32(s.AvailableIpAddressCount)),
 			Tags:               map[string]string{},
 		}
 
@@ -361,7 +350,7 @@ func (c *Client) GetSubnets(ctx context.Context) (ipamTypes.SubnetMap, error) {
 func (c *Client) CreateNetworkInterface(ctx context.Context, toAllocate int32, subnetID, desc string, groups []string) (string, *eniTypes.ENI, error) {
 	input := &ec2.CreateNetworkInterfaceInput{
 		Description:                    aws.String(desc),
-		SecondaryPrivateIpAddressCount: toAllocate,
+		SecondaryPrivateIpAddressCount: aws.Int32(toAllocate),
 		SubnetId:                       aws.String(subnetID),
 		Groups:                         groups,
 	}
@@ -410,7 +399,7 @@ func (c *Client) DeleteNetworkInterface(ctx context.Context, eniID string) error
 // AttachNetworkInterface attaches a previously created ENI to an instance
 func (c *Client) AttachNetworkInterface(ctx context.Context, index int32, instanceID, eniID string) (string, error) {
 	input := &ec2.AttachNetworkInterfaceInput{
-		DeviceIndex:        index,
+		DeviceIndex:        aws.Int32(index),
 		InstanceId:         aws.String(instanceID),
 		NetworkInterfaceId: aws.String(eniID),
 	}
@@ -430,7 +419,7 @@ func (c *Client) AttachNetworkInterface(ctx context.Context, index int32, instan
 func (c *Client) ModifyNetworkInterface(ctx context.Context, eniID, attachmentID string, deleteOnTermination bool) error {
 	changes := &ec2_types.NetworkInterfaceAttachmentChanges{
 		AttachmentId:        aws.String(attachmentID),
-		DeleteOnTermination: deleteOnTermination,
+		DeleteOnTermination: aws.Bool(deleteOnTermination),
 	}
 
 	input := &ec2.ModifyNetworkInterfaceAttributeInput{
@@ -450,7 +439,7 @@ func (c *Client) ModifyNetworkInterface(ctx context.Context, eniID, attachmentID
 func (c *Client) AssignPrivateIpAddresses(ctx context.Context, eniID string, addresses int32) error {
 	input := &ec2.AssignPrivateIpAddressesInput{
 		NetworkInterfaceId:             aws.String(eniID),
-		SecondaryPrivateIpAddressCount: addresses,
+		SecondaryPrivateIpAddressCount: aws.Int32(addresses),
 	}
 
 	c.limiter.Limit(ctx, "AssignPrivateIpAddresses")

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package endpoint
 
@@ -99,18 +88,7 @@ func ReadEPsFromDirNames(ctx context.Context, owner regeneration.Owner, basePath
 		epDir := filepath.Join(basePath, epDirName)
 		isHost := hasHostObjectFile(epDir)
 
-		// We only check for the old header file. On v1.8+, if the old header
-		// file is present, the new header file will be too. When upgrading
-		// from pre-1.8, only the old header file is present and we will create
-		// the new.
-		// We can switch this to use the new header file once v1.8 is the
-		// oldest supported version.
-		cHeaderFile := filepath.Join(epDir, oldCHeaderFileName)
-		if isHost {
-			// Host endpoint doesn't have an old header file so that it's not
-			// restored on downgrades.
-			cHeaderFile = filepath.Join(epDir, common.CHeaderFileName)
-		}
+		cHeaderFile := filepath.Join(epDir, common.CHeaderFileName)
 		scopedLog := log.WithFields(logrus.Fields{
 			logfields.EndpointID: epDirName,
 			logfields.Path:       cHeaderFile,
@@ -136,25 +114,21 @@ func ReadEPsFromDirNames(ctx context.Context, owner regeneration.Owner, basePath
 			continue
 		}
 
-		// This copy is only needed when upgrading from a pre-1.8 Cilium and we
-		// can thus remove it once Cilium v1.8 is the oldest supported version.
-		newCHeaderFile := filepath.Join(epDir, common.CHeaderFileName)
-		if _, err := os.Stat(newCHeaderFile); err != nil {
+		// This symlink is only needed when upgrading from a pre-1.11 Cilium
+		// and we can thus remove it once Cilium v1.11 is the oldest supported
+		// version.
+		oldCHeaderFile := filepath.Join(epDir, oldCHeaderFileName)
+		if _, err := os.Stat(oldCHeaderFile); err != nil {
 			if !os.IsNotExist(err) {
-				scopedLog.WithError(err).Warn("Failed to check if C header exists. Ignoring endpoint")
+				scopedLog.WithError(err).Warn("Failed to check if old C header exists. Ignoring endpoint")
 				continue
 			}
-			if err := os.Rename(cHeaderFile, newCHeaderFile); err != nil {
-				scopedLog.WithError(err).Warn("Failed to rename C header. Ignoring endpoint")
-				continue
-			}
-			if err := os.Symlink(common.CHeaderFileName, cHeaderFile); err != nil {
+			if err := os.Symlink(common.CHeaderFileName, oldCHeaderFile); err != nil {
 				scopedLog.WithError(err).Warn("Failed to create symlink for C header. Ignoring endpoint")
 				continue
 			}
 			scopedLog.Debug("Created symlink for endpoint C header file")
 		}
-		cHeaderFile = newCHeaderFile
 
 		scopedLog.Debug("Found endpoint C header file")
 
@@ -324,10 +298,13 @@ func (e *Endpoint) restoreIdentity() error {
 			return ErrNotAlive
 		case <-gotInitialGlobalIdentities:
 		}
+	}
 
-		if option.Config.KVStore != "" {
-			ipcache.WaitForKVStoreSync()
-		}
+	// Wait for ipcache sync before regeneration for endpoints including
+	// the ones with fixed identity (e.g. host endpoint), this ensures that
+	// the regenerated datapath always lookups from a ready ipcache map.
+	if option.Config.KVStore != "" {
+		ipcache.WaitForKVStoreSync()
 	}
 
 	if err := e.lockAlive(); err != nil {

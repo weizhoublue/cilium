@@ -1,16 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+
+// Ensure build fails on versions of Go that are not supported by Cilium.
+// This build tag should be kept in sync with the version specified in go.mod.
+//go:build go1.17
+// +build go1.17
 
 package main
 
@@ -91,8 +85,6 @@ var (
 		},
 	}
 
-	// Deprecated: remove in 1.9
-	apiServerPort  uint16
 	shutdownSignal = make(chan struct{})
 
 	ciliumK8sClient clientset.Interface
@@ -205,7 +197,7 @@ func kvstoreEnabled() bool {
 
 func getAPIServerAddr() []string {
 	if operatorOption.Config.OperatorAPIServeAddr == "" {
-		return []string{fmt.Sprintf("127.0.0.1:%d", apiServerPort), fmt.Sprintf("[::1]:%d", apiServerPort)}
+		return []string{"127.0.0.1:0", "[::1]:0"}
 	}
 	return []string{operatorOption.Config.OperatorAPIServeAddr}
 }
@@ -274,8 +266,12 @@ func runOperator() {
 
 	// Register the CRDs after validating that we are running on a supported
 	// version of K8s.
-	if err := client.RegisterCRDs(); err != nil {
-		log.WithError(err).Fatal("Unable to register CRDs")
+	if !operatorOption.Config.SkipCRDCreation {
+		if err := client.RegisterCRDs(); err != nil {
+			log.WithError(err).Fatal("Unable to register CRDs")
+		}
+	} else {
+		log.Info("Skipping creation of CRDs")
 	}
 
 	// We only support Operator in HA mode for Kubernetes Versions having support for
@@ -380,7 +376,7 @@ func onOperatorStartLeading(ctx context.Context) {
 			log.WithError(err).Fatalf("Unable to init %s allocator", ipamMode)
 		}
 
-		nm, err := alloc.Start(&ciliumNodeUpdateImplementation{})
+		nm, err := alloc.Start(ctx, &ciliumNodeUpdateImplementation{})
 		if err != nil {
 			log.WithError(err).Fatalf("Unable to start %s allocator", ipamMode)
 		}

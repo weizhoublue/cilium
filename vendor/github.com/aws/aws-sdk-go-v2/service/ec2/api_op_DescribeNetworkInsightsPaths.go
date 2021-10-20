@@ -18,7 +18,7 @@ func (c *Client) DescribeNetworkInsightsPaths(ctx context.Context, params *Descr
 		params = &DescribeNetworkInsightsPathsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeNetworkInsightsPaths", params, optFns, addOperationDescribeNetworkInsightsPathsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeNetworkInsightsPaths", params, optFns, c.addOperationDescribeNetworkInsightsPathsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ type DescribeNetworkInsightsPathsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The filters. The following are possible values:
 	//
@@ -53,13 +53,15 @@ type DescribeNetworkInsightsPathsInput struct {
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The IDs of the paths.
 	NetworkInsightsPathIds []string
 
 	// The token for the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeNetworkInsightsPathsOutput struct {
@@ -73,9 +75,11 @@ type DescribeNetworkInsightsPathsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeNetworkInsightsPathsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeNetworkInsightsPathsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeNetworkInsightsPaths{}, middleware.After)
 	if err != nil {
 		return err
@@ -173,8 +177,8 @@ func NewDescribeNetworkInsightsPathsPaginator(client DescribeNetworkInsightsPath
 	}
 
 	options := DescribeNetworkInsightsPathsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -203,7 +207,11 @@ func (p *DescribeNetworkInsightsPathsPaginator) NextPage(ctx context.Context, op
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeNetworkInsightsPaths(ctx, &params, optFns...)
 	if err != nil {

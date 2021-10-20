@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Hubble
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package seven
 
@@ -121,12 +110,8 @@ func (p *Parser) Decode(r *accesslog.LogRecord, decoded *pb.Flow) error {
 	l4, sourcePort, destinationPort := decodeLayer4(r.TransportProtocol, sourceEndpoint, destinationEndpoint)
 	var sourceService, destinationService *pb.Service
 	if p.serviceGetter != nil {
-		if srcService, ok := p.serviceGetter.GetServiceByAddr(sourceIP, sourcePort); ok {
-			sourceService = &srcService
-		}
-		if dstService, ok := p.serviceGetter.GetServiceByAddr(destinationIP, destinationPort); ok {
-			destinationService = &dstService
-		}
+		sourceService = p.serviceGetter.GetServiceByAddr(sourceIP, sourcePort)
+		destinationService = p.serviceGetter.GetServiceByAddr(destinationIP, destinationPort)
 	}
 
 	decoded.Time = pbTimestamp
@@ -204,6 +189,8 @@ func decodeVerdict(verdict accesslog.FlowVerdict) pb.Verdict {
 		return pb.Verdict_DROPPED
 	case accesslog.VerdictForwarded:
 		return pb.Verdict_FORWARDED
+	case accesslog.VerdictRedirected:
+		return pb.Verdict_REDIRECTED
 	case accesslog.VerdictError:
 		return pb.Verdict_ERROR
 	default:

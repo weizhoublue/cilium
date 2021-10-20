@@ -1,17 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Hubble
-// Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package threefour
 
@@ -99,7 +87,7 @@ func New(
 
 // Decode decodes the data from 'data' into 'decoded'
 func (p *Parser) Decode(data []byte, decoded *pb.Flow) error {
-	if data == nil || len(data) == 0 {
+	if len(data) == 0 {
 		return errors.ErrEmptyData
 	}
 
@@ -192,12 +180,8 @@ func (p *Parser) Decode(data []byte, decoded *pb.Flow) error {
 	dstEndpoint := p.resolveEndpoint(dstIP, dstLabelID)
 	var sourceService, destinationService *pb.Service
 	if p.serviceGetter != nil {
-		if srcService, ok := p.serviceGetter.GetServiceByAddr(srcIP, srcPort); ok {
-			sourceService = &srcService
-		}
-		if dstService, ok := p.serviceGetter.GetServiceByAddr(dstIP, dstPort); ok {
-			destinationService = &dstService
-		}
+		sourceService = p.serviceGetter.GetServiceByAddr(srcIP, srcPort)
+		destinationService = p.serviceGetter.GetServiceByAddr(dstIP, dstPort)
 	}
 
 	decoded.Verdict = decodeVerdict(dn, tn, pvn)
@@ -316,13 +300,21 @@ func (p *Parser) resolveEndpoint(ip net.IP, datapathSecurityIdentity uint32) *pb
 	if p.endpointGetter != nil {
 		if ep, ok := p.endpointGetter.GetEndpointInfo(ip); ok {
 			epIdentity := resolveIdentityConflict(ep.GetIdentity())
-			return &pb.Endpoint{
+			e := &pb.Endpoint{
 				ID:        uint32(ep.GetID()),
 				Identity:  epIdentity,
 				Namespace: ep.GetK8sNamespace(),
 				Labels:    sortAndFilterLabels(p.log, ep.GetLabels(), epIdentity),
 				PodName:   ep.GetK8sPodName(),
 			}
+			if pod := ep.GetPod(); pod != nil {
+				olen := len(pod.GetOwnerReferences())
+				e.Workloads = make([]*pb.Workload, olen)
+				for index, owner := range pod.GetOwnerReferences() {
+					e.Workloads[index] = &pb.Workload{Kind: owner.Kind, Name: owner.Name}
+				}
+			}
+			return e
 		}
 	}
 
@@ -397,6 +389,9 @@ func decodeVerdict(dn *monitor.DropNotify, tn *monitor.TraceNotify, pvn *monitor
 	case pvn != nil:
 		if pvn.Verdict < 0 {
 			return pb.Verdict_DROPPED
+		}
+		if pvn.Verdict > 0 {
+			return pb.Verdict_REDIRECTED
 		}
 		if pvn.IsTrafficAudited() {
 			return pb.Verdict_AUDIT
@@ -679,7 +674,7 @@ func decodeProxyPort(dbg *monitor.DebugCapture) uint32 {
 		switch dbg.SubType {
 		case monitor.DbgCaptureProxyPre,
 			monitor.DbgCaptureProxyPost:
-			return byteorder.NetworkToHost(dbg.Arg1).(uint32)
+			return byteorder.NetworkToHost32(dbg.Arg1)
 		}
 	}
 

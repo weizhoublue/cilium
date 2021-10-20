@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package ipam
@@ -82,37 +72,40 @@ var (
 
 func iteration1(api *apimock.API, mngr *InstancesManager) {
 	instances := ipamTypes.NewInstanceMap()
+
+	resource := &types.AzureInterface{
+		SecurityGroup: "sg1",
+		Addresses: []types.AzureAddress{
+			{
+				IP:     "1.1.1.1",
+				Subnet: "subnet-1",
+				State:  types.StateSucceeded,
+			},
+		},
+		State: types.StateSucceeded,
+	}
+	resource.SetID("intf-1")
 	instances.Update("i-1", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{
-			ID:            "intf-1",
-			SecurityGroup: "sg1",
-			Addresses: []types.AzureAddress{
-				{
-					IP:     "1.1.1.1",
-					Subnet: "subnet-1",
-					State:  types.StateSucceeded,
-				},
-			},
-			State: types.StateSucceeded,
-		},
+		Resource: resource.DeepCopy(),
 	})
 
+	resource = &types.AzureInterface{
+		SecurityGroup: "sg3",
+		Addresses: []types.AzureAddress{
+			{
+				IP:     "1.1.3.3",
+				Subnet: "subnet-1",
+				State:  types.StateSucceeded,
+			},
+		},
+		State: types.StateSucceeded,
+	}
+	resource.SetID("intf-3")
 	instances.Update("i-2", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{
-			ID:            "intf-3",
-			SecurityGroup: "sg3",
-			Addresses: []types.AzureAddress{
-				{
-					IP:     "1.1.3.3",
-					Subnet: "subnet-1",
-					State:  types.StateSucceeded,
-				},
-			},
-			State: types.StateSucceeded,
-		},
+		Resource: resource.DeepCopy(),
 	})
-	api.UpdateInstances(instances)
 
+	api.UpdateInstances(instances)
 	mngr.Resync(context.Background())
 }
 
@@ -120,50 +113,56 @@ func iteration2(api *apimock.API, mngr *InstancesManager) {
 	api.UpdateSubnets(subnets2)
 
 	instances := ipamTypes.NewInstanceMap()
-	instances.Update("i-1", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{
-			ID:            "intf-1",
-			SecurityGroup: "sg1",
-			Addresses: []types.AzureAddress{
-				{
-					IP:     "1.1.1.1",
-					Subnet: "subnet-1",
-					State:  types.StateSucceeded,
-				},
-			},
-			State: types.StateSucceeded,
-		},
-	})
-	instances.Update("i-1", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{
-			ID:            "intf-2",
-			SecurityGroup: "sg2",
-			Addresses: []types.AzureAddress{
-				{
-					IP:     "3.3.3.3",
-					Subnet: "subnet-3",
-					State:  types.StateSucceeded,
-				},
-			},
-			State: types.StateSucceeded,
-		},
-	})
-	instances.Update("i-2", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{
-			ID:            "intf-3",
-			SecurityGroup: "sg3",
-			Addresses: []types.AzureAddress{
-				{
-					IP:     "1.1.3.3",
-					Subnet: "subnet-1",
-					State:  types.StateSucceeded,
-				},
-			},
-			State: types.StateSucceeded,
-		},
-	})
-	api.UpdateInstances(instances)
 
+	resource := &types.AzureInterface{
+		SecurityGroup: "sg1",
+		Addresses: []types.AzureAddress{
+			{
+				IP:     "1.1.1.1",
+				Subnet: "subnet-1",
+				State:  types.StateSucceeded,
+			},
+		},
+		State: types.StateSucceeded,
+	}
+	resource.SetID("intf-1")
+	instances.Update("i-1", ipamTypes.InterfaceRevision{
+		Resource: resource.DeepCopy(),
+	})
+
+	resource = &types.AzureInterface{
+		SecurityGroup: "sg2",
+		Addresses: []types.AzureAddress{
+			{
+				IP:     "3.3.3.3",
+				Subnet: "subnet-3",
+				State:  types.StateSucceeded,
+			},
+		},
+		State: types.StateSucceeded,
+	}
+	resource.SetID("intf-2")
+	instances.Update("i-1", ipamTypes.InterfaceRevision{
+		Resource: resource.DeepCopy(),
+	})
+
+	resource = &types.AzureInterface{
+		SecurityGroup: "sg3",
+		Addresses: []types.AzureAddress{
+			{
+				IP:     "1.1.3.3",
+				Subnet: "subnet-1",
+				State:  types.StateSucceeded,
+			},
+		},
+		State: types.StateSucceeded,
+	}
+	resource.SetID("intf-3")
+	instances.Update("i-2", ipamTypes.InterfaceRevision{
+		Resource: resource.DeepCopy(),
+	})
+
+	api.UpdateInstances(instances)
 	mngr.Resync(context.TODO())
 }
 

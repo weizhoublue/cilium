@@ -20,7 +20,7 @@ func (c *Client) DescribeFlowLogs(ctx context.Context, params *DescribeFlowLogsI
 		params = &DescribeFlowLogsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeFlowLogs", params, optFns, addOperationDescribeFlowLogsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeFlowLogs", params, optFns, c.addOperationDescribeFlowLogsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ type DescribeFlowLogsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters.
 	//
@@ -73,10 +73,12 @@ type DescribeFlowLogsInput struct {
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeFlowLogsOutput struct {
@@ -90,9 +92,11 @@ type DescribeFlowLogsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeFlowLogsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeFlowLogsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeFlowLogs{}, middleware.After)
 	if err != nil {
 		return err
@@ -187,8 +191,8 @@ func NewDescribeFlowLogsPaginator(client DescribeFlowLogsAPIClient, params *Desc
 	}
 
 	options := DescribeFlowLogsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -217,7 +221,11 @@ func (p *DescribeFlowLogsPaginator) NextPage(ctx context.Context, optFns ...func
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeFlowLogs(ctx, &params, optFns...)
 	if err != nil {

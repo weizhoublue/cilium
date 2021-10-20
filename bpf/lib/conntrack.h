@@ -231,9 +231,8 @@ static __always_inline __u8 __ct_lookup(const void *map, struct __ctx_buff *ctx,
 			ct_state->ifindex = entry->ifindex;
 			ct_state->dsr = entry->dsr;
 			ct_state->proxy_redirect = entry->proxy_redirect;
-			/* See the ct_create4 comments re the rx_bytes hack */
 			if (dir == CT_SERVICE)
-				ct_state->backend_id = entry->rx_bytes;
+				ct_state->backend_id = entry->backend_id;
 		}
 
 #ifdef ENABLE_NAT46
@@ -576,6 +575,94 @@ static __always_inline void ct4_cilium_dbg_tuple(struct __ctx_buff *ctx, __u8 ty
 	cilium_dbg(ctx, type, addr, rev_nat_index);
 }
 
+static __always_inline int
+ct_extract_ports4(struct __ctx_buff *ctx, int off, int dir,
+		  struct ipv4_ct_tuple *tuple)
+{
+	int err;
+
+	switch (tuple->nexthdr) {
+	case IPPROTO_ICMP:
+		if (1) {
+			__be16 identifier = 0;
+			__u8 type;
+
+			if (ctx_load_bytes(ctx, off, &type, 1) < 0)
+				return DROP_CT_INVALID_HDR;
+			if ((type == ICMP_ECHO || type == ICMP_ECHOREPLY) &&
+			     ctx_load_bytes(ctx, off + offsetof(struct icmphdr, un.echo.id),
+					    &identifier, 2) < 0)
+				return DROP_CT_INVALID_HDR;
+
+			tuple->sport = 0;
+			tuple->dport = 0;
+
+			switch (type) {
+			case ICMP_DEST_UNREACH:
+			case ICMP_TIME_EXCEEDED:
+			case ICMP_PARAMETERPROB:
+				tuple->flags |= TUPLE_F_RELATED;
+				break;
+
+			case ICMP_ECHOREPLY:
+				tuple->sport = identifier;
+				break;
+			case ICMP_ECHO:
+				tuple->dport = identifier;
+				/* fall through */
+			default:
+				break;
+			}
+		}
+		break;
+
+	case IPPROTO_TCP:
+		err = ipv4_ct_extract_l4_ports(ctx, off, dir, tuple, NULL);
+		if (err < 0)
+			return err;
+
+		break;
+
+	case IPPROTO_UDP:
+		err = ipv4_ct_extract_l4_ports(ctx, off, dir, tuple, NULL);
+		if (err < 0)
+			return err;
+
+		break;
+
+	default:
+		/* Can't handle extension headers yet */
+		return DROP_CT_UNKNOWN_PROTO;
+	}
+
+	return 0;
+}
+
+/* The function determines whether an egress flow identified by the given
+ * tuple is a reply.
+ *
+ * The datapath creates a CT entry in a reverse order. E.g., if a pod sends a
+ * request to outside, the CT entry stored in the BPF map will be TUPLE_F_IN:
+ * pod => outside. So, we can leverage this fact to determine whether the given
+ * flow is a reply.
+ */
+static __always_inline int
+ct_is_reply4(const void *map, struct __ctx_buff *ctx, int off,
+	     struct ipv4_ct_tuple *tuple, bool *is_reply)
+{
+	int err = 0;
+
+	err = ct_extract_ports4(ctx, off, CT_EGRESS, tuple);
+	if (err < 0)
+		return err;
+
+	tuple->flags = TUPLE_F_IN;
+
+	*is_reply = map_lookup_elem(map, tuple) != NULL;
+
+	return 0;
+}
+
 /* Offset must point to IPv4 header */
 static __always_inline int ct_lookup4(const void *map,
 				      struct ipv4_ct_tuple *tuple,
@@ -714,8 +801,7 @@ ct_update6_backend_id(const void *map, const struct ipv6_ct_tuple *tuple,
 	if (!entry)
 		return;
 
-	/* See the ct_create4 comments re the rx_bytes hack */
-	entry->rx_bytes = state->backend_id;
+	entry->backend_id = state->backend_id;
 }
 
 static __always_inline void
@@ -748,9 +834,8 @@ static __always_inline int ct_create6(const void *map_main, const void *map_rela
 	 */
 	entry.proxy_redirect = proxy_redirect;
 
-	/* See the ct_create4 comments re the rx_bytes hack */
 	if (dir == CT_SERVICE)
-		entry.rx_bytes = ct_state->backend_id;
+		entry.backend_id = ct_state->backend_id;
 
 	entry.lb_loopback = ct_state->loopback;
 	entry.node_port = ct_state->node_port;
@@ -810,8 +895,7 @@ static __always_inline void ct_update4_backend_id(const void *map,
 	if (!entry)
 		return;
 
-	/* See the ct_create4 comments re the rx_bytes hack */
-	entry->rx_bytes = state->backend_id;
+	entry->backend_id = state->backend_id;
 }
 
 static __always_inline void
@@ -850,12 +934,8 @@ static __always_inline int ct_create4(const void *map_main,
 	entry.dsr = ct_state->dsr;
 	entry.ifindex = ct_state->ifindex;
 
-	/* Previously, the rx_bytes field was not used for entries with
-	 * the dir=CT_SERVICE (see GH#7060). Therefore, we can safely abuse
-	 * this field to save the backend_id.
-	 */
 	if (dir == CT_SERVICE)
-		entry.rx_bytes = ct_state->backend_id;
+		entry.backend_id = ct_state->backend_id;
 	entry.rev_nat_index = ct_state->rev_nat_index;
 	seen_flags.value |= is_tcp ? TCP_FLAG_SYN : 0;
 	ct_update_timeout(&entry, is_tcp, dir, seen_flags);
@@ -943,6 +1023,15 @@ ct_lookup6(const void *map __maybe_unused,
 	   struct __ctx_buff *ctx __maybe_unused, int off __maybe_unused,
 	   int dir __maybe_unused, struct ct_state *ct_state __maybe_unused,
 	   __u32 *monitor __maybe_unused)
+{
+	return 0;
+}
+
+static __always_inline int
+ct_is_reply4(const void *map __maybe_unused,
+	     struct __ctx_buff *ctx __maybe_unused, int off __maybe_unused,
+	     struct ipv4_ct_tuple *tuple __maybe_unused,
+	     bool *is_reply __maybe_unused)
 {
 	return 0;
 }

@@ -1,24 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-//+build ipam_provider_aws
+//go:build ipam_provider_aws
+// +build ipam_provider_aws
 
 package main
 
 import (
-	"fmt"
-
 	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/spf13/viper"
 
@@ -45,9 +33,6 @@ func init() {
 		operatorOption.ENITags, "ENI tags in the form of k1=v1 (multiple k/v pairs can be passed by repeating the CLI flag)")
 	option.BindEnv(operatorOption.ENITags)
 
-	flags.Bool(operatorOption.UpdateEC2AdapterLimitViaAPIDeprecated, false, fmt.Sprintf("Use the EC2 API to update the instance type to adapter limits. Deprecated in favor of %s", operatorOption.UpdateEC2AdapterLimitViaAPI))
-	option.BindEnv(operatorOption.UpdateEC2AdapterLimitViaAPIDeprecated)
-	flags.MarkDeprecated(operatorOption.UpdateEC2AdapterLimitViaAPIDeprecated, "This option will be removed in v1.10")
 	flags.Bool(operatorOption.UpdateEC2AdapterLimitViaAPI, false, "Use the EC2 API to update the instance type to adapter limits")
 	option.BindEnv(operatorOption.UpdateEC2AdapterLimitViaAPI)
 

@@ -1,0 +1,53 @@
+name: codeql
+
+on:
+  pull_request: {}
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: "45 6 * * 3"
+
+permissions: read-all
+
+jobs:
+  check_changes:
+    name: Deduce required tests from code changes
+    if: github.repository == 'cilium/cilium'
+    runs-on: ubuntu-18.04
+    outputs:
+      go-changes: ${{ steps.go-changes.outputs.src }}
+    steps:
+      - name: Checkout code
+        if: ${{ !github.event.pull_request }}
+        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        with:
+          persist-credentials: false
+      - name: Check code changes
+        uses: dorny/paths-filter@b2feaf19c27470162a626bd6fa8438ae5b263721
+        id: go-changes
+        with:
+          filters: |
+            src:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+
+  analyze:
+    needs: check_changes
+    if: github.repository == 'cilium/cilium' && needs.check_changes.outputs.go-changes == 'true'
+    runs-on: ubuntu-18.04
+    permissions:
+      security-events: write
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+      with:
+        persist-credentials: false
+        fetch-depth: 1
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@1990ded3d254be86a1af1948d034534fad74a032
+      with:
+        languages: go
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@1990ded3d254be86a1af1948d034534fad74a032

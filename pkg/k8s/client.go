@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package k8s abstracts all Kubernetes specific behaviour
 package k8s
@@ -20,10 +9,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/controller"
 	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_apiextclientsetscheme "github.com/cilium/cilium/pkg/k8s/slim/k8s/apiextensions-client/clientset/versioned/scheme"
@@ -48,7 +40,9 @@ import (
 
 var (
 	// k8sCLI is the default client.
-	k8sCLI = &K8sClient{}
+	k8sCLI = &K8sClient{
+		ctrlMgr: controller.NewManager(),
+	}
 
 	// k8sWatcherCLI is the client dedicated k8s structure watchers.
 	k8sWatcherCLI = &K8sClient{}
@@ -210,7 +204,11 @@ func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int) (*re
 		config *rest.Config
 		err    error
 	)
-	userAgent := fmt.Sprintf("Cilium %s", version.Version)
+	cmdName := "cilium"
+	if len(os.Args[0]) != 0 {
+		cmdName = filepath.Base(os.Args[0])
+	}
+	userAgent := fmt.Sprintf("%s/%s", cmdName, version.Version)
 
 	switch {
 	// If the apiServerURL and the kubeCfgPath are empty then we can try getting
@@ -237,7 +235,7 @@ func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int) (*re
 }
 
 func setConfig(config *rest.Config, userAgent string, qps float32, burst int) {
-	if config.UserAgent != "" {
+	if userAgent != "" {
 		config.UserAgent = userAgent
 	}
 	if qps != 0.0 {

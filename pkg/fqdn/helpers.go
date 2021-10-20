@@ -1,28 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package fqdn
 
 import (
 	"net"
 	"regexp"
-	"strings"
 
+	"github.com/cilium/cilium/pkg/fqdn/dns"
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/policy/api"
-	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
 
@@ -106,7 +94,7 @@ func mapSelectorsToIPs(fqdnSelectors map[api.FQDNSelector]struct{}, cache *DNSCa
 
 // prepareMatchName ensures a ToFQDNs.matchName field is used consistently.
 func prepareMatchName(matchName string) string {
-	return strings.ToLower(dns.Fqdn(matchName))
+	return dns.FQDN(matchName)
 }
 
 // KeepUniqueNames removes duplicate names from the given slice while

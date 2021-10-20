@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package alibabacloud
 
@@ -56,7 +45,7 @@ func (a *AllocatorAlibabaCloud) Init(ctx context.Context) error {
 	var err error
 	vpcID := operatorOption.Config.AlibabaCloudVPCID
 	if vpcID == "" {
-		vpcID, err = metadata.GetVPCID(context.TODO())
+		vpcID, err = metadata.GetVPCID(ctx)
 		if err != nil {
 			return err
 		}
@@ -88,7 +77,7 @@ func (a *AllocatorAlibabaCloud) Init(ctx context.Context) error {
 // Start kicks off ENI allocation, the initial connection to AlibabaCloud
 // APIs is done in a blocking manner. Provided this is successful, a controller is
 // started to manage allocation based on CiliumNode custom resources
-func (a *AllocatorAlibabaCloud) Start(getterUpdater ipam.CiliumNodeGetterUpdater) (allocator.NodeEventHandler, error) {
+func (a *AllocatorAlibabaCloud) Start(ctx context.Context, getterUpdater ipam.CiliumNodeGetterUpdater) (allocator.NodeEventHandler, error) {
 	var iMetrics ipam.MetricsAPI
 
 	log.Info("Starting AlibabaCloud ENI allocator...")
@@ -105,7 +94,7 @@ func (a *AllocatorAlibabaCloud) Start(getterUpdater ipam.CiliumNodeGetterUpdater
 		return nil, fmt.Errorf("unable to initialize AlibabaCloud node manager: %w", err)
 	}
 
-	if err := nodeManager.Start(context.TODO()); err != nil {
+	if err := nodeManager.Start(ctx); err != nil {
 		return nil, err
 	}
 

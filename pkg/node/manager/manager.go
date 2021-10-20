@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package manager
 
@@ -22,6 +11,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/iptables"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/ipcache"
@@ -63,6 +53,7 @@ type IPCache interface {
 // Configuration is the set of configuration options the node manager depends
 // on
 type Configuration interface {
+	TunnelingEnabled() bool
 	RemoteNodeIdentitiesEnabled() bool
 	NodeEncryptionEnabled() bool
 	EncryptionEnabled() bool
@@ -328,7 +319,19 @@ func (m *Manager) legacyNodeIpBehavior() bool {
 	// ipcache. This resulted in a behavioral change. New deployments will
 	// provide this behavior out of the gate, existing deployments will
 	// have to opt into this by enabling remote-node identities.
-	return !m.conf.EncryptionEnabled() && !m.conf.RemoteNodeIdentitiesEnabled()
+	if m.conf.RemoteNodeIdentitiesEnabled() {
+		return false
+	}
+	// Needed to store the SPI for nodes in the ipcache.
+	if m.conf.NodeEncryptionEnabled() {
+		return false
+	}
+	// Needed to store the SPI for pod->remote node in the ipcache since
+	// that path goes through the tunnel.
+	if m.conf.EncryptionEnabled() && m.conf.TunnelingEnabled() {
+		return false
+	}
+	return true
 }
 
 // NodeUpdated is called after the information of a node has been updated. The
@@ -369,6 +372,10 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 		if address.Type == addressing.NodeCiliumInternalIP || m.conf.EncryptionEnabled() ||
 			option.Config.EnableHostFirewall || option.Config.JoinCluster {
 			tunnelIP = nodeIP
+		}
+
+		if address.Type != addressing.NodeCiliumInternalIP {
+			iptables.AddToNodeIpset(address.IP)
 		}
 
 		if skipIPCache(address) {
@@ -525,6 +532,10 @@ func (m *Manager) NodeDeleted(n nodeTypes.Node) {
 	}
 
 	for _, address := range entry.node.IPAddresses {
+		if address.Type != addressing.NodeCiliumInternalIP {
+			iptables.RemoveFromNodeIpset(address.IP)
+		}
+
 		if m.legacyNodeIpBehavior() && address.Type != addressing.NodeCiliumInternalIP {
 			continue
 		}

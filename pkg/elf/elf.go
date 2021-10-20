@@ -1,16 +1,5 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
 package elf
 
@@ -123,6 +112,13 @@ func (elf *ELF) readValue(offset int64, size int64) ([]byte, error) {
 	return result, nil
 }
 
+func (elf *ELF) writeValue(w io.WriteSeeker, offset uint64, value []byte) error {
+	if _, err := w.Seek(int64(offset), io.SeekStart); err != nil {
+		return err
+	}
+	return binary.Write(w, elf.metadata.ByteOrder, value)
+}
+
 func (elf *ELF) readOption(key string) (result uint32, err error) {
 	opt, exists := elf.symbols.data[key]
 	if !exists {
@@ -151,7 +147,7 @@ func (elf *ELF) findString(key string) error {
 // strings specified in 'strOptions' with their corresponding values.
 //
 // Keys in the 'intOptions' / 'strOptions' maps are case-sensitive.
-func (elf *ELF) copy(w io.Writer, r *io.SectionReader, intOptions map[string]uint32, strOptions map[string]string) error {
+func (elf *ELF) copy(w io.WriteSeeker, r *io.SectionReader, intOptions map[string]uint32, strOptions map[string]string) error {
 	if len(intOptions) == 0 && len(strOptions) == 0 {
 		// Copy the remaining portion of the file
 		if _, err := io.Copy(w, r); err != nil {
@@ -160,8 +156,13 @@ func (elf *ELF) copy(w io.Writer, r *io.SectionReader, intOptions map[string]uin
 		return nil
 	}
 
-	globalOff := uint64(0) // current position in file
+	// Copy the ELF's contents, we overwrite at specific offsets later.
+	if _, err := io.Copy(w, r); err != nil {
+		return err
+	}
+
 	processedOptions := make(map[string]struct{}, len(intOptions)+len(strOptions))
+
 processSymbols:
 	for _, symbol := range elf.symbols.sort() {
 		scopedLog := log.WithField("symbol", symbol.name)
@@ -175,6 +176,7 @@ processSymbols:
 				value = make([]byte, unsafe.Sizeof(v))
 				elf.metadata.ByteOrder.PutUint32(value, v)
 			}
+
 		case symbolString:
 			v, exists := strOptions[symbol.name]
 			if exists {
@@ -184,6 +186,7 @@ processSymbols:
 				value = []byte(v)
 			}
 		}
+
 		if value == nil {
 			for _, prefix := range ignoredPrefixes {
 				if strings.HasPrefix(symbol.name, prefix) {
@@ -194,20 +197,18 @@ processSymbols:
 			continue processSymbols
 		}
 
-		// Copy data up until this symbol into the new file;
-		// Write the new value and seek past it.
-		dataToCopy := int64(symbol.offset - globalOff)
-		if _, err := io.CopyN(w, r, dataToCopy); err != nil {
-			return err
-		}
-		if err := binary.Write(w, elf.metadata.ByteOrder, value); err != nil {
+		// Encode the value at the given offset in the destination file.
+		if err := elf.writeValue(w, symbol.offset, value); err != nil {
 			return fmt.Errorf("failed to substitute %s: %s", symbol.name, err)
 		}
-		if _, err := r.Seek(int64(symbol.size), io.SeekCurrent); err != nil {
-			return err
+
+		if symbol.offsetBTF != 0 {
+			if err := elf.writeValue(w, symbol.offsetBTF, value); err != nil {
+				return fmt.Errorf("failed to substitute %s BTF: %s", symbol.name, err)
+			}
 		}
+
 		processedOptions[symbol.name] = struct{}{}
-		globalOff = symbol.offset + symbol.size
 	}
 
 	// Check for additional options that weren't applied
@@ -220,11 +221,6 @@ processSymbols:
 		if _, processed := processedOptions[symbol]; !processed {
 			return fmt.Errorf("no such symbol %q in ELF", symbol)
 		}
-	}
-
-	// Copy the remaining portion of the file
-	if _, err := io.Copy(w, r); err != nil {
-		return err
 	}
 
 	return nil
@@ -254,6 +250,7 @@ func (elf *ELF) Write(path string, intOptions map[string]uint32, strOptions map[
 			Err:  err,
 		}
 	}
+
 	defer func() {
 		if err2 := f.Close(); err2 != nil {
 			scopedLog.WithError(err).Warning("Failed to close new ELF")

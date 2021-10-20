@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package helpers
 
@@ -187,9 +176,9 @@ const (
 
 	// CiliumStableHelmChartVersion should be the chart version that points
 	// to the v1.X branch
-	CiliumStableHelmChartVersion = "1.9-dev"
-	CiliumStableVersion          = "v1.9"
-	CiliumLatestHelmChartVersion = "1.9.90"
+	CiliumStableHelmChartVersion = "1.10"
+	CiliumStableVersion          = "v" + CiliumStableHelmChartVersion
+	CiliumLatestHelmChartVersion = "1.10.90"
 
 	MonitorLogFileName = "monitor.log"
 
@@ -224,7 +213,7 @@ const (
 	// test/Vagrantfile.
 	SecondaryIface = "enp0s9"
 
-	// Logs messages that should not be in the cilium logs.
+	// Logs messages that should not be in the cilium logs...
 	panicMessage        = "panic:"
 	deadLockHeader      = "POTENTIAL DEADLOCK:"                                      // from github.com/sasha-s/go-deadlock/deadlock.go:header
 	segmentationFault   = "segmentation fault"                                       // from https://github.com/cilium/cilium/issues/3233
@@ -240,6 +229,14 @@ const (
 	uninitializedRegen  = "Uninitialized regeneration level"                         // from https://github.com/cilium/cilium/pull/10949
 	unstableStat        = "BUG: stat() has unstable behavior"                        // from https://github.com/cilium/cilium/pull/11028
 	removeTransientRule = "Unable to process chain CILIUM_TRANSIENT_FORWARD with ip" // from https://github.com/cilium/cilium/issues/11276
+	// ...and their exceptions.
+	lrpExists          = "local-redirect service exists for frontend"                         // cf. https://github.com/cilium/cilium/issues/16400
+	opCantBeFulfilled  = "Operation cannot be fulfilled on leases.coordination.k8s.io"        // cf. https://github.com/cilium/cilium/issues/16402
+	initLeaderElection = "error initially creating leader election record: leases."           // cf. https://github.com/cilium/cilium/issues/16402#issuecomment-861544964
+	globalDataSupport  = "kernel doesn't support global data"                                 // cf. https://github.com/cilium/cilium/issues/16418
+	removeInexistentID = "removing identity not added to the identity manager!"               // cf. https://github.com/cilium/cilium/issues/16419
+	failedToListCRDs   = "the server could not find the requested resource"                   // cf. https://github.com/cilium/cilium/issues/16425
+	retrieveResLock    = "retrieving resource lock kube-system/cilium-operator-resource-lock" // cf. https://github.com/cilium/cilium/issues/16402#issuecomment-871155492
 
 	// HelmTemplate is the location of the Helm templates to install Cilium
 	HelmTemplate = "../install/kubernetes/cilium"
@@ -271,16 +268,11 @@ const (
 // NightlyStableUpgradesFrom maps the cilium image versions to the helm charts
 // that will be used to run update tests in the Nightly test.
 var NightlyStableUpgradesFrom = map[string]string{
-	"v1.6": "1.6-dev",
-	"v1.7": "1.7-dev",
 	"v1.8": "1.8-dev",
 	"v1.9": "1.9-dev",
 }
 
 var (
-	IsCiliumV1_5  = versioncheck.MustCompile(">=1.4.90 <1.6.0")
-	IsCiliumV1_6  = versioncheck.MustCompile(">=1.5.90 <1.7.0")
-	IsCiliumV1_7  = versioncheck.MustCompile(">=1.6.90 <1.8.0")
 	IsCiliumV1_8  = versioncheck.MustCompile(">=1.7.90 <1.9.0")
 	IsCiliumV1_9  = versioncheck.MustCompile(">=1.8.90 <1.10.0")
 	IsCiliumV1_10 = versioncheck.MustCompile(">=1.9.90 <1.11.0")
@@ -305,6 +297,9 @@ var badLogMessages = map[string][]string{
 	unstableStat:        nil,
 	removeTransientRule: nil,
 	"DATA RACE":         nil,
+	// Exceptions for level=error should only be added as a last resort, if the
+	// error cannot be fixed in Cilium or in the test.
+	"level=error": {lrpExists, opCantBeFulfilled, initLeaderElection, globalDataSupport, removeInexistentID, failedToListCRDs, retrieveResLock},
 }
 
 var ciliumCLICommands = map[string]string{

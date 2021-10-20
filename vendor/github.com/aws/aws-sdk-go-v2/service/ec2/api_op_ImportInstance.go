@@ -13,8 +13,8 @@ import (
 
 // Creates an import instance task using metadata from the specified disk image.
 // This API action supports only single-volume VMs. To import multi-volume VMs, use
-// ImportImage instead. This API action is not supported by the AWS Command Line
-// Interface (AWS CLI). For information about using the Amazon EC2 CLI, which is
+// ImportImage instead. This API action is not supported by the Command Line
+// Interface (CLI). For information about using the Amazon EC2 CLI, which is
 // deprecated, see Importing a VM to Amazon EC2
 // (https://awsdocs.s3.amazonaws.com/EC2/ec2-clt.pdf#UsingVirtualMachinesinAmazonEC2)
 // in the Amazon EC2 CLI Reference PDF file. For information about the import
@@ -25,7 +25,7 @@ func (c *Client) ImportInstance(ctx context.Context, params *ImportInstanceInput
 		params = &ImportInstanceInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ImportInstance", params, optFns, addOperationImportInstanceMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ImportInstance", params, optFns, c.addOperationImportInstanceMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +52,12 @@ type ImportInstanceInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The launch specification.
 	LaunchSpecification *types.ImportInstanceLaunchSpecification
+
+	noSmithyDocumentSerde
 }
 
 type ImportInstanceOutput struct {
@@ -65,9 +67,11 @@ type ImportInstanceOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationImportInstanceMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationImportInstanceMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpImportInstance{}, middleware.After)
 	if err != nil {
 		return err

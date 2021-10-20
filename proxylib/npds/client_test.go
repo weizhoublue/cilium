@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package npds
@@ -19,6 +9,7 @@ package npds
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,8 +29,8 @@ func Test(t *testing.T) {
 }
 
 type ClientSuite struct {
-	acks  int
-	nacks int
+	acks  uint64
+	nacks uint64
 }
 
 var _ = Suite(&ClientSuite{})
@@ -64,10 +55,10 @@ func (cs *ClientSuite) UpsertNetworkPolicy(c *C, s *envoy.XDSServer, p *cilium.N
 	callback := func(err error) {
 		if err == nil {
 			log.Debug("ACK Callback called")
-			cs.acks++
+			atomic.AddUint64(&cs.acks, 1)
 		} else {
 			log.Debug("NACK Callback called")
-			cs.nacks++
+			atomic.AddUint64(&cs.nacks, 1)
 		}
 	}
 
@@ -105,6 +96,6 @@ func (s *ClientSuite) TestRequestAllResources(c *C) {
 	s.UpsertNetworkPolicy(c, xdsServer, resources[0])
 
 	time.Sleep(DialDelay * BackOffLimit)
-	c.Assert(s.acks, Equals, 1)
-	c.Assert(s.nacks, Equals, 0)
+	c.Assert(atomic.LoadUint64(&s.acks), Equals, uint64(1))
+	c.Assert(atomic.LoadUint64(&s.nacks), Equals, uint64(0))
 }

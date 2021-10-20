@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package testutils
 
@@ -67,6 +56,7 @@ func (e *TestEndpoint) RequireARPPassthrough() bool                 { return fal
 func (e *TestEndpoint) RequireEgressProg() bool                     { return false }
 func (e *TestEndpoint) RequireRouting() bool                        { return false }
 func (e *TestEndpoint) RequireEndpointRoute() bool                  { return false }
+func (e *TestEndpoint) DisableSIPVerification() bool                { return false }
 func (e *TestEndpoint) GetPolicyVerdictLogFilter() uint32           { return 0xffff }
 func (e *TestEndpoint) GetCIDRPrefixLengths() ([]int, []int)        { return nil, nil }
 func (e *TestEndpoint) GetID() uint64                               { return e.Id }

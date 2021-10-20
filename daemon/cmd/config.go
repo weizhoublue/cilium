@@ -1,21 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
@@ -165,6 +155,19 @@ func (h *getConfig) Handle(params GetConfigParams) middleware.Responder {
 	log.WithField(logfields.Params, logfields.Repr(params)).Debug("GET /config request")
 
 	d := h.daemon
+	m := make(map[string]interface{})
+	option.Config.ConfigPatchMutex.RLock()
+	e := reflect.ValueOf(option.Config).Elem()
+
+	for i := 0; i < e.NumField(); i++ {
+		if e.Field(i).Kind() != reflect.Func {
+			// Remove configurable opttions from read-only map
+			if e.Type().Field(i).Name != "Opts" && e.Type().Field(i).Name != "ConfigPatchMutex" {
+				m[e.Type().Field(i).Name] = e.Field(i).Interface()
+			}
+		}
+	}
+	option.Config.ConfigPatchMutex.RUnlock()
 
 	spec := &models.DaemonConfigurationSpec{
 		Options:           *option.Config.Opts.GetMutableModel(),
@@ -180,10 +183,11 @@ func (h *getConfig) Handle(params GetConfigParams) middleware.Responder {
 			Type:    option.Config.KVStore,
 			Options: option.Config.KVStoreOpt,
 		},
-		Realized:     spec,
-		DeviceMTU:    int64(d.mtuConfig.GetDeviceMTU()),
-		RouteMTU:     int64(d.mtuConfig.GetRouteMTU()),
-		DatapathMode: models.DatapathMode(option.Config.DatapathMode),
+		Realized:               spec,
+		DaemonConfigurationMap: m,
+		DeviceMTU:              int64(d.mtuConfig.GetDeviceMTU()),
+		RouteMTU:               int64(d.mtuConfig.GetRouteMTU()),
+		DatapathMode:           models.DatapathMode(option.Config.DatapathMode),
 		IpvlanConfiguration: &models.IpvlanConfiguration{
 			MasterDeviceIndex: int64(option.Config.Ipvlan.MasterDeviceIndex),
 			OperationMode:     option.Config.Ipvlan.OperationMode,

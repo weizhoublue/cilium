@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package watchers
 
@@ -43,12 +32,6 @@ const (
 	subsysEndpointSync = "endpointsynchronizer"
 )
 
-// controllerNameOf returns the controller name to synchronize endpoint in to
-// kubernetes.
-func controllerNameOf(epID uint16) string {
-	return fmt.Sprintf("sync-to-k8s-ciliumendpoint (%v)", epID)
-}
-
 // EndpointSynchronizer currently is an empty type, which wraps around syncing
 // of CiliumEndpoint resources.
 type EndpointSynchronizer struct{}
@@ -61,7 +44,7 @@ type EndpointSynchronizer struct{}
 func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoint, conf endpoint.EndpointStatusConfiguration) {
 	var (
 		endpointID     = e.ID
-		controllerName = controllerNameOf(endpointID)
+		controllerName = endpoint.EndpointSyncControllerName(endpointID)
 		scopedLog      = e.Logger(subsysEndpointSync).WithField("controller", controllerName)
 	)
 
@@ -180,6 +163,7 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 								// label based selection for CiliumEndpoints.
 								Labels: pod.GetObjectMeta().GetLabels(),
 							},
+							Status: *mdl,
 						}
 						localCEP, err = ciliumClient.CiliumEndpoints(namespace).Create(ctx, cep, meta_v1.CreateOptions{})
 						if err != nil {
@@ -204,6 +188,13 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 					// We return earlier for all error cases so we don't need
 					// to init the local endpoint in non-error cases.
 					needInit = false
+					lastMdl = &localCEP.Status
+					// We still need to update the CEP if localCEP is out of sync with upstream.
+					// We only return if upstream is NOT out-of-sync here.
+					if mdl.DeepEqual(lastMdl) {
+						scopedLog.Debug("Skipping CiliumEndpoint update because it has not changed")
+						return nil
+					}
 				}
 				// We have no localCEP copy. We need to fetch it for updates, below.
 				// This is unexpected as there should be only 1 writer per CEP, this
@@ -255,8 +246,7 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 					ctx, podName,
 					types.JSONPatchType,
 					createStatusPatch,
-					meta_v1.PatchOptions{},
-					"status")
+					meta_v1.PatchOptions{})
 
 				// Handle Update errors or return successfully
 				switch {
@@ -266,42 +256,6 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 					scopedLog.WithError(err).Warn("Cannot update CEP due to a revision conflict. The next controller execution will try again")
 					needInit = true
 					return nil
-
-				case err != nil && k8serrors.IsNotFound(err):
-					scopedLog.WithError(err).Warn("Cannot update CEP via subresource, trying direct patch")
-					// Tries to update CEP without specifying `status` as subresource.
-					localCEP, err = ciliumClient.CiliumEndpoints(namespace).Patch(
-						ctx, podName,
-						types.JSONPatchType,
-						createStatusPatch,
-						meta_v1.PatchOptions{})
-					// Handle Update errors or return successfully
-					switch {
-					// Return no error when we see a conflict. We want to retry without a
-					// backoff and the Update* calls returned the current localCEP
-					case err != nil && k8serrors.IsConflict(err):
-						scopedLog.WithError(err).Warn("Cannot update CEP due to a revision conflict. The next controller execution will try again")
-						needInit = true
-						return nil
-
-					// Ensure we re-init when we see a generic error. This will recrate the
-					// CEP.
-					case err != nil:
-						// Suppress logging an error if ep backing the pod was terminated
-						// before CEP could be updated and shut down the controller.
-						if errors.Is(err, context.Canceled) {
-							return nil
-						}
-						scopedLog.WithError(err).Error("Cannot update CEP")
-
-						needInit = true
-						return err
-
-					// A successful update means no more updates unless the endpoint status, aka mdl, changes
-					default:
-						lastMdl = mdl
-						return nil
-					}
 
 				// Ensure we re-init when we see a generic error. This will recrate the
 				// CEP.
@@ -332,7 +286,7 @@ func (epSync *EndpointSynchronizer) RunK8sCiliumEndpointSync(e *endpoint.Endpoin
 // CEP from Kubernetes once the endpoint is stopped / removed from the
 // Cilium agent.
 func (epSync *EndpointSynchronizer) DeleteK8sCiliumEndpointSync(e *endpoint.Endpoint) {
-	controllerName := controllerNameOf(e.ID)
+	controllerName := endpoint.EndpointSyncControllerName(e.ID)
 
 	scopedLog := e.Logger(subsysEndpointSync).WithField("controller", controllerName)
 

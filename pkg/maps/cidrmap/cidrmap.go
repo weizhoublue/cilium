@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2017 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cidrmap
 
@@ -91,7 +80,7 @@ func (cm *CIDRMap) InsertCIDR(cidr net.IPNet) error {
 		return err
 	}
 	log.WithField(logfields.Path, cm.path).Debugf("Inserting CIDR entry %s", cidr.String())
-	return bpf.UpdateElement(cm.Fd, unsafe.Pointer(&key), unsafe.Pointer(&entry), 0)
+	return bpf.UpdateElement(cm.Fd, cm.path, unsafe.Pointer(&key), unsafe.Pointer(&entry), 0)
 }
 
 // DeleteCIDR deletes an entry from 'cm' with key 'cidr'.

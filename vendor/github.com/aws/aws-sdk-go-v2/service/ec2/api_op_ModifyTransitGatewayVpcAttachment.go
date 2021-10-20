@@ -17,7 +17,7 @@ func (c *Client) ModifyTransitGatewayVpcAttachment(ctx context.Context, params *
 		params = &ModifyTransitGatewayVpcAttachmentInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ModifyTransitGatewayVpcAttachment", params, optFns, addOperationModifyTransitGatewayVpcAttachmentMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ModifyTransitGatewayVpcAttachment", params, optFns, c.addOperationModifyTransitGatewayVpcAttachmentMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -42,13 +42,15 @@ type ModifyTransitGatewayVpcAttachmentInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
-	// The new VPC attachment options. You cannot modify the IPv6 options.
+	// The new VPC attachment options.
 	Options *types.ModifyTransitGatewayVpcAttachmentRequestOptions
 
 	// The IDs of one or more subnets to remove.
 	RemoveSubnetIds []string
+
+	noSmithyDocumentSerde
 }
 
 type ModifyTransitGatewayVpcAttachmentOutput struct {
@@ -58,9 +60,11 @@ type ModifyTransitGatewayVpcAttachmentOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationModifyTransitGatewayVpcAttachmentMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationModifyTransitGatewayVpcAttachmentMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpModifyTransitGatewayVpcAttachment{}, middleware.After)
 	if err != nil {
 		return err

@@ -21,7 +21,7 @@ func (c *Client) DisableVpcClassicLinkDnsSupport(ctx context.Context, params *Di
 		params = &DisableVpcClassicLinkDnsSupportInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DisableVpcClassicLinkDnsSupport", params, optFns, addOperationDisableVpcClassicLinkDnsSupportMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DisableVpcClassicLinkDnsSupport", params, optFns, c.addOperationDisableVpcClassicLinkDnsSupportMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -35,18 +35,22 @@ type DisableVpcClassicLinkDnsSupportInput struct {
 
 	// The ID of the VPC.
 	VpcId *string
+
+	noSmithyDocumentSerde
 }
 
 type DisableVpcClassicLinkDnsSupportOutput struct {
 
 	// Returns true if the request succeeds; otherwise, it returns an error.
-	Return bool
+	Return *bool
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDisableVpcClassicLinkDnsSupportMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDisableVpcClassicLinkDnsSupportMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDisableVpcClassicLinkDnsSupport{}, middleware.After)
 	if err != nil {
 		return err

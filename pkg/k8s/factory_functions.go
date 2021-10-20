@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8s
 
@@ -171,8 +160,8 @@ func ObjTov1Pod(obj interface{}) *slim_corev1.Pod {
 	return nil
 }
 
-func ObjToV1Node(obj interface{}) *slim_corev1.Node {
-	node, ok := obj.(*slim_corev1.Node)
+func ObjToV1Node(obj interface{}) *v1.Node {
+	node, ok := obj.(*v1.Node)
 	if ok {
 		return node
 	}
@@ -181,7 +170,7 @@ func ObjToV1Node(obj interface{}) *slim_corev1.Node {
 		// Delete was not observed by the watcher but is
 		// removed from kube-apiserver. This is the last
 		// known state and the object no longer exists.
-		node, ok := deletedObj.Obj.(*slim_corev1.Node)
+		node, ok := deletedObj.Obj.(*v1.Node)
 		if ok {
 			return node
 		}

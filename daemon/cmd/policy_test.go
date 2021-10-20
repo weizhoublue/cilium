@@ -1,18 +1,8 @@
-// Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package cmd
 
@@ -225,7 +215,6 @@ func (ds *DaemonSuite) regenerateEndpoint(c *C, e *endpoint.Endpoint) {
 }
 
 func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
-	logging.ConfigureLogLevel(false) // Use 'true' for debugging
 	rules := api.Rules{
 		{
 			EndpointSelector: api.NewESFromLabels(lblBar),
@@ -418,7 +407,6 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 }
 
 func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
-	logging.ConfigureLogLevel(false) // Use 'true' for debugging
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
@@ -503,7 +491,6 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 // short-circuiting the HTTP rules (i.e., the network policy sent to
 // envoy does not even have the HTTP rules).
 func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
-	logging.ConfigureLogLevel(false) // Use 'true' for debugging
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
@@ -579,8 +566,8 @@ func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
 }
 
 func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
-	logging.ConfigureLogLevel(true) // Use 'true' for debugging
-	defer logging.ConfigureLogLevel(false)
+	logging.SetLogLevelToDebug()
+	defer logging.SetDefaultLogLevel()
 
 	// Prepare the identities necessary for testing
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}

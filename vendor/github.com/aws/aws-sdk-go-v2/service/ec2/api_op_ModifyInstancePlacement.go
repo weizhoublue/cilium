@@ -41,7 +41,7 @@ func (c *Client) ModifyInstancePlacement(ctx context.Context, params *ModifyInst
 		params = &ModifyInstancePlacementInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ModifyInstancePlacement", params, optFns, addOperationModifyInstancePlacementMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ModifyInstancePlacement", params, optFns, c.addOperationModifyInstancePlacementMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -75,22 +75,26 @@ type ModifyInstancePlacementInput struct {
 	HostResourceGroupArn *string
 
 	// Reserved for future use.
-	PartitionNumber int32
+	PartitionNumber *int32
 
 	// The tenancy for the instance.
 	Tenancy types.HostTenancy
+
+	noSmithyDocumentSerde
 }
 
 type ModifyInstancePlacementOutput struct {
 
 	// Is true if the request succeeds, and an error otherwise.
-	Return bool
+	Return *bool
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationModifyInstancePlacementMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationModifyInstancePlacementMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpModifyInstancePlacement{}, middleware.After)
 	if err != nil {
 		return err

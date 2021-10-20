@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
@@ -55,6 +44,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 	AfterAll(func() {
 		deploymentManager.DeleteCilium()
+		kubectl.RedeployDNS()
 		kubectl.CloseSSHClient()
 	})
 
@@ -98,7 +88,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 				"bpf.monitorFlags":       "syn",
 				// Need to disable the host firewall for now due to complexity issue.
 				// See #14552 for details.
-				"hostFirewall": "false",
+				"hostFirewall.enabled": "false",
 			}, DeployCiliumOptionsAndDNS)
 
 			monitorRes, monitorCancel, targetIP := monitorConnectivityAcrossNodes(kubectl)
@@ -180,10 +170,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 	})
 
 	Context("Encapsulation", func() {
-		BeforeEach(func() {
-			SkipIfIntegration(helpers.CIIntegrationGKE)
-		})
-
 		validateBPFTunnelMap := func() {
 			By("Checking that BPF tunnels are in place")
 			ciliumPod, err := kubectl.GetCiliumPodOnNode(helpers.K8s1)
@@ -200,19 +186,27 @@ var _ = Describe("K8sDatapathConfig", func() {
 			Expect(status.IntOutput()).Should(Equal(numEntries), "Did not find expected number of entries in BPF tunnel map")
 		}
 
-		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and VXLAN encapsulation", func() {
-			// FIXME(brb) Currently, the test is broken with CI 4.19 setup. Run it on 4.19
-			//			  once we have kube-proxy disabled there.
-			if !helpers.RunsOnNetNextKernel() {
-				Skip("Skipping test because it is not running with the net-next kernel")
-				return
+		enableVXLANTunneling := func(options map[string]string) {
+			options["tunnel"] = "vxlan"
+			if helpers.RunsOnGKE() {
+				// We need to disable gke.enabled as it disables tunneling.
+				options["gke.enabled"] = "false"
+				options["endpointRoutes.enabled"] = "true"
 			}
+		}
 
+		SkipItIf(func() bool {
+			// IPsec + encapsulation requires Linux 4.19.
+			// We also can't disable KPR on GKE at the moment (cf. #16597).
+			return helpers.RunsWithoutKubeProxy() || helpers.DoesNotRunOn419OrLaterKernel() || helpers.RunsOnGKE()
+		}, "Check connectivity with transparent encryption and VXLAN encapsulation", func() {
 			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
-			deploymentManager.DeployCilium(map[string]string{
+			options := map[string]string{
 				"kubeProxyReplacement": "disabled",
 				"encryption.enabled":   "true",
-			}, DeployCiliumOptionsAndDNS)
+			}
+			enableVXLANTunneling(options)
+			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 			validateBPFTunnelMap()
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test with IPsec between nodes failed")
 		}, 600)
@@ -224,18 +218,20 @@ var _ = Describe("K8sDatapathConfig", func() {
 				return
 			}
 
-			deploymentManager.DeployCilium(map[string]string{
+			options := map[string]string{
 				"sockops.enabled": "true",
-			}, DeployCiliumOptionsAndDNS)
+			}
+			enableVXLANTunneling(options)
+			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 			validateBPFTunnelMap()
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 			Expect(testPodConnectivitySameNodes(kubectl)).Should(BeTrue(), "Connectivity test on same node failed")
 		}, 600)
 
 		It("Check connectivity with VXLAN encapsulation", func() {
-			deploymentManager.DeployCilium(map[string]string{
-				"tunnel": "vxlan",
-			}, DeployCiliumOptionsAndDNS)
+			options := map[string]string{}
+			enableVXLANTunneling(options)
+			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 			validateBPFTunnelMap()
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		}, 600)
@@ -250,10 +246,11 @@ var _ = Describe("K8sDatapathConfig", func() {
 		})
 
 		It("Check vxlan connectivity with per-endpoint routes", func() {
-			deploymentManager.DeployCilium(map[string]string{
-				"tunnel":                 "vxlan",
+			options := map[string]string{
 				"endpointRoutes.enabled": "true",
-			}, DeployCiliumOptionsAndDNS)
+			}
+			enableVXLANTunneling(options)
+			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 
 			if helpers.RunsOn419OrLaterKernel() {
@@ -264,10 +261,12 @@ var _ = Describe("K8sDatapathConfig", func() {
 		})
 
 		It("Check iptables masquerading with random-fully", func() {
-			deploymentManager.DeployCilium(map[string]string{
+			options := map[string]string{
 				"bpf.masquerade":      "false",
 				"iptablesRandomFully": "true",
-			}, DeployCiliumOptionsAndDNS)
+			}
+			enableVXLANTunneling(options)
+			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 
 			By("Test iptables masquerading")
@@ -276,9 +275,11 @@ var _ = Describe("K8sDatapathConfig", func() {
 		})
 
 		It("Check iptables masquerading without random-fully", func() {
-			deploymentManager.DeployCilium(map[string]string{
+			options := map[string]string{
 				"bpf.masquerade": "false",
-			}, DeployCiliumOptionsAndDNS)
+			}
+			enableVXLANTunneling(options)
+			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 
 			By("Test iptables masquerading")
@@ -323,9 +324,6 @@ var _ = Describe("K8sDatapathConfig", func() {
 			// Needed to bypass bug with masquerading when devices are set. See #12141.
 			if helpers.DoesNotRunWithKubeProxyReplacement() {
 				options["masquerade"] = "false"
-				// This test fails if the hostfw is enabled (and devices specified).
-				// See #12205 for details.
-				options["hostFirewall"] = "false"
 			}
 			deploymentManager.DeployCilium(options, DeployCiliumOptionsAndDNS)
 
@@ -684,13 +682,20 @@ var _ = Describe("K8sDatapathConfig", func() {
 		}, 600)
 	})
 
-	Context("Transparent encryption DirectRouting", func() {
-		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and direct routing", func() {
-			SkipIfIntegration(helpers.CIIntegrationGKE)
+	SkipContextIf(func() bool {
+		return helpers.RunsOnGKE() || helpers.RunsWithoutKubeProxy()
+	}, "Transparent encryption DirectRouting", func() {
+		var privateIface string
+		BeforeAll(func() {
+			Eventually(func() (string, error) {
+				iface, err := kubectl.GetPrivateIface()
+				privateIface = iface
+				return iface, err
+			}, helpers.MidCommandTimeout, time.Second).ShouldNot(BeEmpty(),
+				"Unable to determine private iface")
+		})
 
-			privateIface, err := kubectl.GetPrivateIface()
-			Expect(err).Should(BeNil(), "Unable to determine private iface")
-
+		It("Check connectivity with transparent encryption and direct routing", func() {
 			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
 			deploymentManager.DeployCilium(map[string]string{
 				"tunnel":                     "disabled",
@@ -698,18 +703,13 @@ var _ = Describe("K8sDatapathConfig", func() {
 				"encryption.enabled":         "true",
 				"encryption.ipsec.interface": privateIface,
 				"devices":                    "",
-				"hostFirewall":               "false",
+				"hostFirewall.enabled":       "false",
 				"kubeProxyReplacement":       "disabled",
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		})
 
-		// This test is broken because of #12205. In short, when bpf_host is
-		// loading on the native device, the source identity of packet on the
-		// destination node is resolved to WORLD and policy enforcement fails.
-		XIt("Check connectivity with transparent encryption and direct routing with bpf_host", func() {
-			SkipIfIntegration(helpers.CIIntegrationGKE)
-
+		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and direct routing with bpf_host", func() {
 			privateIface, err := kubectl.GetPrivateIface()
 			Expect(err).Should(BeNil(), "Unable to determine the private interface")
 			defaultIface, err := kubectl.GetDefaultIface()
@@ -723,7 +723,8 @@ var _ = Describe("K8sDatapathConfig", func() {
 				"encryption.enabled":         "true",
 				"encryption.ipsec.interface": privateIface,
 				"devices":                    devices,
-				"hostFirewall":               "false",
+				"hostFirewall.enabled":       "false",
+				"kubeProxyReplacement":       "disabled",
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		})
@@ -778,16 +779,16 @@ var _ = Describe("K8sDatapathConfig", func() {
 			return !helpers.IsIntegration(helpers.CIIntegrationGKE)
 		}, "Check connectivity with IPv6 disabled", func() {
 			deploymentManager.DeployCilium(map[string]string{
-				"ipv4.enabled": "true",
-				"ipv6.enabled": "false",
-				"hostFirewall": "true",
+				"ipv4.enabled":         "true",
+				"ipv6.enabled":         "false",
+				"hostFirewall.enabled": "true",
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		})
 
 		It("With VXLAN", func() {
 			options := map[string]string{
-				"hostFirewall": "true",
+				"hostFirewall.enabled": "true",
 			}
 			if helpers.RunsOnGKE() {
 				options["gke.enabled"] = "false"
@@ -799,7 +800,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 		It("With VXLAN and endpoint routes", func() {
 			options := map[string]string{
-				"hostFirewall":           "true",
+				"hostFirewall.enabled":   "true",
 				"endpointRoutes.enabled": "true",
 			}
 			if helpers.RunsOnGKE() {
@@ -810,11 +811,10 @@ var _ = Describe("K8sDatapathConfig", func() {
 			testHostFirewall(kubectl)
 		})
 
-		// We need to skip this test when using kube-proxy because of #14859.
-		SkipItIf(helpers.DoesNotRunWithKubeProxyReplacement, "With native routing", func() {
+		It("With native routing", func() {
 			options := map[string]string{
-				"hostFirewall": "true",
-				"tunnel":       "disabled",
+				"hostFirewall.enabled": "true",
+				"tunnel":               "disabled",
 			}
 			// We don't want to run with per-endpoint routes (enabled by
 			// gke.enabled) for this test.
@@ -827,10 +827,9 @@ var _ = Describe("K8sDatapathConfig", func() {
 			testHostFirewall(kubectl)
 		})
 
-		// We need to skip this test when using kube-proxy because of #14859.
-		SkipItIf(helpers.DoesNotRunWithKubeProxyReplacement, "With native routing and endpoint routes", func() {
+		It("With native routing and endpoint routes", func() {
 			options := map[string]string{
-				"hostFirewall":           "true",
+				"hostFirewall.enabled":   "true",
 				"tunnel":                 "disabled",
 				"endpointRoutes.enabled": "true",
 			}
@@ -890,7 +889,7 @@ func testHostFirewall(kubectl *helpers.Kubectl) {
 
 	demoHostPolicies := helpers.ManifestGet(kubectl.BasePath(), "host-policies.yaml")
 	By(fmt.Sprintf("Applying policies %s", demoHostPolicies))
-	_, err := kubectl.CiliumPolicyAction(randomNs, demoHostPolicies, helpers.KubectlApply, helpers.HelperTimeout)
+	_, err := kubectl.CiliumClusterwidePolicyAction(demoHostPolicies, helpers.KubectlApply, helpers.HelperTimeout)
 	ExpectWithOffset(1, err).Should(BeNil(), fmt.Sprintf("Error creating resource %s: %s", demoHostPolicies, err))
 
 	var wg sync.WaitGroup

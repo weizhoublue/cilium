@@ -20,7 +20,7 @@ func (c *Client) DescribeTransitGatewayAttachments(ctx context.Context, params *
 		params = &DescribeTransitGatewayAttachmentsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayAttachments", params, optFns, addOperationDescribeTransitGatewayAttachmentsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayAttachments", params, optFns, c.addOperationDescribeTransitGatewayAttachmentsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ type DescribeTransitGatewayAttachmentsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters. The possible values are:
 	//
@@ -50,35 +50,38 @@ type DescribeTransitGatewayAttachmentsInput struct {
 	// * resource-id - The ID of the resource.
 	//
 	// * resource-owner-id -
-	// The ID of the AWS account that owns the resource.
-	//
-	// * resource-type - The
-	// resource type. Valid values are vpc | vpn | direct-connect-gateway | peering |
-	// connect.
-	//
-	// * state - The state of the attachment. Valid values are available |
-	// deleted | deleting | failed | failing | initiatingRequest | modifying |
-	// pendingAcceptance | pending | rollingBack | rejected | rejecting.
+	// The ID of the Amazon Web Services account that owns the resource.
 	//
 	// *
-	// transit-gateway-attachment-id - The ID of the attachment.
+	// resource-type - The resource type. Valid values are vpc | vpn |
+	// direct-connect-gateway | peering | connect.
 	//
-	// * transit-gateway-id
-	// - The ID of the transit gateway.
+	// * state - The state of the
+	// attachment. Valid values are available | deleted | deleting | failed | failing |
+	// initiatingRequest | modifying | pendingAcceptance | pending | rollingBack |
+	// rejected | rejecting.
 	//
-	// * transit-gateway-owner-id - The ID of the AWS
-	// account that owns the transit gateway.
+	// * transit-gateway-attachment-id - The ID of the
+	// attachment.
+	//
+	// * transit-gateway-id - The ID of the transit gateway.
+	//
+	// *
+	// transit-gateway-owner-id - The ID of the Amazon Web Services account that owns
+	// the transit gateway.
 	Filters []types.Filter
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
 
 	// The IDs of the attachments.
 	TransitGatewayAttachmentIds []string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeTransitGatewayAttachmentsOutput struct {
@@ -92,9 +95,11 @@ type DescribeTransitGatewayAttachmentsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeTransitGatewayAttachmentsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeTransitGatewayAttachmentsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeTransitGatewayAttachments{}, middleware.After)
 	if err != nil {
 		return err
@@ -192,8 +197,8 @@ func NewDescribeTransitGatewayAttachmentsPaginator(client DescribeTransitGateway
 	}
 
 	options := DescribeTransitGatewayAttachmentsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -222,7 +227,11 @@ func (p *DescribeTransitGatewayAttachmentsPaginator) NextPage(ctx context.Contex
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeTransitGatewayAttachments(ctx, &params, optFns...)
 	if err != nil {

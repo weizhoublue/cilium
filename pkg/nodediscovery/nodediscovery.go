@@ -1,22 +1,12 @@
-// Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package nodediscovery
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -48,6 +38,7 @@ import (
 	cnitypes "github.com/cilium/cilium/plugins/cilium-cni/types"
 
 	"github.com/sirupsen/logrus"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -62,6 +53,10 @@ const (
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, nodeDiscoverySubsys)
 
+type k8sNodeGetter interface {
+	GetK8sNode(ctx context.Context, nodeName string) (*corev1.Node, error)
+}
+
 // NodeDiscovery represents a node discovery action
 type NodeDiscovery struct {
 	Manager               *nodemanager.Manager
@@ -71,6 +66,7 @@ type NodeDiscovery struct {
 	Registered            chan struct{}
 	LocalStateInitialized chan struct{}
 	NetConf               *cnitypes.NetConf
+	k8sNodeGetter         k8sNodeGetter
 }
 
 func enableLocalNodeRoute() bool {
@@ -162,7 +158,7 @@ func (n *NodeDiscovery) JoinCluster(nodeName string) {
 		node.SetIPv4AllocRange(resp.IPv4AllocCIDR)
 	}
 	if resp.IPv6AllocCIDR != nil {
-		node.SetIPv6NodeRange(resp.IPv6AllocCIDR.IPNet)
+		node.SetIPv6NodeRange(resp.IPv6AllocCIDR)
 	}
 	identity.SetLocalNodeID(resp.NodeIdentity)
 }
@@ -352,35 +348,56 @@ func (n *NodeDiscovery) mutateNodeResource(nodeResource *ciliumv2.CiliumNode) er
 
 	nodeResource.Spec.Addresses = []ciliumv2.NodeAddress{}
 
-	// Tie the CiliumNode custom resource lifecycle to the lifecycle of the
-	// Kubernetes node
-	if k8sNode, err := k8s.GetNode(k8s.Client(), nodeTypes.GetName()); err != nil {
-		log.WithError(err).Warning("Kubernetes node resource representing own node is not available, cannot set OwnerReference")
-	} else {
-		nodeResource.ObjectMeta.OwnerReferences = []metav1.OwnerReference{{
-			APIVersion: "v1",
-			Kind:       "Node",
-			Name:       nodeTypes.GetName(),
-			UID:        k8sNode.UID,
-		}}
-		providerID = k8sNode.Spec.ProviderID
+	// If we are unable to fetch the K8s Node resource and the CiliumNode does
+	// not have an OwnerReference set, then somehow we are running in an
+	// environment where only the CiliumNode exists. Do not proceed as this is
+	// unexpected.
+	//
+	// Note that we can rely on the OwnerReference to be set on the CiliumNode
+	// as this was added in sufficiently earlier versions of Cilium (v1.6).
+	// Source:
+	// https://github.com/cilium/cilium/commit/5c365f2c6d7930dcda0b8f0d5e6b826a64022a4f
+	k8sNode, err := n.k8sNodeGetter.GetK8sNode(
+		context.TODO(),
+		nodeTypes.GetName(),
+	)
+	switch {
+	case err != nil && k8serrors.IsNotFound(err) && len(nodeResource.ObjectMeta.OwnerReferences) == 0:
+		log.WithError(err).WithField(
+			logfields.NodeName, nodeTypes.GetName(),
+		).Fatal(
+			"Kubernetes Node resource does not exist, setting OwnerReference on " +
+				"CiliumNode is impossible. This is unexpected. Please investigate " +
+				"why Cilium is running on a Node that supposedly does not exist " +
+				"according to Kubernetes.",
+		)
+	case err != nil && !k8serrors.IsNotFound(err):
+		return fmt.Errorf("failed to fetch Kubernetes Node resource: %w", err)
+	}
 
-		// Get the addresses from k8s node and add them as part of Cilium Node.
-		// Cilium Node should contain all addresses from k8s.
-		nodeInterface := k8s.ConvertToNode(k8sNode)
-		typesNode := nodeInterface.(*k8sTypes.Node)
-		k8sNodeParsed := k8s.ParseNode(typesNode, source.Unspec)
-		k8sNodeAddresses = k8sNodeParsed.IPAddresses
+	nodeResource.ObjectMeta.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "v1",
+		Kind:       "Node",
+		Name:       nodeTypes.GetName(),
+		UID:        k8sNode.UID,
+	}}
+	providerID = k8sNode.Spec.ProviderID
 
-		nodeResource.ObjectMeta.Labels = k8sNodeParsed.Labels
+	// Get the addresses from k8s node and add them as part of Cilium Node.
+	// Cilium Node should contain all addresses from k8s.
+	nodeInterface := k8s.ConvertToNode(k8sNode)
+	typesNode := nodeInterface.(*k8sTypes.Node)
+	k8sNodeParsed := k8s.ParseNode(typesNode, source.Unspec)
+	k8sNodeAddresses = k8sNodeParsed.IPAddresses
 
-		for _, k8sAddress := range k8sNodeAddresses {
-			k8sAddressStr := k8sAddress.IP.String()
-			nodeResource.Spec.Addresses = append(nodeResource.Spec.Addresses, ciliumv2.NodeAddress{
-				Type: k8sAddress.Type,
-				IP:   k8sAddressStr,
-			})
-		}
+	nodeResource.ObjectMeta.Labels = k8sNodeParsed.Labels
+
+	for _, k8sAddress := range k8sNodeAddresses {
+		k8sAddressStr := k8sAddress.IP.String()
+		nodeResource.Spec.Addresses = append(nodeResource.Spec.Addresses, ciliumv2.NodeAddress{
+			Type: k8sAddress.Type,
+			IP:   k8sAddressStr,
+		})
 	}
 
 	for _, address := range n.LocalNode.IPAddresses {
@@ -466,22 +483,14 @@ func (n *NodeDiscovery) mutateNodeResource(nodeResource *ciliumv2.CiliumNode) er
 		if c := n.NetConf; c != nil {
 			if c.IPAM.MinAllocate != 0 {
 				nodeResource.Spec.IPAM.MinAllocate = c.IPAM.MinAllocate
-				// OBSOLETE: Left for backwards compatibility with <=1.7. Remove in >=1.11
-				nodeResource.Spec.ENI.MinAllocate = c.IPAM.MinAllocate
 			} else if c.ENI.MinAllocate != 0 {
 				nodeResource.Spec.IPAM.MinAllocate = c.ENI.MinAllocate
-				// OBSOLETE: Left for backwards compatibility with <=1.7. Remove in >=1.11
-				nodeResource.Spec.ENI.MinAllocate = c.ENI.MinAllocate
 			}
 
 			if c.IPAM.PreAllocate != 0 {
 				nodeResource.Spec.IPAM.PreAllocate = c.IPAM.PreAllocate
-				// OBSOLETE: Left for backwards compatibility with <=1.7. Remove in >=1.11
-				nodeResource.Spec.ENI.PreAllocate = c.IPAM.PreAllocate
 			} else if c.ENI.PreAllocate != 0 {
 				nodeResource.Spec.IPAM.PreAllocate = c.ENI.PreAllocate
-				// OBSOLETE: Left for backwards compatibility with <=1.7. Remove in >=1.11
-				nodeResource.Spec.ENI.PreAllocate = c.ENI.PreAllocate
 			}
 
 			if c.ENI.FirstInterfaceIndex != nil {
@@ -490,6 +499,10 @@ func (n *NodeDiscovery) mutateNodeResource(nodeResource *ciliumv2.CiliumNode) er
 
 			if len(c.ENI.SecurityGroups) > 0 {
 				nodeResource.Spec.ENI.SecurityGroups = c.ENI.SecurityGroups
+			}
+
+			if len(c.ENI.SubnetIDs) > 0 {
+				nodeResource.Spec.ENI.SubnetIDs = c.ENI.SubnetIDs
 			}
 
 			if len(c.ENI.SubnetTags) > 0 {
@@ -504,8 +517,6 @@ func (n *NodeDiscovery) mutateNodeResource(nodeResource *ciliumv2.CiliumNode) er
 		}
 
 		nodeResource.Spec.InstanceID = instanceID
-		// OBSOLETE: Left for backwards compatibility with <=1.7. Remove in >=1.11
-		nodeResource.Spec.ENI.InstanceID = instanceID
 		nodeResource.Spec.ENI.InstanceType = instanceType
 		nodeResource.Spec.ENI.AvailabilityZone = availabilityZone
 
@@ -596,6 +607,10 @@ func (n *NodeDiscovery) mutateNodeResource(nodeResource *ciliumv2.CiliumNode) er
 	}
 
 	return nil
+}
+
+func (n *NodeDiscovery) RegisterK8sNodeGetter(k8sNodeGetter k8sNodeGetter) {
+	n.k8sNodeGetter = k8sNodeGetter
 }
 
 func getInt(i int) *int {

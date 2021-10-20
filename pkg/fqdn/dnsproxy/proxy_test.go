@@ -1,17 +1,7 @@
-// Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2018-2021 Authors of Cilium
 
+//go:build privileged_tests
 // +build privileged_tests
 
 package dnsproxy
@@ -22,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +36,7 @@ import (
 	"github.com/cilium/cilium/pkg/source"
 	"github.com/cilium/cilium/pkg/testutils/allocator"
 
+	"github.com/golang/groupcache/lru"
 	"github.com/miekg/dns"
 	. "gopkg.in/check.v1"
 )
@@ -181,12 +173,14 @@ var (
 
 func (s *DNSProxyTestSuite) SetUpTest(c *C) {
 	// Add these identities
+	wg := &sync.WaitGroup{}
 	testSelectorCache.UpdateIdentities(cache.IdentityCache{
 		dstID1: labels.Labels{"Dst1": labels.NewLabel("Dst1", "test", labels.LabelSourceK8s)}.LabelArray(),
 		dstID2: labels.Labels{"Dst2": labels.NewLabel("Dst2", "test", labels.LabelSourceK8s)}.LabelArray(),
 		dstID3: labels.Labels{"Dst3": labels.NewLabel("Dst3", "test", labels.LabelSourceK8s)}.LabelArray(),
 		dstID4: labels.Labels{"Dst4": labels.NewLabel("Dst4", "test", labels.LabelSourceK8s)}.LabelArray(),
-	}, nil)
+	}, nil, wg)
+	wg.Wait()
 
 	s.repo = policy.NewPolicyRepository(nil, nil)
 	s.dnsTCPClient = &dns.Client{Net: "tcp", Timeout: time.Second, SingleInflight: true}
@@ -639,11 +633,13 @@ func (s *DNSProxyTestSuite) TestFullPathDependence(c *C) {
 			Re: restore.RuleRegex{Regexp: s.proxy.allowed[epID1][54][cachedWildcardSelector]},
 		}},
 	}
-	restored1 := s.proxy.GetRules(uint16(epID1)).Sort()
+	restored1, _ := s.proxy.GetRules(uint16(epID1))
+	restored1.Sort()
 	c.Assert(restored1, checker.DeepEquals, expected1)
 
 	expected2 := restore.DNSRules{}
-	restored2 := s.proxy.GetRules(uint16(epID2)).Sort()
+	restored2, _ := s.proxy.GetRules(uint16(epID2))
+	restored2.Sort()
 	c.Assert(restored2, checker.DeepEquals, expected2)
 
 	expected3 := restore.DNSRules{
@@ -658,7 +654,8 @@ func (s *DNSProxyTestSuite) TestFullPathDependence(c *C) {
 			Re:  restore.RuleRegex{Regexp: s.proxy.allowed[epID3][53][cachedDstID4Selector]},
 		}}.Sort(),
 	}
-	restored3 := s.proxy.GetRules(uint16(epID3)).Sort()
+	restored3, _ := s.proxy.GetRules(uint16(epID3))
+	restored3.Sort()
 	c.Assert(restored3, checker.DeepEquals, expected3)
 
 	// Test with limited set of allowed IPs
@@ -677,7 +674,8 @@ func (s *DNSProxyTestSuite) TestFullPathDependence(c *C) {
 			Re: restore.RuleRegex{Regexp: s.proxy.allowed[epID1][54][cachedWildcardSelector]},
 		}},
 	}
-	restored1b := s.proxy.GetRules(uint16(epID1)).Sort()
+	restored1b, _ := s.proxy.GetRules(uint16(epID1))
+	restored1b.Sort()
 	c.Assert(restored1b, checker.DeepEquals, expected1b)
 
 	// unlimited again
@@ -940,7 +938,8 @@ func (s *DNSProxyTestSuite) TestRestoredEndpoint(c *C) {
 	c.Assert(response.Answer[0].String(), Equals, "cilium.io.\t60\tIN\tA\t1.1.1.1", Commentf("Proxy returned incorrect RRs"))
 
 	// Get restored rules
-	restored := s.proxy.GetRules(uint16(epID1)).Sort()
+	restored, _ := s.proxy.GetRules(uint16(epID1))
+	restored.Sort()
 
 	// remove rules
 	err = s.proxy.UpdateAllowed(epID1, dstPort, nil)
@@ -978,4 +977,64 @@ func (s *DNSProxyTestSuite) TestRestoredEndpoint(c *C) {
 	c.Assert(exists, Equals, false)
 
 	s.restoring = false
+}
+
+type selectorMock struct {
+}
+
+func (t selectorMock) GetSelections() []identity.NumericIdentity {
+	panic("implement me")
+}
+
+func (t selectorMock) Selects(nid identity.NumericIdentity) bool {
+	panic("implement me")
+}
+
+func (t selectorMock) IsWildcard() bool {
+	panic("implement me")
+}
+
+func (t selectorMock) IsNone() bool {
+	panic("implement me")
+}
+
+func (t selectorMock) String() string {
+	panic("implement me")
+}
+
+func Benchmark_perEPAllow_setPortRulesForID(b *testing.B) {
+	const (
+		nMatchPatterns = 100
+	)
+
+	var selectorA, selectorB *selectorMock
+	newRules := policy.L7DataMap{
+		selectorA: nil,
+		selectorB: nil,
+	}
+
+	var portRuleDNS []api.PortRuleDNS
+	for i := 0; i < nMatchPatterns; i++ {
+		portRuleDNS = append(portRuleDNS, api.PortRuleDNS{
+			MatchPattern: "kubernetes.default.svc.cluster.local",
+		})
+	}
+
+	for selector := range newRules {
+		newRules[selector] = &policy.PerSelectorPolicy{
+			L7Rules: api.L7Rules{
+				DNS: portRuleDNS,
+			},
+		}
+	}
+	pea := perEPAllow{}
+
+	lru := lru.New(128)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for epID := uint64(0); epID < 20; epID++ {
+			pea.setPortRulesForID(lru, epID, 8053, newRules)
+		}
+	}
 }

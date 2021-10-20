@@ -14,14 +14,14 @@ import (
 // Creates a Connect attachment from a specified transit gateway attachment. A
 // Connect attachment is a GRE-based tunnel attachment that you can use to
 // establish a connection between a transit gateway and an appliance. A Connect
-// attachment uses an existing VPC or AWS Direct Connect attachment as the
-// underlying transport mechanism.
+// attachment uses an existing VPC or Amazon Web Services Direct Connect attachment
+// as the underlying transport mechanism.
 func (c *Client) CreateTransitGatewayConnect(ctx context.Context, params *CreateTransitGatewayConnectInput, optFns ...func(*Options)) (*CreateTransitGatewayConnectOutput, error) {
 	if params == nil {
 		params = &CreateTransitGatewayConnectInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayConnect", params, optFns, addOperationCreateTransitGatewayConnectMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayConnect", params, optFns, c.addOperationCreateTransitGatewayConnectMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -38,8 +38,8 @@ type CreateTransitGatewayConnectInput struct {
 	// This member is required.
 	Options *types.CreateTransitGatewayConnectRequestOptions
 
-	// The ID of the transit gateway attachment. You can specify a VPC attachment or a
-	// AWS Direct Connect attachment.
+	// The ID of the transit gateway attachment. You can specify a VPC attachment or
+	// Amazon Web Services Direct Connect attachment.
 	//
 	// This member is required.
 	TransportTransitGatewayAttachmentId *string
@@ -48,10 +48,12 @@ type CreateTransitGatewayConnectInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The tags to apply to the Connect attachment.
 	TagSpecifications []types.TagSpecification
+
+	noSmithyDocumentSerde
 }
 
 type CreateTransitGatewayConnectOutput struct {
@@ -61,9 +63,11 @@ type CreateTransitGatewayConnectOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCreateTransitGatewayConnectMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCreateTransitGatewayConnectMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCreateTransitGatewayConnect{}, middleware.After)
 	if err != nil {
 		return err

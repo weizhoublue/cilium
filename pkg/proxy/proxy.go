@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package proxy
 
@@ -51,7 +40,6 @@ const (
 
 type DatapathUpdater interface {
 	InstallProxyRules(proxyPort uint16, ingress bool, name string) error
-	RemoveProxyRules(proxyPort uint16, ingress bool, name string) error
 	SupportsOriginalSourceAddr() bool
 }
 
@@ -262,22 +250,17 @@ func (p *Proxy) ackProxyPort(pp *ProxyPort) error {
 		// in the datapath, but means that the datapath rules may exist even
 		// if the proxy is not currently configured.
 
-		// Remove old rules, if any and for different port
-		if pp.rulesPort != 0 && pp.rulesPort != pp.proxyPort {
-			scopedLog.Infof("Removing old proxy port rules for %s:%d", pp.name, pp.rulesPort)
-			p.datapathUpdater.RemoveProxyRules(pp.rulesPort, pp.ingress, pp.name)
-			pp.rulesPort = 0
-		}
 		// Add new rules, if needed
 		if pp.rulesPort != pp.proxyPort {
+			// Add rules for the new port
 			// This should always succeed if we have managed to start-up properly
 			scopedLog.Infof("Adding new proxy port rules for %s:%d", pp.name, pp.proxyPort)
 			err := p.datapathUpdater.InstallProxyRules(pp.proxyPort, pp.ingress, pp.name)
 			if err != nil {
-				return fmt.Errorf("Can't install proxy rules for %s: %s", pp.name, err)
+				return fmt.Errorf("Cannot install proxy rules for %s: %s", pp.name, err)
 			}
+			pp.rulesPort = pp.proxyPort
 		}
-		pp.rulesPort = pp.proxyPort
 	}
 	pp.nRedirects++
 	return nil
@@ -382,8 +365,7 @@ func (p *Proxy) ReinstallRules() {
 			// This should always succeed if we have managed to start-up properly
 			err := p.datapathUpdater.InstallProxyRules(pp.rulesPort, pp.ingress, pp.name)
 			if err != nil {
-				proxyPortsMutex.Unlock()
-				panic(fmt.Sprintf("Can't install proxy rules for %s: %s", pp.name, err))
+				log.WithError(err).Errorf("Can't install proxy rules for %s", pp.name)
 			}
 		}
 	}
@@ -526,10 +508,7 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 policy.ProxyPolicy, id string, localEn
 				err := p.ackProxyPort(pp)
 				proxyPortsMutex.Unlock()
 				if err != nil {
-					// Finalize functions can't error out. This failure can only
-					// happen if there is an internal Cilium logic error regarding
-					// installation of iptables rules.
-					panic(err)
+					log.WithError(err).Errorf("Datapath proxy redirection cannot be enabled for %s, L7 proxy may be bypassed", pp.name)
 				}
 			}
 			// Must return the proxy port when successful

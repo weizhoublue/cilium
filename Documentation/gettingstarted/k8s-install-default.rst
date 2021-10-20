@@ -23,10 +23,7 @@ to the :ref:`k8s_install_advanced` guide.
 Should you encounter any issues during the installation, please refer to the
 :ref:`troubleshooting_k8s` section and / or seek help on the `Slack channel`.
 
-Install the Cilium CLI
-======================
-
-.. include:: install-cli.rst
+.. _create_cluster:
 
 Create the Cluster
 ===================
@@ -38,33 +35,81 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
 
     .. group-tab:: GKE
 
-       The following command creates a Kubernetes cluster using `Google
+       The following commands create a Kubernetes cluster using `Google
        Kubernetes Engine <https://cloud.google.com/kubernetes-engine>`_.  See
        `Installing Google Cloud SDK <https://cloud.google.com/sdk/install>`_
        for instructions on how to install ``gcloud`` and prepare your
        account.
 
-       .. code-block:: shell-session
+       .. code-block:: bash
 
            export NAME="$(whoami)-$RANDOM"
-           gcloud container clusters create "${NAME}" --zone us-west2-a 
+           # Create the node pool with the following taint to guarantee that
+           # Pods are only scheduled in the node when Cilium is ready.
+           gcloud container clusters create "${NAME}" \
+            --node-taints node.cilium.io/agent-not-ready=true:NoSchedule \
+            --zone us-west2-a
            gcloud container clusters get-credentials "${NAME}" --zone us-west2-a
 
     .. group-tab:: AKS
 
-       The following command creates a Kubernetes cluster using `Azure
+       The following commands create a Kubernetes cluster using `Azure
        Kubernetes Service <https://docs.microsoft.com/en-us/azure/aks/>`_. See
        `Azure Cloud CLI
        <https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest>`_
        for instructions on how to install ``az`` and prepare your account.
 
-       .. code-block:: shell-session
+       For more details about why node pools must be set up in this way on AKS,
+       see the note below the commands.
+
+       .. code-block:: bash
 
            export NAME="$(whoami)-$RANDOM"
-           export AZURE_RESOURCE_GROUP="aks-cilium-group"
+           export AZURE_RESOURCE_GROUP="${NAME}-group"
            az group create --name "${AZURE_RESOURCE_GROUP}" -l westus2
-           az aks create --resource-group "${AZURE_RESOURCE_GROUP}" --name "${NAME}" --network-plugin azure
-           az aks get-credentials --name "${NAME}" --resource-group "${AZURE_RESOURCE_GROUP}"
+
+           # Create AKS cluster
+           az aks create \
+             --resource-group "${AZURE_RESOURCE_GROUP}" \
+             --name "${NAME}" \
+             --network-plugin azure \
+             --node-count 1
+
+           # Get name of initial system node pool
+           nodepool_to_delete=$(az aks nodepool list \
+             --resource-group "${AZURE_RESOURCE_GROUP}" \
+             --cluster-name "${NAME}" \
+             --output tsv --query "[0].name")
+
+           # Create system node pool tainted with `CriticalAddonsOnly=true:NoSchedule`
+           az aks nodepool add \
+             --resource-group "${AZURE_RESOURCE_GROUP}" \
+             --cluster-name "${NAME}" \
+             --name systempool \
+             --mode system \
+             --node-count 1 \
+             --node-taints "CriticalAddonsOnly=true:NoSchedule" \
+             --no-wait
+
+           # Create user node pool tainted with `node.cilium.io/agent-not-ready=true:NoSchedule`
+           az aks nodepool add \
+             --resource-group "${AZURE_RESOURCE_GROUP}" \
+             --cluster-name "${NAME}" \
+             --name userpool \
+             --mode user \
+             --node-count 2 \
+             --node-taints "node.cilium.io/agent-not-ready=true:NoSchedule" \
+             --no-wait
+
+           # Delete the initial system node pool
+           az aks nodepool delete \
+             --resource-group "${AZURE_RESOURCE_GROUP}" \
+             --cluster-name "${NAME}" \
+             --name "${nodepool_to_delete}" \
+             --no-wait
+
+           # Get the credentials to access the cluster with kubectl
+           az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP}" --name "${NAME}"
 
        .. attention::
 
@@ -72,9 +117,33 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
            cluster, as this will cause the Azure CNI plugin to install unwanted
            iptables rules.
 
+       .. note::
+
+          `Node pools <https://aka.ms/aks/nodepools>`_ must be tainted with
+          ``node.cilium.io/agent-not-ready=true:NoSchedule`` to ensure that
+          applications pods will only be scheduled once Cilium is ready to
+          manage them, however on AKS:
+
+          * It is not possible to assign taints to the initial node pool at this
+            time, cf. `Azure/AKS#1402 <https://github.com/Azure/AKS/issues/1402>`_.
+
+          * It is not possible to assign custom node taints such as ``node.cilium.io/agent-not-ready=true:NoSchedule``
+            to system node pools, cf. `Azure/AKS#2578 <https://github.com/Azure/AKS/issues/2578>`_.
+
+          In order to have Cilium properly manage application pods on AKS with
+          these limitations, the operations above:
+
+          * Replace the initial node pool with a new system node pool tainted
+            with ``CriticalAddonsOnly=true:NoSchedule``, preventing application
+            pods from being scheduled on it.
+
+          * Create a secondary user node pool tainted with ``node.cilium.io/agent-not-ready=true:NoSchedule``,
+            preventing application pods from being scheduled on it until Cilium
+            is ready to manage them.
+
     .. group-tab:: EKS
 
-       The following command creates a Kubernetes cluster with ``eksctl``
+       The following commands create a Kubernetes cluster with ``eksctl``
        using `Amazon Elastic Kubernetes Service
        <https://aws.amazon.com/eks/>`_.  See `eksctl Installation
        <https://github.com/weaveworks/eksctl>`_ for instructions on how to
@@ -83,7 +152,26 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
        .. code-block:: shell-session
 
            export NAME="$(whoami)-$RANDOM"
-           eksctl create cluster --name "${NAME}" --region eu-west-1 --without-nodegroup
+           cat <<EOF >eks-config.yaml
+           apiVersion: eksctl.io/v1alpha5
+           kind: ClusterConfig
+
+           metadata:
+             name: ${NAME}
+             region: eu-west-1
+
+           managedNodeGroups:
+           - name: ng-1
+             desiredCapacity: 2
+             privateNetworking: true
+             # taint nodes so that application pods are
+             # not scheduled until Cilium is deployed.
+             taints:
+              - key: "node.cilium.io/agent-not-ready"
+                value: "true"
+                effect: "NoSchedule"
+           EOF
+           eksctl create cluster -f ./eks-config.yaml
 
     .. group-tab:: kind
 
@@ -99,10 +187,22 @@ to create a Kubernetes cluster locally or using a managed Kubernetes service:
 
        Install minikube >= v1.5.2 as per minikube documentation: 
        `Install Minikube <https://kubernetes.io/docs/tasks/tools/install-minikube/>`_.
+       The following command will bring up a single node minikube cluster prepared for installing cilium.
 
        .. code-block:: shell-session
 
-          minikube start --network-plugin=cni
+          minikube start --network-plugin=cni --cni=false
+
+       .. note::
+
+          From minikube v1.12.1+, cilium networking plugin can be enabled directly with
+          ``--cni=cilium`` parameter in ``minikube start`` command. However, this may not
+          install the latest version of cilium.
+
+Install the Cilium CLI
+======================
+
+.. include:: cli-download.rst
 
 Install Cilium
 ==============
@@ -159,14 +259,11 @@ You can install Cilium on any Kubernetes cluster. Pick one of the options below:
 
        **Install Cilium:**
 
-       Install Cilium into the EKS cluster. Set ``--wait=false`` as no nodes
-       exist yet. Then scale up the number of nodes and wait for Cilium to
-       bootstrap successfully.
+       Install Cilium into the EKS cluster.
 
        .. code-block:: shell-session
 
-           cilium install --wait=false
-           eksctl create nodegroup --cluster "${NAME}" --region eu-west-1 --nodes 2 
+           cilium install
            cilium status --wait
 
     .. group-tab:: OpenShift
@@ -225,6 +322,10 @@ pods are failing to be deployed.
    was deployed and the installer has automatically restarted them to ensure
    all pods get networking provided by Cilium.
 
-.. include:: k8s-install-validate.rst
+Validate the Installation
+=========================
+
+.. include:: cli-status.rst
+.. include:: cli-connectivity-test.rst
 
 .. include:: next-steps.rst

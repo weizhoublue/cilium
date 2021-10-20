@@ -17,7 +17,7 @@ On Freeze date
 
 #. Fork a new release branch from master:
 
-   ::
+   .. code-block:: shell-session
 
        git checkout master; git pull origin master
        git checkout -b v1.2
@@ -32,17 +32,23 @@ On Freeze date
    ::
 
         * @cilium/janitors
-        .github/workflows/ @cilium/maintainers
+        .github/workflows/ @cilium/cilium-maintainers
         api/ @cilium/api
         pkg/apisocket/ @cilium/api
         pkg/monitor/payload @cilium/api
         pkg/policy/api/ @cilium/api
         pkg/proxy/accesslog @cilium/api
 
+#. Delete the ``stable.txt`` file.
+
+   .. code-block:: shell-session
+
+        git rm stable.txt
+
 #. Create a new project named "X.Y.Z" to automatically track the backports
    for that particular release. `Direct Link: <https://github.com/cilium/cilium/projects/new>`_
 
-#. Copy the ``.github/cilium-actions.yml`` from the previous release ``vX.Y-1``
+#. Copy the ``.github/maintainers-little-helper.yaml`` from the previous release ``vX.Y-1``
    change the contents to be relevant for the release ``vX.Y`` and set the
    ``project:`` to be the generated link created by the previous step. The link
    should be something like: ``https://github.com/cilium/cilium/projects/NNN``
@@ -55,7 +61,7 @@ On Freeze date
 #. Commit changes, open a pull request against the new ``v1.2`` branch, and get
    the pull request merged
 
-   ::
+   .. code-block:: shell-session
 
        git checkout -b pr/prepare-v1.2
        git add [...]
@@ -70,7 +76,7 @@ On Freeze date
    #. ``needs-backport/1.2``
 
 
-#. Checkout to master and update the ``.github/cilium-actions.yml`` to have
+#. Checkout to master and update the ``.github/maintainers-little-helper.yaml`` to have
    all the necessary configurations for the backport of the new ``vX.Y`` branch.
    Specifically, ensure that:
 
@@ -78,13 +84,13 @@ On Freeze date
    * A new section is added for the upcoming release that is being prepared, and
    * The section for the oldest release is removed.
 
-   ::
+   .. code-block:: shell-session
 
-       git checkout -b pr/master-cilium-actions-update origin/master
-       # modify .github/cilium-actions.yml
-       git add .github/cilium-actions.yml
-       git commit
-       git push
+       $ git checkout -b pr/master-cilium-actions-update origin/master
+       $ # modify .github/maintainers-little-helper.yaml
+       $ git add .github/maintainers-little-helper.yaml
+       $ git commit
+       $ git push
 
 #. Continue with the next step only after the previous steps are merged into
    master.
@@ -107,7 +113,7 @@ On Freeze date
 
 #. Prepare the master branch for the next development cycle:
 
-   ::
+   .. code-block:: shell-session
 
        git checkout master; git pull
 
@@ -115,7 +121,7 @@ On Freeze date
 #. Add the ``VERSION`` file using ``git add`` and create & merge a PR titled
    ``Prepare for 1.3.0 development``.
 #. Update the release branch on
-    `Jenkins <https://jenkins.cilium.io/job/cilium-ginkgo/job/cilium/>`_ to be
+    `Jenkins <https://jenkins.cilium.io/>`_ to be
     tested on every change and Nightly.
 #. (Only 1.0 minor releases) Tag newest 1.0.x Docker image as ``v1.0-stable``
    and push it to Docker Hub. This will ensure that Kops uses latest 1.0 release by default.

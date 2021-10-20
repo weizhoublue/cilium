@@ -18,25 +18,26 @@ import (
 // Amazon EBS encryption
 // (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSEncryption.html) in the
 // Amazon Elastic Compute Cloud User Guide. After you attach an EBS volume, you
-// must make it available. For more information, see Making an EBS volume available
+// must make it available. For more information, see Make an EBS volume available
 // for use
 // (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-using-volumes.html). If
-// a volume has an AWS Marketplace product code:
+// a volume has an Amazon Web Services Marketplace product code:
 //
-// * The volume can be attached only
-// to a stopped instance.
+// * The volume can
+// be attached only to a stopped instance.
 //
-// * AWS Marketplace product codes are copied from the
-// volume to the instance.
+// * Amazon Web Services Marketplace
+// product codes are copied from the volume to the instance.
 //
-// * You must be subscribed to the product.
+// * You must be
+// subscribed to the product.
 //
-// * The
-// instance type and operating system of the instance must support the product. For
-// example, you can't detach a volume from a Windows instance and attach it to a
-// Linux instance.
+// * The instance type and operating system of the
+// instance must support the product. For example, you can't detach a volume from a
+// Windows instance and attach it to a Linux instance.
 //
-// For more information, see Attaching Amazon EBS volumes
+// For more information, see
+// Attach an Amazon EBS volume to an instance
 // (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-attaching-volume.html)
 // in the Amazon Elastic Compute Cloud User Guide.
 func (c *Client) AttachVolume(ctx context.Context, params *AttachVolumeInput, optFns ...func(*Options)) (*AttachVolumeOutput, error) {
@@ -44,7 +45,7 @@ func (c *Client) AttachVolume(ctx context.Context, params *AttachVolumeInput, op
 		params = &AttachVolumeInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "AttachVolume", params, optFns, addOperationAttachVolumeMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "AttachVolume", params, optFns, c.addOperationAttachVolumeMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +77,9 @@ type AttachVolumeInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 // Describes volume attachment details.
@@ -86,7 +89,7 @@ type AttachVolumeOutput struct {
 	AttachTime *time.Time
 
 	// Indicates whether the EBS volume is deleted on instance termination.
-	DeleteOnTermination bool
+	DeleteOnTermination *bool
 
 	// The device name.
 	Device *string
@@ -102,9 +105,11 @@ type AttachVolumeOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationAttachVolumeMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationAttachVolumeMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpAttachVolume{}, middleware.After)
 	if err != nil {
 		return err

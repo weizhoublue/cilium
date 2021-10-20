@@ -1,24 +1,15 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
-// +build !privileged_tests
+//go:build !privileged_tests && integration_tests
+// +build !privileged_tests,integration_tests
 
 package endpoint
 
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,7 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/identity/cache"
 	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/kvstore"
-	pkgLabels "github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
@@ -244,23 +235,23 @@ func (s *EndpointSuite) TestEndpointUpdateLabels(c *C) {
 	e := NewEndpointWithState(s, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 100, StateWaitingForIdentity)
 
 	// Test that inserting identity labels works
-	rev := e.replaceIdentityLabels(pkgLabels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	rev := e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(rev, Not(Equals), 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Test that nothing changes
-	rev = e.replaceIdentityLabels(pkgLabels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(rev, Equals, 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Remove one label, change the source and value of the other.
-	rev = e.replaceIdentityLabels(pkgLabels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
+	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
 	c.Assert(rev, Not(Equals), 0)
 	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "nginx:foo=zop;")
 
 	// Test that inserting information labels works
-	e.replaceInformationLabels(pkgLabels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
 	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
 	// Remove one label, change the source and value of the other.
-	e.replaceInformationLabels(pkgLabels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
+	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
 	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "nginx:foo=zop;")
 }
 
@@ -286,7 +277,7 @@ func (s *EndpointSuite) TestEndpointState(c *C) {
 	assertStateTransition(c, e, e.setState, StateReady, StateDisconnecting, true)
 	assertStateTransition(c, e, e.setState, StateReady, StateDisconnected, false)
 
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateWaitingForIdentity, true)
+	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateWaitingForIdentity, false)
 	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateReady, false)
 	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateWaitingToRegenerate, false)
 	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
@@ -526,51 +517,51 @@ func (s *EndpointSuite) TestProxyID(c *C) {
 
 func TestEndpoint_GetK8sPodLabels(t *testing.T) {
 	type fields struct {
-		OpLabels pkgLabels.OpLabels
+		OpLabels labels.OpLabels
 	}
 	tests := []struct {
 		name   string
 		fields fields
-		want   pkgLabels.Labels
+		want   labels.Labels
 	}{
 		{
 			name: "has all k8s labels",
 			fields: fields{
-				OpLabels: pkgLabels.OpLabels{
-					OrchestrationInfo: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+				OpLabels: labels.OpLabels{
+					OrchestrationInfo: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 				},
 			},
-			want: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+			want: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 		},
 		{
 			name: "the namespace labels, service account and namespace should be ignored as they don't belong to pod labels",
 			fields: fields{
-				OpLabels: pkgLabels.OpLabels{
-					OrchestrationInfo: pkgLabels.Map2Labels(map[string]string{
+				OpLabels: labels.OpLabels{
+					OrchestrationInfo: labels.Map2Labels(map[string]string{
 						"foo":                                    "bar",
 						ciliumio.PodNamespaceMetaLabels + ".env": "prod",
 						ciliumio.PolicyLabelServiceAccount:       "default",
 						ciliumio.PodNamespaceLabel:               "default",
-					}, pkgLabels.LabelSourceK8s),
+					}, labels.LabelSourceK8s),
 				},
 			},
-			want: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+			want: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 		},
 		{
 			name: "labels with other source than k8s should also be ignored",
 			fields: fields{
-				OpLabels: pkgLabels.OpLabels{
-					OrchestrationInfo: pkgLabels.Map2Labels(map[string]string{
+				OpLabels: labels.OpLabels{
+					OrchestrationInfo: labels.Map2Labels(map[string]string{
 						"foo":                                    "bar",
 						ciliumio.PodNamespaceMetaLabels + ".env": "prod",
-					}, pkgLabels.LabelSourceK8s),
-					OrchestrationIdentity: pkgLabels.Map2Labels(map[string]string{
+					}, labels.LabelSourceK8s),
+					OrchestrationIdentity: labels.Map2Labels(map[string]string{
 						"foo2":                                   "bar",
 						ciliumio.PodNamespaceMetaLabels + ".env": "prod2",
-					}, pkgLabels.LabelSourceAny),
+					}, labels.LabelSourceAny),
 				},
 			},
-			want: pkgLabels.Map2Labels(map[string]string{"foo": "bar"}, pkgLabels.LabelSourceK8s),
+			want: labels.Map2Labels(map[string]string{"foo": "bar"}, labels.LabelSourceK8s),
 		},
 	}
 	for _, tt := range tests {
@@ -720,4 +711,27 @@ func BenchmarkEndpointGetModel(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		e.GetModel()
 	}
+}
+
+// getK8sPodLabels returns all labels that exist in the endpoint and were
+// derived from k8s pod.
+func (e *Endpoint) getK8sPodLabels() labels.Labels {
+	e.unconditionalRLock()
+	defer e.runlock()
+	allLabels := e.OpLabels.AllLabels()
+	if allLabels == nil {
+		return nil
+	}
+
+	allLabelsFromK8s := allLabels.GetFromSource(labels.LabelSourceK8s)
+
+	k8sEPPodLabels := labels.Labels{}
+	for k, v := range allLabelsFromK8s {
+		if !strings.HasPrefix(v.Key, ciliumio.PodNamespaceMetaLabels) &&
+			!strings.HasPrefix(v.Key, ciliumio.PolicyLabelServiceAccount) &&
+			!strings.HasPrefix(v.Key, ciliumio.PodNamespaceLabel) {
+			k8sEPPodLabels[k] = v
+		}
+	}
+	return k8sEPPodLabels
 }

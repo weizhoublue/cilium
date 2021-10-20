@@ -1,22 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -27,7 +18,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var numPages int
+var (
+	numPages                   int
+	listReadOnlyConfigurations bool
+	listAllConfigurations      bool
+)
 
 // configCmd represents the config command
 var configCmd = &cobra.Command{
@@ -48,6 +43,8 @@ var configCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(configCmd)
 	configCmd.Flags().BoolVarP(&listOptions, "list-options", "", false, "List available options")
+	configCmd.Flags().BoolVarP(&listReadOnlyConfigurations, "read-only", "r", false, "Display read only configurations")
+	configCmd.Flags().BoolVarP(&listAllConfigurations, "all", "a", false, "Display all cilium configurations")
 	configCmd.Flags().IntVarP(&numPages, "num-pages", "n", 0, "Number of pages for perf ring buffer. New values have to be > 0")
 	command.AddJSONOutput(configCmd)
 }
@@ -69,20 +66,7 @@ func configDaemon(cmd *cobra.Command, opts []string) {
 			dOpts["MonitorNumPages"] = strconv.Itoa(numPages)
 		}
 	} else if len(opts) == 0 {
-		if command.OutputJSON() {
-			if err := command.PrintOutput(cfgStatus.Realized.Options); err != nil {
-				os.Exit(1)
-			}
-			return
-		}
-		dumpConfig(cfgStatus.Immutable)
-		dumpConfig(cfgStatus.Realized.Options)
-		fmt.Printf("%-24s %s\n", "k8s-configuration", cfgStatus.K8sConfiguration)
-		fmt.Printf("%-24s %s\n", "k8s-endpoint", cfgStatus.K8sEndpoint)
-		fmt.Printf("%-24s %s\n", "PolicyEnforcement", cfgStatus.Realized.PolicyEnforcement)
-		if cfgStatus.NodeMonitor != nil {
-			fmt.Printf("%-24s %d\n", "MonitorNumPages", cfgStatus.NodeMonitor.Npages)
-		}
+		printConfigurations(cfgStatus)
 		return
 	}
 
@@ -121,4 +105,70 @@ func configDaemon(cmd *cobra.Command, opts []string) {
 	if err := client.ConfigPatch(cfg); err != nil {
 		Fatalf("Unable to change agent configuration: %s\n", err)
 	}
+}
+
+func printConfigurations(cfgStatus *models.DaemonConfigurationStatus) {
+	if command.OutputJSON() {
+		if listReadOnlyConfigurations {
+			if err := command.PrintOutput(cfgStatus.DaemonConfigurationMap); err != nil {
+				Fatalf("Cannot show configuratons: %v", err)
+			}
+		} else if listAllConfigurations {
+			if err := command.PrintOutputWithPatch(cfgStatus.DaemonConfigurationMap, cfgStatus.Realized); err != nil {
+				Fatalf("Cannot show configuratons: %v", err)
+			}
+		} else {
+			if err := command.PrintOutput(cfgStatus.Realized.Options); err != nil {
+				Fatalf("Cannot show configuratons: %v", err)
+			}
+		}
+		return
+	}
+	if listReadOnlyConfigurations {
+		dumpReadOnlyConfigs(cfgStatus)
+	} else if listAllConfigurations {
+		dumpReadOnlyConfigs(cfgStatus)
+		dumpReadWriteConfigs(cfgStatus)
+	} else {
+		dumpReadWriteConfigs(cfgStatus)
+	}
+}
+
+func dumpReadOnlyConfigs(cfgStatus *models.DaemonConfigurationStatus) {
+	fmt.Println("#### Read-only configurations ####")
+	keys := make([]string, 0, len(cfgStatus.DaemonConfigurationMap))
+	for k := range cfgStatus.DaemonConfigurationMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := cfgStatus.DaemonConfigurationMap[k]
+		if reflect.ValueOf(v).Kind() == reflect.Map {
+			mapString := make(map[string]string)
+			m, ok := v.(map[string]interface{})
+			if ok {
+				fmt.Println(k)
+				for key, value := range m {
+					mapString[key] = fmt.Sprintf("%v", value)
+				}
+				dumpConfig(mapString, true)
+				continue
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: cannot cast daemon config map to map[string]interface{}\n")
+			}
+		}
+		fmt.Printf("%-34s: %v\n", k, v)
+	}
+	fmt.Printf("%-34s: %s\n", "k8s-configuration", cfgStatus.K8sConfiguration)
+	fmt.Printf("%-34s: %s\n", "k8s-endpoint", cfgStatus.K8sEndpoint)
+	dumpConfig(cfgStatus.Immutable, false)
+}
+
+func dumpReadWriteConfigs(cfgStatus *models.DaemonConfigurationStatus) {
+	fmt.Println("##### Read-write configurations #####")
+	dumpConfig(cfgStatus.Realized.Options, false)
+	if cfgStatus.NodeMonitor != nil {
+		fmt.Printf("%-34s: %d\n", "MonitorNumPages", cfgStatus.NodeMonitor.Npages)
+	}
+	fmt.Printf("%-34s: %s\n", "PolicyEnforcement", cfgStatus.Realized.PolicyEnforcement)
 }

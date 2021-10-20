@@ -29,7 +29,7 @@ func (c *Client) CreateVpnConnection(ctx context.Context, params *CreateVpnConne
 		params = &CreateVpnConnectionInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CreateVpnConnection", params, optFns, addOperationCreateVpnConnectionMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CreateVpnConnection", params, optFns, c.addOperationCreateVpnConnectionMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ type CreateVpnConnectionInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The options for the VPN connection.
 	Options *types.VpnConnectionOptionsSpecification
@@ -71,6 +71,8 @@ type CreateVpnConnectionInput struct {
 	// The ID of the virtual private gateway. If you specify a virtual private gateway,
 	// you cannot specify a transit gateway.
 	VpnGatewayId *string
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of CreateVpnConnection.
@@ -81,9 +83,11 @@ type CreateVpnConnectionOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCreateVpnConnectionMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCreateVpnConnectionMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCreateVpnConnection{}, middleware.After)
 	if err != nil {
 		return err

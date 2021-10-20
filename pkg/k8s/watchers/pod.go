@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package watchers
 
@@ -36,6 +25,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	k8sTypes "github.com/cilium/cilium/pkg/k8s/types"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
@@ -208,7 +198,7 @@ func (k *K8sWatcher) addK8sPodV1(pod *slim_corev1.Pod) error {
 		logfields.K8sNamespace: pod.ObjectMeta.Namespace,
 		"podIP":                pod.Status.PodIP,
 		"podIPs":               pod.Status.PodIPs,
-		"hostIP":               pod.Status.PodIP,
+		"hostIP":               pod.Status.HostIP,
 	})
 
 	// In Kubernetes Jobs, Pods can be left in Kubernetes until the Job
@@ -231,10 +221,6 @@ func (k *K8sWatcher) addK8sPodV1(pod *slim_corev1.Pod) error {
 	if len(podIPs) > 0 {
 		err = k.updatePodHostData(nil, pod, nil, podIPs)
 
-		// There might be duplicate callbacks here since this function is also
-		// called from updateK8sPodV1, the consumer will need to handle the duplicate
-		// events accordingly.
-		// GH issue #13136.
 		if option.Config.EnableLocalRedirectPolicy {
 			k.redirectPolicyManager.OnAddPod(pod)
 		}
@@ -253,6 +239,17 @@ func (k *K8sWatcher) updateK8sPodV1(oldK8sPod, newK8sPod *slim_corev1.Pod) error
 		return nil
 	}
 
+	logger := log.WithFields(logrus.Fields{
+		logfields.K8sPodName:   newK8sPod.ObjectMeta.Name,
+		logfields.K8sNamespace: newK8sPod.ObjectMeta.Namespace,
+		"new-podIP":            newK8sPod.Status.PodIP,
+		"new-podIPs":           newK8sPod.Status.PodIPs,
+		"new-hostIP":           newK8sPod.Status.PodIP,
+		"old-podIP":            oldK8sPod.Status.PodIP,
+		"old-podIPs":           oldK8sPod.Status.PodIPs,
+		"old-hostIP":           oldK8sPod.Status.PodIP,
+	})
+
 	// In Kubernetes Jobs, Pods can be left in Kubernetes until the Job
 	// is deleted. If the Job is never deleted, Cilium will never receive a Pod
 	// delete event, causing the IP to be left in the ipcache.
@@ -263,10 +260,19 @@ func (k *K8sWatcher) updateK8sPodV1(oldK8sPod, newK8sPod *slim_corev1.Pod) error
 		return k.deleteK8sPodV1(newK8sPod)
 	}
 
-	// The pod IP can never change, it can only switch from unassigned to
-	// assigned
-	// Process IP updates
-	k.addK8sPodV1(newK8sPod)
+	if newK8sPod.Spec.HostNetwork {
+		logger.Debug("Pod is using host networking")
+		return nil
+	}
+
+	oldPodIPs := k8sUtils.ValidIPs(oldK8sPod.Status)
+	newPodIPs := k8sUtils.ValidIPs(newK8sPod.Status)
+	err := k.updatePodHostData(oldK8sPod, newK8sPod, oldPodIPs, newPodIPs)
+
+	if err != nil {
+		logger.WithError(err).Warning("Unable to update ipcache map entry on pod update")
+		return err
+	}
 
 	// Check annotation updates.
 	oldAnno := oldK8sPod.ObjectMeta.Annotations
@@ -584,6 +590,7 @@ func (k *K8sWatcher) upsertHostPortMapping(oldPod, newPod *slim_corev1.Pod, oldP
 	if !option.Config.EnableHostPort {
 		return nil
 	}
+
 	var svcsAdded []loadbalancer.L3n4Addr
 
 	logger := log.WithFields(logrus.Fields{
@@ -674,24 +681,29 @@ func (k *K8sWatcher) deleteHostPortMapping(pod *slim_corev1.Pod, podIPs []string
 	return nil
 }
 
-func (k *K8sWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPodIPs, newPodIPs []string) error {
+func (k *K8sWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPodIPs, newPodIPs k8sTypes.IPSlice) error {
 	var namedPortsChanged bool
+
+	ipSliceEqual := oldPodIPs != nil && oldPodIPs.DeepEqual(&newPodIPs)
+
 	defer func() {
-		// delete all IPs that were not added regardless if the insertion of the
-		// entry in the ipcache map was successful or not because we will not
-		// receive any other event with these old IP addresses.
-		for _, oldPodIP := range oldPodIPs {
-			var found bool
-			for _, newPodIP := range newPodIPs {
-				if newPodIP == oldPodIP {
-					found = true
-					break
+		if !ipSliceEqual {
+			// delete all IPs that were not added regardless if the insertion of the
+			// entry in the ipcache map was successful or not because we will not
+			// receive any other event with these old IP addresses.
+			for _, oldPodIP := range oldPodIPs {
+				var found bool
+				for _, newPodIP := range newPodIPs {
+					if newPodIP == oldPodIP {
+						found = true
+						break
+					}
 				}
-			}
-			if !found {
-				npc := ipcache.IPIdentityCache.Delete(oldPodIP, source.Kubernetes)
-				if npc {
-					namedPortsChanged = true
+				if !found {
+					npc := ipcache.IPIdentityCache.Delete(oldPodIP, source.Kubernetes)
+					if npc {
+						namedPortsChanged = true
+					}
 				}
 			}
 		}
@@ -702,9 +714,21 @@ func (k *K8sWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPodIP
 		}
 	}()
 
-	err := k.upsertHostPortMapping(oldPod, newPod, oldPodIPs, newPodIPs)
-	if err != nil {
-		return fmt.Errorf("cannot upsert hostPort for PodIPs: %s", newPodIPs)
+	specEqual := oldPod != nil && newPod.Spec.DeepEqual(&oldPod.Spec)
+	hostIPEqual := oldPod != nil && newPod.Status.HostIP != oldPod.Status.HostIP
+
+	// only upsert HostPort Mapping if spec or ip slice is different
+	if !specEqual || !ipSliceEqual {
+		err := k.upsertHostPortMapping(oldPod, newPod, oldPodIPs, newPodIPs)
+		if err != nil {
+			return fmt.Errorf("cannot upsert hostPort for PodIPs: %s", newPodIPs)
+		}
+	}
+
+	// is spec and hostIPs are the same there no need to perform the remaining
+	// operations
+	if specEqual && hostIPEqual {
+		return nil
 	}
 
 	hostIP := net.ParseIP(newPod.Status.HostIP)
@@ -755,17 +779,21 @@ func (k *K8sWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPodIP
 			namedPortsChanged = true
 		}
 		if err != nil {
-			// It is expected to receive error overwrites where the existing
-			// source is the KVStore, this can happen as KVStore event
-			// propagation can usually be faster than k8s event propagation.
-			// It is also expected to receive an error overwrite where the
-			// existing source is local since cilium-agent receives events for
-			// local pods.
+			// It is expected to receive an error overwrite where the existing
+			// source is:
+			// - KVStore, this can happen as KVStore event propagation can
+			//   usually be faster than k8s event propagation.
+			// - local since cilium-agent receives events for local pods.
+			// - custom resource since Cilium CR are slimmer and might have
+			//   faster propagation than Kubernetes resources.
 			if !errors.Is(err, &ipcache.ErrOverwrite{
 				ExistingSrc: source.KVStore,
 				NewSrc:      source.Kubernetes,
-			}) || !errors.Is(err, &ipcache.ErrOverwrite{
+			}) && !errors.Is(err, &ipcache.ErrOverwrite{
 				ExistingSrc: source.Local,
+				NewSrc:      source.Kubernetes,
+			}) && !errors.Is(err, &ipcache.ErrOverwrite{
+				ExistingSrc: source.CustomResource,
 				NewSrc:      source.Kubernetes,
 			}) {
 				errs = append(errs, fmt.Sprintf("ipcache entry for podIP %s: %s", podIP, err))
@@ -813,7 +841,10 @@ func (k *K8sWatcher) deletePodHostData(pod *slim_corev1.Pod) (bool, error) {
 			continue
 		}
 
-		ipcache.IPIdentityCache.Delete(podIP, source.Kubernetes)
+		k8sMeta := ipcache.IPIdentityCache.GetK8sMetadata(podIP)
+		if k8sMeta.Namespace == pod.Namespace && k8sMeta.PodName == pod.Name {
+			ipcache.IPIdentityCache.Delete(podIP, source.Kubernetes)
+		}
 	}
 
 	if len(errs) != 0 {

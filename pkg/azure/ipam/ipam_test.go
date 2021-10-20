@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package ipam
@@ -184,20 +174,22 @@ func (e *IPAMSuite) TestIpamPreAllocate8(c *check.C) {
 	c.Assert(instances, check.Not(check.IsNil))
 
 	m := ipamTypes.NewInstanceMap()
-	m.Update("vm1", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{
-			ID:            "/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm1/networkInterfaces/vmss11",
-			Name:          "eth0",
-			SecurityGroup: "sg1",
-			Addresses: []types.AzureAddress{
-				{
-					IP:     "1.1.1.1",
-					Subnet: "subnet-1",
-					State:  types.StateSucceeded,
-				},
+
+	resource := &types.AzureInterface{
+		Name:          "eth0",
+		SecurityGroup: "sg1",
+		Addresses: []types.AzureAddress{
+			{
+				IP:     "1.1.1.1",
+				Subnet: "subnet-1",
+				State:  types.StateSucceeded,
 			},
-			State: types.StateSucceeded,
 		},
+		State: types.StateSucceeded,
+	}
+	resource.SetID("/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm1/networkInterfaces/vmss11")
+	m.Update("vm1", ipamTypes.InterfaceRevision{
+		Resource: resource.DeepCopy(),
 	})
 	api.UpdateInstances(m)
 
@@ -244,20 +236,22 @@ func (e *IPAMSuite) TestIpamMinAllocate10(c *check.C) {
 	c.Assert(instances, check.Not(check.IsNil))
 
 	m := ipamTypes.NewInstanceMap()
-	m.Update("vm1", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{
-			ID:            "/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm1/networkInterfaces/vmss11",
-			Name:          "eth0",
-			SecurityGroup: "sg1",
-			Addresses: []types.AzureAddress{
-				{
-					IP:     "1.1.1.1",
-					Subnet: "subnet-1",
-					State:  types.StateSucceeded,
-				},
+
+	resource := &types.AzureInterface{
+		Name:          "eth0",
+		SecurityGroup: "sg1",
+		Addresses: []types.AzureAddress{
+			{
+				IP:     "1.1.1.1",
+				Subnet: "subnet-1",
+				State:  types.StateSucceeded,
 			},
-			State: types.StateSucceeded,
 		},
+		State: types.StateSucceeded,
+	}
+	resource.SetID("/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm1/networkInterfaces/vmss11")
+	m.Update("vm1", ipamTypes.InterfaceRevision{
+		Resource: resource.DeepCopy(),
 	})
 	api.UpdateInstances(m)
 
@@ -324,16 +318,16 @@ func (e *IPAMSuite) TestIpamManyNodes(c *check.C) {
 	allInstances := ipamTypes.NewInstanceMap()
 
 	for i := range state {
+		resource := &types.AzureInterface{
+			Name:          "eth0",
+			SecurityGroup: "sg1",
+			Addresses:     []types.AzureAddress{},
+			State:         types.StateSucceeded,
+		}
+		resource.SetID(fmt.Sprintf("/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm%d/networkInterfaces/vmss11", i))
 		allInstances.Update(fmt.Sprintf("vm%d", i), ipamTypes.InterfaceRevision{
-			Resource: &types.AzureInterface{
-				ID:            fmt.Sprintf("/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm%d/networkInterfaces/vmss11", i),
-				Name:          "eth0",
-				SecurityGroup: "sg1",
-				Addresses:     []types.AzureAddress{},
-				State:         types.StateSucceeded,
-			},
+			Resource: resource.DeepCopy(),
 		})
-
 	}
 
 	api.UpdateInstances(allInstances)
@@ -400,14 +394,15 @@ func benchmarkAllocWorker(c *check.C, workers int64, delay time.Duration, rateLi
 	c.ResetTimer()
 
 	for i := range state {
+		resource := &types.AzureInterface{
+			Name:          "eth0",
+			SecurityGroup: "sg1",
+			Addresses:     []types.AzureAddress{},
+			State:         types.StateSucceeded,
+		}
+		resource.SetID(fmt.Sprintf("/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm%d/networkInterfaces/vmss11", i))
 		allInstances.Update(fmt.Sprintf("vm%d", i), ipamTypes.InterfaceRevision{
-			Resource: &types.AzureInterface{
-				ID:            fmt.Sprintf("/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm%d/networkInterfaces/vmss11", i),
-				Name:          "eth0",
-				SecurityGroup: "sg1",
-				Addresses:     []types.AzureAddress{},
-				State:         types.StateSucceeded,
-			},
+			Resource: resource.DeepCopy(),
 		})
 	}
 

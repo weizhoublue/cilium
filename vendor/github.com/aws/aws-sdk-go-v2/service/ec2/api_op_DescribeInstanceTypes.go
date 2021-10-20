@@ -19,7 +19,7 @@ func (c *Client) DescribeInstanceTypes(ctx context.Context, params *DescribeInst
 		params = &DescribeInstanceTypesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeInstanceTypes", params, optFns, addOperationDescribeInstanceTypesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeInstanceTypes", params, optFns, c.addOperationDescribeInstanceTypesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ type DescribeInstanceTypesInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters. Filter names and values are case-sensitive.
 	//
@@ -137,6 +137,10 @@ type DescribeInstanceTypesInput struct {
 	// (ENA) is supported or required (required | supported | unsupported).
 	//
 	// *
+	// network-info.encryption-in-transit-supported - Indicates whether the instance
+	// type automatically encrypts in-transit traffic between instances.
+	//
+	// *
 	// network-info.ipv4-addresses-per-interface - The maximum number of private IPv4
 	// addresses per network interface.
 	//
@@ -201,6 +205,8 @@ type DescribeInstanceTypesInput struct {
 
 	// The token to retrieve the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeInstanceTypesOutput struct {
@@ -216,9 +222,11 @@ type DescribeInstanceTypesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeInstanceTypesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeInstanceTypesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeInstanceTypes{}, middleware.After)
 	if err != nil {
 		return err

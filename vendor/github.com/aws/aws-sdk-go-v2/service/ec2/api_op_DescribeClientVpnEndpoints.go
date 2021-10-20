@@ -18,7 +18,7 @@ func (c *Client) DescribeClientVpnEndpoints(ctx context.Context, params *Describ
 		params = &DescribeClientVpnEndpointsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeClientVpnEndpoints", params, optFns, addOperationDescribeClientVpnEndpointsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeClientVpnEndpoints", params, optFns, c.addOperationDescribeClientVpnEndpointsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ type DescribeClientVpnEndpointsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters. Filter names and values are case-sensitive.
 	//
@@ -51,10 +51,12 @@ type DescribeClientVpnEndpointsInput struct {
 	// The maximum number of results to return for the request in a single page. The
 	// remaining results can be seen by sending another request with the nextToken
 	// value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token to retrieve the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeClientVpnEndpointsOutput struct {
@@ -68,9 +70,11 @@ type DescribeClientVpnEndpointsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeClientVpnEndpointsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeClientVpnEndpointsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeClientVpnEndpoints{}, middleware.After)
 	if err != nil {
 		return err
@@ -169,8 +173,8 @@ func NewDescribeClientVpnEndpointsPaginator(client DescribeClientVpnEndpointsAPI
 	}
 
 	options := DescribeClientVpnEndpointsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -199,7 +203,11 @@ func (p *DescribeClientVpnEndpointsPaginator) NextPage(ctx context.Context, optF
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeClientVpnEndpoints(ctx, &params, optFns...)
 	if err != nil {

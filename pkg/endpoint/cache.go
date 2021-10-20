@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package endpoint
 
@@ -50,6 +39,7 @@ type epInfoCache struct {
 	requireEgressProg                      bool
 	requireRouting                         bool
 	requireEndpointRoute                   bool
+	disableSIPVerification                 bool
 	policyVerdictLogFilter                 uint32
 	cidr4PrefixLengths, cidr6PrefixLengths []int
 	options                                *option.IntOptions
@@ -85,6 +75,7 @@ func (e *Endpoint) createEpInfoCache(epdir string) *epInfoCache {
 		requireEgressProg:      e.RequireEgressProg(),
 		requireRouting:         e.RequireRouting(),
 		requireEndpointRoute:   e.RequireEndpointRoute(),
+		disableSIPVerification: e.DisableSIPVerification(),
 		policyVerdictLogFilter: e.GetPolicyVerdictLogFilter(),
 		cidr4PrefixLengths:     cidr4,
 		cidr6PrefixLengths:     cidr6,
@@ -193,6 +184,12 @@ func (ep *epInfoCache) RequireRouting() bool {
 // RequireEndpointRoute returns if the endpoint wants a per endpoint route
 func (ep *epInfoCache) RequireEndpointRoute() bool {
 	return ep.requireEndpointRoute
+}
+
+// DisableSIPVerification returns true if the endpoint wants to skip
+// srcIP verification
+func (ep *epInfoCache) DisableSIPVerification() bool {
+	return ep.disableSIPVerification
 }
 
 func (ep *epInfoCache) GetPolicyVerdictLogFilter() uint32 {

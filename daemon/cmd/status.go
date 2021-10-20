@@ -1,16 +1,5 @@
-// Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package cmd
 
@@ -183,6 +172,21 @@ func (d *Daemon) getHostRoutingStatus() *models.HostRouting {
 	return s
 }
 
+func (d *Daemon) getHostFirewallStatus() *models.HostFirewall {
+	mode := models.HostFirewallModeDisabled
+	if option.Config.EnableHostFirewall {
+		mode = models.HostFirewallModeEnabled
+	}
+	devices := make([]string, len(option.Config.Devices))
+	for i, iface := range option.Config.Devices {
+		devices[i] = iface
+	}
+	return &models.HostFirewall{
+		Mode:    mode,
+		Devices: devices,
+	}
+}
+
 func (d *Daemon) getClockSourceStatus() *models.ClockSource {
 	s := &models.ClockSource{Mode: models.ClockSourceModeKtime}
 	if option.Config.ClockSource == option.ClockSourceJiffies {
@@ -321,11 +325,11 @@ func (d *Daemon) getBPFMapStatus() *models.BPFMapStatus {
 				Size: int64(lbmap.MaxEntries),
 			},
 			{
-				Name: "IPv4 service backend", // cilium_lb4_backends
+				Name: "IPv4 service backend", // cilium_lb4_backends_v2
 				Size: int64(lbmap.MaxEntries),
 			},
 			{
-				Name: "IPv6 service backend", // cilium_lb6_backends
+				Name: "IPv6 service backend", // cilium_lb6_backends_v2
 				Size: int64(lbmap.MaxEntries),
 			},
 			{
@@ -492,6 +496,11 @@ func (c *clusterNodesClient) NodeNeighDiscoveryEnabled() bool {
 }
 
 func (c *clusterNodesClient) NodeNeighborRefresh(ctx context.Context, node nodeTypes.Node) {
+	// no-op
+	return
+}
+
+func (c *clusterNodesClient) NodeCleanNeighbors() {
 	// no-op
 	return
 }
@@ -967,6 +976,7 @@ func (d *Daemon) startStatusCollector() {
 
 	d.statusResponse.Masquerading = d.getMasqueradingStatus()
 	d.statusResponse.BandwidthManager = d.getBandwidthManagerStatus()
+	d.statusResponse.HostFirewall = d.getHostFirewallStatus()
 	d.statusResponse.HostRouting = d.getHostRoutingStatus()
 	d.statusResponse.ClockSource = d.getClockSourceStatus()
 	d.statusResponse.BpfMaps = d.getBPFMapStatus()

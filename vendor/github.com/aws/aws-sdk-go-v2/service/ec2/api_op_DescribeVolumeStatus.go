@@ -25,7 +25,7 @@ import (
 // checks pass, the overall status of the volume is ok. If the check fails, the
 // overall status is impaired. If the status is insufficient-data, then the checks
 // might still be taking place on your volume at the time. We recommend that you
-// retry the request. For more information about volume status, see Monitoring the
+// retry the request. For more information about volume status, see Monitor the
 // status of your volumes
 // (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/monitoring-volume-status.html)
 // in the Amazon Elastic Compute Cloud User Guide. Events: Reflect the cause of a
@@ -46,7 +46,7 @@ func (c *Client) DescribeVolumeStatus(ctx context.Context, params *DescribeVolum
 		params = &DescribeVolumeStatusInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeVolumeStatus", params, optFns, addOperationDescribeVolumeStatusMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeVolumeStatus", params, optFns, c.addOperationDescribeVolumeStatusMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ type DescribeVolumeStatusInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The filters.
 	//
@@ -113,7 +113,7 @@ type DescribeVolumeStatusInput struct {
 	// If this parameter is not used, then DescribeVolumeStatus returns all results.
 	// You cannot specify this parameter and the volume IDs parameter in the same
 	// request.
-	MaxResults int32
+	MaxResults *int32
 
 	// The NextToken value to include in a future DescribeVolumeStatus request. When
 	// the results of the request exceed MaxResults, this value can be used to retrieve
@@ -123,6 +123,8 @@ type DescribeVolumeStatusInput struct {
 
 	// The IDs of the volumes. Default: Describes all your volumes.
 	VolumeIds []string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeVolumeStatusOutput struct {
@@ -136,9 +138,11 @@ type DescribeVolumeStatusOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeVolumeStatusMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeVolumeStatusMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeVolumeStatus{}, middleware.After)
 	if err != nil {
 		return err
@@ -241,8 +245,8 @@ func NewDescribeVolumeStatusPaginator(client DescribeVolumeStatusAPIClient, para
 	}
 
 	options := DescribeVolumeStatusPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -271,7 +275,11 @@ func (p *DescribeVolumeStatusPaginator) NextPage(ctx context.Context, optFns ...
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeVolumeStatus(ctx, &params, optFns...)
 	if err != nil {

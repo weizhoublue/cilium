@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package controller
 
@@ -101,6 +90,7 @@ func (m *Manager) updateController(name string, params ControllerParams) *Contro
 			uuid:       uuid.New().String(),
 			stop:       make(chan struct{}),
 			update:     make(chan struct{}, 1),
+			trigger:    make(chan struct{}, 1),
 			terminated: make(chan struct{}),
 		}
 		ctrl.updateParamsLocked(params)
@@ -245,6 +235,16 @@ func (m *Manager) GetStatusModel() models.ControllerStatuses {
 	return statuses
 }
 
+// TriggerController triggers the controller with the specified name.
+func (m *Manager) TriggerController(name string) {
+	controller := m.lookup(name)
+	if controller == nil {
+		return
+	}
+
+	controller.Trigger()
+}
+
 // FakeManager returns a fake controller manager with the specified number of
 // failing controllers. The returned manager is identical in any regard except
 // for internal pointers.
@@ -259,6 +259,7 @@ func FakeManager(failingControllers int) *Manager {
 			uuid:              fmt.Sprintf("%d", i),
 			stop:              make(chan struct{}),
 			update:            make(chan struct{}, 1),
+			trigger:           make(chan struct{}, 1),
 			terminated:        make(chan struct{}),
 			lastError:         fmt.Errorf("controller failed"),
 			failureCount:      1,

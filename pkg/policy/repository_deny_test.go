@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
@@ -258,6 +248,74 @@ func (ds *PolicyTestSuite) TestComputePolicyDenyEnforcementAndRules(c *C) {
 	c.Assert(ingress, Equals, false)
 	c.Assert(egress, Equals, false)
 
+}
+
+func (ds *PolicyTestSuite) TestGetRulesMatching(c *C) {
+	repo := NewPolicyRepository(nil, nil)
+	repo.selectorCache = testSelectorCache
+
+	fooToBar := &SearchContext{
+		From: labels.ParseSelectLabelArray("foo"),
+		To:   labels.ParseSelectLabelArray("bar"),
+	}
+
+	repo.Mutex.RLock()
+	// no rules loaded: Allows() => denied
+	c.Assert(repo.AllowsIngressRLocked(fooToBar), Equals, api.Denied)
+	repo.Mutex.RUnlock()
+
+	bar := labels.ParseSelectLabel("bar")
+	foo := labels.ParseSelectLabel("foo")
+	tag := labels.LabelArray{labels.ParseLabel("tag")}
+	ingressDenyRule := api.Rule{
+		EndpointSelector: api.NewESFromLabels(bar),
+		IngressDeny: []api.IngressDenyRule{
+			{
+				IngressCommonRule: api.IngressCommonRule{
+					FromEndpoints: []api.EndpointSelector{
+						api.NewESFromLabels(foo),
+					},
+				},
+			},
+		},
+		Labels: tag,
+	}
+
+	egressDenyRule := api.Rule{
+		EndpointSelector: api.NewESFromLabels(bar),
+		EgressDeny: []api.EgressDenyRule{
+			{
+				EgressCommonRule: api.EgressCommonRule{
+					ToEndpoints: []api.EndpointSelector{
+						api.NewESFromLabels(foo),
+					},
+				},
+			},
+		},
+		Labels: tag,
+	}
+
+	// When no policy is applied.
+	ingressMatch, egressMatch := repo.GetRulesMatching(labels.LabelArray{bar, foo})
+	c.Assert(ingressMatch, Equals, false)
+	c.Assert(egressMatch, Equals, false)
+
+	// When ingress deny policy is applied.
+	_, _, err := repo.Add(ingressDenyRule, []Endpoint{})
+	c.Assert(err, IsNil)
+	ingressMatch, egressMatch = repo.GetRulesMatching(labels.LabelArray{bar, foo})
+	c.Assert(ingressMatch, Equals, true)
+	c.Assert(egressMatch, Equals, false)
+
+	// Delete igress deny policy.
+	repo.DeleteByLabels(tag)
+
+	// When egress deny policy is applied.
+	_, _, err = repo.Add(egressDenyRule, []Endpoint{})
+	c.Assert(err, IsNil)
+	ingressMatch, egressMatch = repo.GetRulesMatching(labels.LabelArray{bar, foo})
+	c.Assert(ingressMatch, Equals, false)
+	c.Assert(egressMatch, Equals, true)
 }
 
 func (ds *PolicyTestSuite) TestDeniesIngress(c *C) {

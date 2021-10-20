@@ -7,7 +7,7 @@ if ! [[ -z $DOCKER_LOGIN && -z $DOCKER_PASSWORD ]]; then
 fi
 
 HOST=$(hostname)
-export HELM_VERSION="3.3.4"
+export HELM_VERSION="3.7.0"
 export TOKEN="258062.5d84c017c9b2796c"
 export CILIUM_CONFIG_DIR="/opt/cilium"
 export PROVISIONSRC="/tmp/provision/"
@@ -29,7 +29,7 @@ export KUBEADM_SVC_CIDR='10.96.0.0/12'
 export KUBEADM_V1BETA2_SVC_CIDR='10.96.0.0/12,fd03::/112'
 export IPV6_DUAL_STACK_FEATURE_GATE='true'
 export KUBEADM_CRI_SOCKET="/var/run/dockershim.sock"
-export KUBEADM_SLAVE_OPTIONS=""
+export KUBEADM_WORKER_OPTIONS=""
 export KUBEADM_OPTIONS=""
 export K8S_FULL_VERSION=""
 export CONTROLLER_FEATURE_GATES=""
@@ -231,7 +231,7 @@ case $K8S_VERSION in
         KUBERNETES_CNI_VERSION="0.7.5"
         K8S_FULL_VERSION="1.16.15"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
-        KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_ALPHA3}"
         ;;
@@ -239,7 +239,7 @@ case $K8S_VERSION in
         KUBERNETES_CNI_VERSION="0.8.7"
         K8S_FULL_VERSION="1.17.17"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
-        KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_ALPHA3}"
         ;;
@@ -249,9 +249,9 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.18.18"
+        K8S_FULL_VERSION="1.18.20"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
-        KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
         CONTROLLER_FEATURE_GATES="EndpointSlice=true"
@@ -263,9 +263,9 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.19.10"
+        K8S_FULL_VERSION="1.19.13"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
-        KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
         CONTROLLER_FEATURE_GATES="EndpointSlice=true"
@@ -277,9 +277,9 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.20.6"
+        K8S_FULL_VERSION="1.20.9"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
-        KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
         CONTROLLER_FEATURE_GATES="EndpointSlice=true"
@@ -291,9 +291,9 @@ case $K8S_VERSION in
         sudo apt-get install -y conntrack
         KUBERNETES_CNI_VERSION="0.8.7"
         KUBERNETES_CNI_OS="-linux"
-        K8S_FULL_VERSION="1.21.0"
+        K8S_FULL_VERSION="1.21.3"
         KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
-        KUBEADM_SLAVE_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
         CONTROLLER_FEATURE_GATES="EndpointSlice=true"
@@ -395,7 +395,7 @@ else
     if [[ "${SKIP_K8S_PROVISION}" == "false" ]]; then
       sudo -E bash -c 'echo "${KUBEADM_ADDR} k8s1" >> /etc/hosts'
       kubeadm join --token=$TOKEN ${KUBEADM_ADDR}:6443 \
-          ${KUBEADM_SLAVE_OPTIONS}
+          ${KUBEADM_WORKER_OPTIONS}
     else
       echo "SKIPPING K8S INSTALLATION"
     fi
@@ -420,10 +420,5 @@ cilium_pod() {
             -o jsonpath="{.items[?(@.spec.nodeName == \"\$1\")].metadata.name}"
 }
 EOF
-
-# Create world network
-docker network create --subnet=192.168.9.0/24 outside
-docker run --net outside --ip 192.168.9.10 --restart=always -d docker.io/cilium/demo-httpd:1.0
-docker run --net outside --ip 192.168.9.11 --restart=always -d docker.io/cilium/demo-httpd:1.0
 
 sudo touch /etc/provision_finished

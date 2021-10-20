@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package config
 
@@ -22,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"reflect"
 	"sort"
 	"text/template"
 
@@ -36,6 +24,8 @@ import (
 	"github.com/cilium/cilium/pkg/identity"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/logging"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/maglev"
 	"github.com/cilium/cilium/pkg/maps/bwmap"
@@ -58,11 +48,15 @@ import (
 	"github.com/cilium/cilium/pkg/maps/signalmap"
 	"github.com/cilium/cilium/pkg/maps/sockmap"
 	"github.com/cilium/cilium/pkg/maps/tunnel"
+	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
+
+var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "datapath-linux-config")
 
 // HeaderfileWriter is a wrapper type which implements datapath.ConfigWriter.
 // It manages writing of configuration of datapath program headerfiles.
@@ -112,9 +106,9 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		ipv4GW := node.GetInternalIPv4Router()
 		loopbackIPv4 := node.GetIPv4Loopback()
 		ipv4Range := node.GetIPv4AllocRange()
-		cDefinesMap["IPV4_GATEWAY"] = fmt.Sprintf("%#x", byteorder.HostSliceToNetwork(ipv4GW, reflect.Uint32).(uint32))
-		cDefinesMap["IPV4_LOOPBACK"] = fmt.Sprintf("%#x", byteorder.HostSliceToNetwork(loopbackIPv4, reflect.Uint32).(uint32))
-		cDefinesMap["IPV4_MASK"] = fmt.Sprintf("%#x", byteorder.HostSliceToNetwork(ipv4Range.Mask, reflect.Uint32).(uint32))
+		cDefinesMap["IPV4_GATEWAY"] = fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(ipv4GW))
+		cDefinesMap["IPV4_LOOPBACK"] = fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(loopbackIPv4))
+		cDefinesMap["IPV4_MASK"] = fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(net.IP(ipv4Range.Mask)))
 
 		if option.Config.EnableIPv4FragmentsTracking {
 			cDefinesMap["ENABLE_IPV4_FRAGMENTS"] = "1"
@@ -178,12 +172,12 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["EP_POLICY_MAP"] = eppolicymap.MapName
 	cDefinesMap["LB6_REVERSE_NAT_MAP"] = "cilium_lb6_reverse_nat"
 	cDefinesMap["LB6_SERVICES_MAP_V2"] = "cilium_lb6_services_v2"
-	cDefinesMap["LB6_BACKEND_MAP"] = "cilium_lb6_backends"
+	cDefinesMap["LB6_BACKEND_MAP_V2"] = "cilium_lb6_backends_v2"
 	cDefinesMap["LB6_REVERSE_NAT_SK_MAP"] = lbmap.SockRevNat6MapName
 	cDefinesMap["LB6_REVERSE_NAT_SK_MAP_SIZE"] = fmt.Sprintf("%d", lbmap.MaxSockRevNat6MapEntries)
 	cDefinesMap["LB4_REVERSE_NAT_MAP"] = "cilium_lb4_reverse_nat"
 	cDefinesMap["LB4_SERVICES_MAP_V2"] = "cilium_lb4_services_v2"
-	cDefinesMap["LB4_BACKEND_MAP"] = "cilium_lb4_backends"
+	cDefinesMap["LB4_BACKEND_MAP_V2"] = "cilium_lb4_backends_v2"
 	cDefinesMap["LB4_REVERSE_NAT_SK_MAP"] = lbmap.SockRevNat4MapName
 	cDefinesMap["LB4_REVERSE_NAT_SK_MAP_SIZE"] = fmt.Sprintf("%d", lbmap.MaxSockRevNat4MapEntries)
 
@@ -244,17 +238,37 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		if option.Config.EnableHostServicesUDP {
 			cDefinesMap["ENABLE_HOST_SERVICES_UDP"] = "1"
 		}
-		if option.Config.EnableHostServicesTCP && option.Config.EnableHostServicesUDP {
+		if option.Config.EnableHostServicesTCP && option.Config.EnableHostServicesUDP && !option.Config.BPFSocketLBHostnsOnly {
 			cDefinesMap["ENABLE_HOST_SERVICES_FULL"] = "1"
 		}
 		if option.Config.EnableHostServicesPeer {
 			cDefinesMap["ENABLE_HOST_SERVICES_PEER"] = "1"
+		}
+		if option.Config.BPFSocketLBHostnsOnly {
+			cDefinesMap["ENABLE_SOCKET_LB_HOST_ONLY"] = "1"
+		}
+
+		if cookie, err := netns.GetNetNSCookie(); err == nil {
+			// When running in nested environments (e.g. Kind), cilium-agent does
+			// not run in the host netns. So, in such cases the cookie comparison
+			// based on bpf_get_netns_cookie(NULL) for checking whether a socket
+			// belongs to a host netns does not work.
+			//
+			// To fix this, we derive the cookie of the netns in which cilium-agent
+			// runs via getsockopt(...SO_NETNS_COOKIE...) and then use it in the
+			// check above. This is based on an assumption that cilium-agent
+			// always runs with "hostNetwork: true".
+			cDefinesMap["HOST_NETNS_COOKIE"] = fmt.Sprintf("%d", cookie)
 		}
 	}
 
 	if option.Config.EnableNodePort {
 		if option.Config.EnableHealthDatapath {
 			cDefinesMap["ENABLE_HEALTH_CHECK"] = "1"
+		}
+		if option.Config.EnableMKE && option.Config.EnableHostReachableServices {
+			cDefinesMap["ENABLE_MKE"] = "1"
+			cDefinesMap["MKE_HOST"] = fmt.Sprintf("%d", option.HostExtensionMKE)
 		}
 		if option.Config.EnableRecorder {
 			cDefinesMap["ENABLE_CAPTURE"] = "1"
@@ -268,7 +282,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			}
 		}
 		cDefinesMap["ENABLE_NODEPORT"] = "1"
-		cDefinesMap["ENABLE_LOADBALANCER"] = "1"
 		if option.Config.EnableIPv4 {
 			cDefinesMap["NODEPORT_NEIGH4"] = neighborsmap.Map4Name
 			cDefinesMap["NODEPORT_NEIGH4_SIZE"] = fmt.Sprintf("%d", option.Config.NeighMapEntriesGlobal)
@@ -326,7 +339,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		}
 		if option.Config.EnableIPv4 {
 			if option.Config.LoadBalancerRSSv4CIDR != "" {
-				ipv4 := byteorder.HostSliceToNetwork(option.Config.LoadBalancerRSSv4.IP, reflect.Uint32).(uint32)
+				ipv4 := byteorder.NetIPv4ToHost32(option.Config.LoadBalancerRSSv4.IP)
 				ones, _ := option.Config.LoadBalancerRSSv4.Mask.Size()
 				cDefinesMap["IPV4_RSS_PREFIX"] = fmt.Sprintf("%d", ipv4)
 				cDefinesMap["IPV4_RSS_PREFIX_BITS"] = fmt.Sprintf("%d", ones)
@@ -352,12 +365,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		}
 		if option.Config.NodePortHairpin {
 			cDefinesMap["ENABLE_NODEPORT_HAIRPIN"] = "1"
-		}
-		if option.Config.EnableExternalIPs {
-			cDefinesMap["ENABLE_EXTERNAL_IP"] = "1"
-		}
-		if option.Config.EnableHostPort {
-			cDefinesMap["ENABLE_HOSTPORT"] = "1"
 		}
 		if !option.Config.EnableHostLegacyRouting {
 			cDefinesMap["ENABLE_REDIRECT_FAST"] = "1"
@@ -422,13 +429,25 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		cDefinesMap["DIRECT_ROUTING_DEV_IFINDEX"] = fmt.Sprintf("%d", directRoutingIfIndex)
 
 		if option.Config.EnableIPv4 {
-			nodePortIPv4Addrs := node.GetNodePortIPv4AddrsWithDevices()
-			ipv4 := byteorder.HostSliceToNetwork(nodePortIPv4Addrs[directRoutingIface], reflect.Uint32).(uint32)
+			ip, ok := node.GetNodePortIPv4AddrsWithDevices()[directRoutingIface]
+			if !ok {
+				log.WithFields(logrus.Fields{
+					"directRoutingIface": directRoutingIface,
+				}).Fatal("NodePort enabled but direct routing device's IPv4 address not found")
+			}
+
+			ipv4 := byteorder.NetIPv4ToHost32(ip)
 			cDefinesMap["IPV4_DIRECT_ROUTING"] = fmt.Sprintf("%d", ipv4)
 		}
 
 		if option.Config.EnableIPv6 {
-			directRoutingIPv6 := node.GetNodePortIPv6AddrsWithDevices()[directRoutingIface]
+			directRoutingIPv6, ok := node.GetNodePortIPv6AddrsWithDevices()[directRoutingIface]
+			if !ok {
+				log.WithFields(logrus.Fields{
+					"directRoutingIface": directRoutingIface,
+				}).Fatal("NodePort enabled but direct routing device's IPv6 address not found")
+			}
+
 			extraMacrosMap["IPV6_DIRECT_ROUTING"] = directRoutingIPv6.String()
 			fw.WriteString(FmtDefineAddress("IPV6_DIRECT_ROUTING", directRoutingIPv6))
 		}
@@ -455,7 +474,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	}
 
 	if option.Config.EnableIPSec {
-		a := byteorder.HostSliceToNetwork(node.GetIPv4(), reflect.Uint32).(uint32)
+		a := byteorder.NetIPv4ToHost32(node.GetIPv4())
 		cDefinesMap["IPV4_ENCRYPT_IFACE"] = fmt.Sprintf("%d", a)
 		if iface := option.Config.EncryptInterface; len(iface) != 0 {
 			link, err := netlink.LinkByName(iface[0])
@@ -486,7 +505,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			cDefinesMap["ENABLE_MASQUERADE"] = "1"
 			cidr := datapath.RemoteSNATDstAddrExclusionCIDRv4()
 			cDefinesMap["IPV4_SNAT_EXCLUSION_DST_CIDR"] =
-				fmt.Sprintf("%#x", byteorder.HostSliceToNetwork(cidr.IP, reflect.Uint32).(uint32))
+				fmt.Sprintf("%#x", byteorder.NetIPv4ToHost32(cidr.IP))
 			ones, _ := cidr.Mask.Size()
 			cDefinesMap["IPV4_SNAT_EXCLUSION_DST_CIDR_LEN"] = fmt.Sprintf("%d", ones)
 
@@ -515,6 +534,12 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	if option.Config.EnableCustomCalls {
 		cDefinesMap["ENABLE_CUSTOM_CALLS"] = "1"
 	}
+
+	vlanFilter, err := vlanFilterMacros()
+	if err != nil {
+		return err
+	}
+	cDefinesMap["VLAN_FILTER(ifindex, vlan_id)"] = vlanFilter
 
 	// Since golang maps are unordered, we sort the keys in the map
 	// to get a consistent writtern format to the writer. This maintains
@@ -548,6 +573,75 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	}
 
 	return fw.Flush()
+}
+
+// vlanFilterMacros generates VLAN_FILTER macros which
+// are written to node_config.h
+func vlanFilterMacros() (string, error) {
+	devices := make(map[int]bool)
+	for _, device := range option.Config.Devices {
+		ifindex, err := link.GetIfIndex(device)
+		if err != nil {
+			return "", err
+		}
+		devices[int(ifindex)] = true
+	}
+
+	allowedVlans := make(map[int]bool)
+	for _, vlanId := range option.Config.VLANBPFBypass {
+		allowedVlans[vlanId] = true
+	}
+
+	// allow all vlan id's
+	if allowedVlans[0] {
+		return "return true", nil
+	}
+
+	vlansByIfIndex := make(map[int][]int)
+
+	links, err := netlink.LinkList()
+	if err != nil {
+		return "", err
+	}
+
+	for _, l := range links {
+		vlan, ok := l.(*netlink.Vlan)
+		// if it's vlan device and we're controlling vlan main device
+		// and either all vlans are allowed, or we're controlling vlan device or vlan is explicitly allowed
+		if ok && devices[vlan.ParentIndex] && (devices[vlan.Index] || allowedVlans[vlan.VlanId]) {
+			vlansByIfIndex[vlan.ParentIndex] = append(vlansByIfIndex[vlan.ParentIndex], vlan.VlanId)
+		}
+	}
+
+	vlansCount := 0
+	for _, v := range vlansByIfIndex {
+		vlansCount += len(v)
+		sort.Ints(v) // sort Vlanids in-place since netlink.LinkList() may return them in any order
+	}
+
+	if vlansCount == 0 {
+		return "return false", nil
+	} else if vlansCount > 5 {
+		return "", fmt.Errorf("allowed VLAN list is too big - %d entries, please use '--vlan-bpf-bypass 0' in order to allow all available VLANs", vlansCount)
+	} else {
+		vlanFilterTmpl := template.Must(template.New("vlanFilter").Parse(
+			`switch (ifindex) { \
+{{range $ifindex,$vlans := . -}} case {{$ifindex}}: \
+switch (vlan_id) { \
+{{range $vlan := $vlans -}} case {{$vlan}}: \
+{{end}}return true; \
+} \
+break; \
+{{end}}} \
+return false;`))
+
+		var vlanFilterMacro bytes.Buffer
+		if err := vlanFilterTmpl.Execute(&vlanFilterMacro, vlansByIfIndex); err != nil {
+			return "", fmt.Errorf("failed to execute template: %q", err)
+		}
+
+		return vlanFilterMacro.String(), nil
+	}
 }
 
 // devMacros generates NATIVE_DEV_MAC_BY_IFINDEX and IS_L3_DEV macros which
@@ -690,7 +784,7 @@ func (h *HeaderfileWriter) writeStaticData(fw io.Writer, e datapath.EndpointConf
 
 	secID := e.GetIdentityLocked().Uint32()
 	fmt.Fprint(fw, defineUint32("SECLABEL", secID))
-	fmt.Fprint(fw, defineUint32("SECLABEL_NB", byteorder.HostToNetwork(secID).(uint32)))
+	fmt.Fprint(fw, defineUint32("SECLABEL_NB", byteorder.HostToNetwork32(secID)))
 	fmt.Fprint(fw, defineUint32("POLICY_VERDICT_LOG_FILTER", e.GetPolicyVerdictLogFilter()))
 
 	epID := uint16(e.GetID())
@@ -730,6 +824,10 @@ func (h *HeaderfileWriter) writeTemplateConfig(fw *bufio.Writer, e datapath.Endp
 
 	if e.RequireEndpointRoute() {
 		fmt.Fprintf(fw, "#define ENABLE_ENDPOINT_ROUTES 1\n")
+	}
+
+	if e.DisableSIPVerification() {
+		fmt.Fprintf(fw, "#define DISABLE_SIP_VERIFICATION 1\n")
 	}
 
 	if !option.Config.EnableHostLegacyRouting && option.Config.DirectRoutingDevice != "" {

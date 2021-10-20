@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ipcache
 
@@ -76,11 +65,6 @@ type IPCache struct {
 	ipToHostIPCache   map[string]IPKeyPair
 	ipToK8sMetadata   map[string]K8sMetadata
 
-	// prefixLengths reference-count the number of CIDRs that use
-	// particular prefix lengths for the mask.
-	v4PrefixLengths map[int]int
-	v6PrefixLengths map[int]int
-
 	listeners []IPIdentityMappingListener
 
 	// controllers manages the async controllers for this IPCache
@@ -109,8 +93,6 @@ func NewIPCache() *IPCache {
 		identityToIPCache: map[identity.NumericIdentity]map[string]struct{}{},
 		ipToHostIPCache:   map[string]IPKeyPair{},
 		ipToK8sMetadata:   map[string]K8sMetadata{},
-		v4PrefixLengths:   map[int]int{},
-		v6PrefixLengths:   map[int]int{},
 		controllers:       controller.NewManager(),
 		namedPorts:        nil,
 	}
@@ -595,13 +577,6 @@ func (ipc *IPCache) LookupByHostRLocked(hostIPv4, hostIPv6 net.IP) (cidrs []net.
 		}
 	}
 	return cidrs
-}
-
-// GetIPIdentityMapModel returns all known endpoint IP to security identity mappings
-// stored in the key-value store.
-func GetIPIdentityMapModel() {
-	// TODO (ianvernon) return model of ip to identity mapping. For use in CLI.
-	// see GH-2555
 }
 
 // Equal returns true if two K8sMetadata pointers contain the same data or are

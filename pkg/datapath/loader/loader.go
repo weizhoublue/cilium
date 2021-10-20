@@ -1,29 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package loader
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path"
-	"reflect"
 	"sync"
-	"syscall"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
@@ -183,7 +169,7 @@ func patchHostNetdevDatapath(ep datapath.Endpoint, objPath, dstPath, ifName stri
 	if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade && bpfMasqIPv4Addrs != nil {
 		if option.Config.EnableIPv4 {
 			ipv4 := bpfMasqIPv4Addrs[ifName]
-			opts["IPV4_MASQUERADE"] = byteorder.HostSliceToNetwork(ipv4, reflect.Uint32).(uint32)
+			opts["IPV4_MASQUERADE"] = byteorder.NetIPv4ToHost32(ipv4)
 		}
 	}
 
@@ -352,32 +338,18 @@ func (l *Loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs 
 		}
 	}
 
-	if ip := ep.IPv4Address(); ip.IsSet() {
+	if ep.RequireEndpointRoute() {
 		scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
 			logfields.Veth: ep.InterfaceName(),
 		})
-		if ep.RequireEndpointRoute() {
+		if ip := ep.IPv4Address(); ip.IsSet() {
 			if err := upsertEndpointRoute(ep, *ip.IPNet(32)); err != nil {
 				scopedLog.WithError(err).Warn("Failed to upsert route")
 			}
-		} else {
-			if err := removeEndpointRoute(ep, *ip.IPNet(32)); err != nil && !errors.Is(err, syscall.ESRCH) {
-				scopedLog.WithError(err).Warn("Failed to remove route")
-			}
 		}
-	}
-
-	if ip := ep.IPv6Address(); ip.IsSet() {
-		scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
-			logfields.Veth: ep.InterfaceName(),
-		})
-		if ep.RequireEndpointRoute() {
+		if ip := ep.IPv6Address(); ip.IsSet() {
 			if err := upsertEndpointRoute(ep, *ip.IPNet(128)); err != nil {
 				scopedLog.WithError(err).Warn("Failed to upsert route")
-			}
-		} else {
-			if err := removeEndpointRoute(ep, *ip.IPNet(128)); err != nil && !errors.Is(err, syscall.ESRCH) {
-				scopedLog.WithError(err).Warn("Failed to remove route")
 			}
 		}
 	}

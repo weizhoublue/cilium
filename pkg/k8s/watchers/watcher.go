@@ -1,16 +1,5 @@
-// Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package watchers
 
@@ -34,6 +23,8 @@ import (
 	"github.com/cilium/cilium/pkg/k8s"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
+	slim_discover_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
 	"github.com/cilium/cilium/pkg/k8s/synced"
 	k8sTypes "github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/k8s/utils"
@@ -50,6 +41,7 @@ import (
 	"github.com/cilium/cilium/pkg/redirectpolicy"
 
 	"github.com/sirupsen/logrus"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
@@ -158,8 +150,10 @@ type bgpSpeakerManager interface {
 	OnDeleteService(svc *slim_corev1.Service)
 
 	OnUpdateEndpoints(eps *slim_corev1.Endpoints)
+	OnUpdateEndpointSliceV1(eps *slim_discover_v1.EndpointSlice)
+	OnUpdateEndpointSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice)
 
-	OnUpdateNode(node *slim_corev1.Node)
+	OnUpdateNode(node *corev1.Node)
 }
 type egressPolicyManager interface {
 	AddEgressPolicy(config egresspolicy.Config) (bool, error)
@@ -203,6 +197,8 @@ type K8sWatcher struct {
 	// variable is written for the first time.
 	podStoreSet  chan struct{}
 	podStoreOnce sync.Once
+
+	nodeStore cache.Store
 
 	namespaceStore cache.Store
 	datapath       datapath.Datapath
@@ -446,7 +442,7 @@ func (k *K8sWatcher) EnableK8sWatcher(ctx context.Context) error {
 	go k.podsInit(k8s.WatcherClient(), asyncControllers)
 
 	// kubernetes nodes
-	k.nodesInit(k8s.WatcherClient())
+	k.NodesInit(k8s.Client())
 
 	// kubernetes namespaces
 	asyncControllers.Add(1)

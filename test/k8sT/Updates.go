@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
@@ -21,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cilium/cilium/pkg/versioncheck"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 
@@ -235,17 +223,19 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 		cleanupCiliumState(filepath.Join(kubectl.BasePath(), helpers.HelmTemplate), newHelmChartVersion, "", newImageVersion, "")
 
 		By("Cleaning Cilium state (%s)", oldImageVersion)
-		cleanupCiliumState("cilium/cilium", oldHelmChartVersion, "quay.io/cilium/cilium", oldImageVersion, "")
+		cleanupCiliumState("cilium/cilium", oldHelmChartVersion, "quay.io/cilium/cilium-ci", oldImageVersion, "")
 
 		By("Deploying Cilium %s", oldHelmChartVersion)
 
 		opts := map[string]string{
-			"image.tag":                     oldImageVersion,
-			"operator.image.tag":            oldImageVersion,
-			"hubble.relay.image.tag":        oldImageVersion,
-			"image.repository":              "quay.io/cilium/cilium",
-			"operator.image.repository":     "quay.io/cilium/operator",
-			"hubble.relay.image.repository": "quay.io/cilium/hubble-relay",
+			"image.tag":                              oldImageVersion,
+			"operator.image.tag":                     oldImageVersion,
+			"hubble.relay.image.tag":                 oldImageVersion,
+			"clustermesh.apiserver.image.tag":        oldImageVersion,
+			"image.repository":                       "quay.io/cilium/cilium-ci",
+			"operator.image.repository":              "quay.io/cilium/operator",
+			"hubble.relay.image.repository":          "quay.io/cilium/hubble-relay-ci",
+			"clustermesh.apiserver.image.repository": "quay.io/cilium/clustermesh-apiserver-ci",
 		}
 
 		// Eventually allows multiple return values, and performs the assertion
@@ -401,12 +391,7 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 			"operator.enabled":    "false ",
 			"preflight.image.tag": newImageVersion,
 			"nodeinit.enabled":    "false",
-		}
-		hasNewHelmValues := versioncheck.MustCompile(">=1.8.90")
-		if hasNewHelmValues(versioncheck.MustVersion(newHelmChartVersion)) {
-			opts["agent"] = "false "
-		} else {
-			opts["agent.enabled"] = "false "
+			"agent":               "false ",
 		}
 
 		EventuallyWithOffset(1, func() (*helpers.CmdRes, error) {
@@ -435,18 +420,6 @@ func InstallAndValidateCiliumUpgrades(kubectl *helpers.Kubectl, oldHelmChartVers
 			"image.tag":              newImageVersion,
 			"operator.image.tag":     newImageVersion,
 			"hubble.relay.image.tag": newImageVersion,
-		}
-		// We have removed the labels since >= 1.7 and we are only testing
-		// starting from 1.6.
-		if oldHelmChartVersion == "1.6-dev" {
-			opts["agent.keepDeprecatedLabels"] = "true"
-		}
-		// We have replaced the liveness and readiness probes since >= 1.8 and
-		// we need to keep those deprecated probes from <1.8-dev to >=1.8
-		// upgrades since kubernetes does not do `kubectl apply -f` correctly.
-		switch oldHelmChartVersion {
-		case "1.6-dev", "1.7-dev":
-			opts["agent.keepDeprecatedProbes"] = "true"
 		}
 
 		upgradeCompatibilityVer := strings.TrimSuffix(oldHelmChartVersion, "-dev")

@@ -18,7 +18,7 @@ func (c *Client) DescribeNetworkInterfacePermissions(ctx context.Context, params
 		params = &DescribeNetworkInterfacePermissionsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeNetworkInterfacePermissions", params, optFns, addOperationDescribeNetworkInterfacePermissionsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeNetworkInterfacePermissions", params, optFns, c.addOperationDescribeNetworkInterfacePermissionsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -40,26 +40,28 @@ type DescribeNetworkInterfacePermissionsInput struct {
 	// * network-interface-permission.network-interface-id - The ID of the
 	// network interface.
 	//
-	// * network-interface-permission.aws-account-id - The AWS
-	// account ID.
+	// * network-interface-permission.aws-account-id - The Amazon
+	// Web Services account ID.
 	//
-	// * network-interface-permission.aws-service - The AWS service.
+	// * network-interface-permission.aws-service - The
+	// Amazon Web Service.
 	//
-	// *
-	// network-interface-permission.permission - The type of permission
-	// (INSTANCE-ATTACH | EIP-ASSOCIATE).
+	// * network-interface-permission.permission - The type of
+	// permission (INSTANCE-ATTACH | EIP-ASSOCIATE).
 	Filters []types.Filter
 
 	// The maximum number of results to return in a single call. To retrieve the
 	// remaining results, make another call with the returned NextToken value. If this
 	// parameter is not specified, up to 50 results are returned by default.
-	MaxResults int32
+	MaxResults *int32
 
 	// One or more network interface permission IDs.
 	NetworkInterfacePermissionIds []string
 
 	// The token to request the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output for DescribeNetworkInterfacePermissions.
@@ -73,9 +75,11 @@ type DescribeNetworkInterfacePermissionsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeNetworkInterfacePermissionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeNetworkInterfacePermissionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeNetworkInterfacePermissions{}, middleware.After)
 	if err != nil {
 		return err
@@ -174,8 +178,8 @@ func NewDescribeNetworkInterfacePermissionsPaginator(client DescribeNetworkInter
 	}
 
 	options := DescribeNetworkInterfacePermissionsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -204,7 +208,11 @@ func (p *DescribeNetworkInterfacePermissionsPaginator) NextPage(ctx context.Cont
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeNetworkInterfacePermissions(ctx, &params, optFns...)
 	if err != nil {

@@ -17,7 +17,7 @@ func (c *Client) DisassociateTransitGatewayRouteTable(ctx context.Context, param
 		params = &DisassociateTransitGatewayRouteTableInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DisassociateTransitGatewayRouteTable", params, optFns, addOperationDisassociateTransitGatewayRouteTableMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DisassociateTransitGatewayRouteTable", params, optFns, c.addOperationDisassociateTransitGatewayRouteTableMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,9 @@ type DisassociateTransitGatewayRouteTableInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type DisassociateTransitGatewayRouteTableOutput struct {
@@ -53,9 +55,11 @@ type DisassociateTransitGatewayRouteTableOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDisassociateTransitGatewayRouteTableMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDisassociateTransitGatewayRouteTableMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDisassociateTransitGatewayRouteTable{}, middleware.After)
 	if err != nil {
 		return err

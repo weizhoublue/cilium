@@ -21,7 +21,7 @@ func (c *Client) GetSerialConsoleAccessStatus(ctx context.Context, params *GetSe
 		params = &GetSerialConsoleAccessStatusInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "GetSerialConsoleAccessStatus", params, optFns, addOperationGetSerialConsoleAccessStatusMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "GetSerialConsoleAccessStatus", params, optFns, c.addOperationGetSerialConsoleAccessStatusMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,9 @@ type GetSerialConsoleAccessStatusInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type GetSerialConsoleAccessStatusOutput struct {
@@ -45,13 +47,15 @@ type GetSerialConsoleAccessStatusOutput struct {
 	// If true, access to the EC2 serial console of all instances is enabled for your
 	// account. If false, access to the EC2 serial console of all instances is disabled
 	// for your account.
-	SerialConsoleAccessEnabled bool
+	SerialConsoleAccessEnabled *bool
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationGetSerialConsoleAccessStatusMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationGetSerialConsoleAccessStatusMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpGetSerialConsoleAccessStatus{}, middleware.After)
 	if err != nil {
 		return err

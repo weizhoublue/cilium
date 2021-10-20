@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -97,13 +86,14 @@ func identitiesForFQDNSelectorIPs(selectorsWithIPsToUpdate map[policyApi.FQDNSel
 	return selectorIdentitySliceMapping, newlyAllocatedIdentities, nil
 }
 
-func (d *Daemon) updateSelectorCacheFQDNs(ctx context.Context, selectors map[policyApi.FQDNSelector][]*identity.Identity, selectorsWithoutIPs []policyApi.FQDNSelector) (wg *sync.WaitGroup) {
+func (d *Daemon) updateSelectorCacheFQDNs(ctx context.Context, selectors map[policyApi.FQDNSelector][]*identity.Identity, selectorsWithoutIPs []policyApi.FQDNSelector) *sync.WaitGroup {
 	// There may be nothing to update - in this case, we exit and do not need
 	// to trigger policy updates for all endpoints.
 	if len(selectors) == 0 && len(selectorsWithoutIPs) == 0 {
 		return &sync.WaitGroup{}
 	}
 
+	notifyWg := &sync.WaitGroup{}
 	// Update mapping of selector to set of IPs in selector cache.
 	for selector, identitySlice := range selectors {
 		log.WithFields(logrus.Fields{
@@ -114,7 +104,7 @@ func (d *Daemon) updateSelectorCacheFQDNs(ctx context.Context, selectors map[pol
 			// Nil check here? Hopefully not necessary...
 			numIds = append(numIds, numId.ID)
 		}
-		d.policy.GetSelectorCache().UpdateFQDNSelector(selector, numIds)
+		d.policy.GetSelectorCache().UpdateFQDNSelector(selector, numIds, notifyWg)
 	}
 
 	if len(selectorsWithoutIPs) > 0 {
@@ -125,10 +115,10 @@ func (d *Daemon) updateSelectorCacheFQDNs(ctx context.Context, selectors map[pol
 		log.WithFields(logrus.Fields{
 			"fqdnSelectors": selectorsWithoutIPs,
 		}).Debug("removing all identities from FQDN selectors")
-		d.policy.GetSelectorCache().RemoveIdentitiesFQDNSelectors(selectorsWithoutIPs)
+		d.policy.GetSelectorCache().RemoveIdentitiesFQDNSelectors(selectorsWithoutIPs, notifyWg)
 	}
 
-	return d.endpointManager.UpdatePolicyMaps(ctx)
+	return d.endpointManager.UpdatePolicyMaps(ctx, notifyWg)
 }
 
 // bootstrapFQDN initializes the toFQDNs related subsystems: dnsNameManager and the DNS proxy.
@@ -141,6 +131,10 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 		Cache:           fqdn.NewDNSCache(option.Config.ToFQDNsMinTTL),
 		UpdateSelectors: d.updateSelectors,
 	}
+	// Disable cleanup tracking on the default DNS cache. This cache simply
+	// tracks which api.FQDNSelector are present in policy which apply to
+	// locally running endpoints.
+	cfg.Cache.DisableCleanupTrack()
 
 	rg := fqdn.NewNameManager(cfg)
 	d.policy.GetSelectorCache().SetLocalIdentityNotifier(rg)
@@ -311,8 +305,8 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 		d.notifyOnDNSMsg)
 	if err == nil {
 		// Increase the ProxyPort reference count so that it will never get released.
-		err = d.l7Proxy.SetProxyPort(listenerName, proxy.DefaultDNSProxy.BindPort)
-		if err == nil && port == proxy.DefaultDNSProxy.BindPort {
+		err = d.l7Proxy.SetProxyPort(listenerName, proxy.DefaultDNSProxy.GetBindPort())
+		if err == nil && port == proxy.DefaultDNSProxy.GetBindPort() {
 			log.Infof("Reusing previous DNS proxy port: %d", port)
 		}
 		proxy.DefaultDNSProxy.SetRejectReply(option.Config.FQDNRejectResponse)

@@ -60,6 +60,11 @@ Users (Alphabetically)
       U: Networking, NetworkPolicy, Services, IPVLAN
       L: https://www.alibabacloud.com/blog/how-does-alibaba-cloud-build-high-performance-cloud-native-pod-networks-in-production-environments_596590
 
+    * N: Amazon Web Services (AWS)
+      D: AWS uses Cilium as the default CNI for EKS Anywhere
+      U: Networking, NetworkPolicy, Services
+      L: https://isovalent.com/blog/post/2021-09-aws-eks-anywhere-chooses-cilium
+
     * N: ArangoDB Oasis
       D: ArangoDB Oasis is using Cilium in to separate database deployments in our multi-tenant cloud environment
       U: Networking, CiliumNetworkPolicy(cluster & local), Hubble, IPAM
@@ -77,6 +82,10 @@ Users (Alphabetically)
       L: https://www.youtube.com/watch?v=yXm7yZE2rk4
       Q: @rmaika @mohahmed13
 
+    * N: Cognite
+      D: Cognite is an industrial DataOps provider and uses Cilium as the CNI plugin
+      Q: @Robert Collins
+
     * N: Datadog
       D: Datadog is using Cilium in AWS (self-hosted k8s)
       U: ENI Networking, Service load-balancing, Encryption
@@ -91,6 +100,11 @@ Users (Alphabetically)
       D: finleap connect is using Cilium in their production clusters (self-hosted, bare-metal, private cloud)
       U: CNI, NetworkPolicies
       Q: @chue
+      
+    * N: Form3
+      D: Form3 is using Cilium in their production clusters (self-hosted, bare-metal, private cloud) 
+      U: Service load-balancing, Encryption, CNI, NetworkPolicies
+      Q: @kevholditch-f3, samo-f3, ewilde-form3  
 
     * N: GitLab
       D: GitLab is using Cilium to implement network policies inside Auto DevOps deployed clusters for customers using k8s
@@ -147,6 +161,12 @@ Users (Alphabetically)
       D: uSwitch is using Cilium in AWS for all their production clusters (self hosted k8s)
       U: ClusterMesh, CNI-Chaining (with amazon-vpc-cni-k8s)
       Q: @jirving
+      
+    * N: Utmost Software, Inc
+      D: Utmost is using Cilium in all tiers of its Kubernetes ecosystem to implement zero trust
+      U: CNI, DefaultDeny(Zero Trust), Hubble, CiliumNetworkPolicy, CiliumClusterwideNetworkPolicy
+      L: https://blog.utmost.co/zero-trust-security-at-utmost
+      Q: @andrewholt  
 
     * N: Trip.com
       D: Trip.com is using Cilium in their production clusters (self-hosted k8s, On-premises and AWS)
@@ -163,3 +183,7 @@ Users (Alphabetically)
       D: Wildlife Studios is using Cilium in AWS for all their game production clusters (self hosted k8s)
       U: ClusterMesh, Global Service Load Balancing.
       Q: @Oki @luanguimaraesla
+
+    * N: Yahoo!
+      D: Yahoo is using Cilium for L4 North-South Load Balancing for Kubernetes Services
+      L: https://www.youtube.com/watch?v=-C86fBMcp5Q

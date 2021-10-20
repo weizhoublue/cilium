@@ -1203,6 +1203,10 @@ definitions:
           Installs a route in the Linux routing table pointing to the device of
           the endpoint's interface.
         type: boolean
+      disable-sip-verification:
+        description: >
+          Disable source IP verification for the endpoint.
+        type: boolean
   EndpointStatus:
     description: The current state and configuration of the endpoint, its policy & datapath, and subcomponents
     type: object
@@ -1713,6 +1717,9 @@ definitions:
       container-runtime:
         description: Status of local container runtime
         "$ref": "#/definitions/Status"
+      host-firewall:
+        description: Status of the host firewall
+        "$ref": "#/definitions/HostFirewall"
       hubble:
         description: Status of Hubble server
         "$ref": "#/definitions/HubbleStatus"
@@ -1786,6 +1793,22 @@ definitions:
       msg:
         type: string
         description: Human readable status/error/warning message
+  HostFirewall:
+    description: |-
+      Status of the host firewall
+
+      +k8s:deepcopy-gen=true
+    type: object
+    properties:
+      mode:
+        type: string
+        enum:
+        - Disabled
+        - Enabled
+      devices:
+        type: array
+        items:
+          type: string
   HubbleStatus:
     description: |-
       Status of the Hubble server
@@ -2194,6 +2217,10 @@ definitions:
       egress-multi-home-ip-rule-compat:
         description: Configured compatibility mode for --egress-multi-home-ip-rule-compat
         type: boolean
+      daemonConfigurationMap:
+        description: Config map which contains all the active daemon configurations
+        additionalProperties:
+          type: object
   DatapathMode:
     description: Datapath mode
     type: string
@@ -2324,6 +2351,8 @@ definitions:
         enum:
           - TCP
           - UDP
+          - ICMP
+          - ICMPV6
           - ANY
       port:
         description: Layer 4 port number

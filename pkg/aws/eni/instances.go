@@ -1,17 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
 // Copyright 2017 Lyft, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package eni
 
@@ -103,6 +92,30 @@ func (m *InstancesManager) GetSubnets(ctx context.Context) ipamTypes.SubnetMap {
 	}
 
 	return subnetsCopy
+}
+
+// FindSubnetByIDs returns the subnet with the most addresses matching VPC ID,
+// availability zone within a provided list of subnet ids
+//
+// The returned subnet is immutable so it can be safely accessed
+func (m *InstancesManager) FindSubnetByIDs(vpcID, availabilityZone string, subnetIDs []string) (bestSubnet *ipamTypes.Subnet) {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	for _, s := range m.subnets {
+		if s.VirtualNetworkID == vpcID && s.AvailabilityZone == availabilityZone {
+			for _, subnetID := range subnetIDs {
+				if s.ID == subnetID {
+					if bestSubnet == nil || bestSubnet.AvailableAddresses < s.AvailableAddresses {
+						bestSubnet = s
+					}
+					continue
+				}
+			}
+		}
+	}
+
+	return
 }
 
 // FindSubnetByTags returns the subnet with the most addresses matching VPC ID,

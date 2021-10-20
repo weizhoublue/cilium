@@ -22,20 +22,17 @@
 /* Pass unknown ICMPv6 NS to stack */
 #define ACTION_UNKNOWN_ICMP6_NS CTX_ACT_OK
 
-/* Include policy_can_access_ingress() */
-#define REQUIRES_CAN_ACCESS
-
 /* CB_PROXY_MAGIC overlaps with CB_ENCRYPT_MAGIC */
 #define ENCRYPT_OR_PROXY_MAGIC 0
-
-#ifdef POD_ENDPOINT
-# undef ENABLE_HOST_FIREWALL
-#endif
 
 /* Controls the inclusion of the CILIUM_CALL_SEND_ICMP6_ECHO_REPLY section in
  * the bpf_lxc object file.
  */
 #define SKIP_ICMPV6_ECHO_HANDLING
+
+#ifndef VLAN_FILTER
+# define VLAN_FILTER(ifindex, vlan_id) return false;
+#endif
 
 #include "lib/common.h"
 #include "lib/edt.h"
@@ -60,6 +57,10 @@
 #include "lib/host_firewall.h"
 #include "lib/overloadable.h"
 #include "lib/encrypt.h"
+
+static __always_inline bool allow_vlan(__u32 __maybe_unused ifindex, __u32 __maybe_unused vlan_id) {
+	VLAN_FILTER(ifindex, vlan_id);
+}
 
 #if defined(ENABLE_IPV4) || defined(ENABLE_IPV6)
 static __always_inline int rewrite_dmac_to_host(struct __ctx_buff *ctx,
@@ -180,6 +181,7 @@ handle_ipv6(struct __ctx_buff *ctx, __u32 secctx, const bool from_host)
 	void *data, *data_end;
 	struct ipv6hdr *ip6;
 	union v6addr *dst;
+	__u32 __maybe_unused monitor = 0;
 	__u32 __maybe_unused remote_id = WORLD_ID;
 	int ret, l3_off = ETH_HLEN, hdrlen;
 	bool skip_redirect = false;
@@ -210,19 +212,21 @@ handle_ipv6(struct __ctx_buff *ctx, __u32 secctx, const bool from_host)
 			if (ret < 0)
 				return ret;
 		}
-#if defined(NO_REDIRECT) && !defined(ENABLE_REDIRECT_FAST)
-		/* See IPv4 case for NO_REDIRECT/ENABLE_REDIRECT_FAST comments */
-		skip_redirect = true;
-#endif /* NO_REDIRECT && !ENABLE_REDIRECT_FAST */
 		/* Verifier workaround: modified ctx access. */
 		if (!revalidate_data(ctx, &data, &data_end, &ip6))
 			return DROP_INVALID;
 	}
 #endif /* ENABLE_NODEPORT */
 
+#if defined(NO_REDIRECT) && !defined(ENABLE_REDIRECT_FAST)
+	/* See IPv4 case for NO_REDIRECT/ENABLE_REDIRECT_FAST comments */
+	if (!from_host)
+		skip_redirect = true;
+#endif /* NO_REDIRECT && !ENABLE_REDIRECT_FAST */
+
 #ifdef ENABLE_HOST_FIREWALL
 	if (from_host) {
-		ret = ipv6_host_policy_egress(ctx, secctx);
+		ret = ipv6_host_policy_egress(ctx, secctx, &monitor);
 		if (IS_ERR(ret))
 			return ret;
 	} else if (!ctx_skip_host_fw(ctx)) {
@@ -268,7 +272,7 @@ skip_host_firewall:
 	if (!from_host)
 		return CTX_ACT_OK;
 
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 	dst = (union v6addr *) &ip6->daddr;
 	info = ipcache_lookup6(&IPCACHE_MAP, dst, V6_CACHE_KEY_LEN);
 	if (info != NULL && info->tunnel_endpoint != 0) {
@@ -354,12 +358,12 @@ int tail_handle_ipv6_from_netdev(struct __ctx_buff *ctx)
 
 # ifdef ENABLE_HOST_FIREWALL
 static __always_inline int
-handle_to_netdev_ipv6(struct __ctx_buff *ctx)
+handle_to_netdev_ipv6(struct __ctx_buff *ctx, __u32 *monitor)
 {
 	void *data, *data_end;
 	struct ipv6hdr *ip6;
 	int hdrlen, ret;
-	__u32 srcID = 0;
+	__u32 src_id = 0;
 	__u8 nexthdr;
 
 	if (!revalidate_data_pull(ctx, &data, &data_end, &ip6))
@@ -379,10 +383,10 @@ handle_to_netdev_ipv6(struct __ctx_buff *ctx)
 	}
 
 	/* to-netdev is attached to the egress path of the native device. */
-	srcID = ipcache_lookup_srcid6(ctx);
-	return ipv6_host_policy_egress(ctx, srcID);
+	src_id = ipcache_lookup_srcid6(ctx);
+	return ipv6_host_policy_egress(ctx, src_id, monitor);
 }
-# endif
+#endif /* ENABLE_HOST_FIREWALL */
 #endif /* ENABLE_IPV6 */
 
 #ifdef ENABLE_IPV4
@@ -448,7 +452,8 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	    __u32 ipcache_srcid __maybe_unused, const bool from_host)
 {
 	struct remote_endpoint_info *info = NULL;
-	__u32 __maybe_unused remoteID = 0;
+	__u32 __maybe_unused remote_id = 0;
+	__u32 __maybe_unused monitor = 0;
 	struct ipv4_ct_tuple tuple = {};
 	bool skip_redirect = false;
 	struct endpoint_info *ep;
@@ -476,33 +481,35 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 			if (ret < 0)
 				return ret;
 		}
-#if defined(NO_REDIRECT) && !defined(ENABLE_REDIRECT_FAST)
-		/* Without bpf_redirect_neigh() helper, we cannot redirect a
-		 * packet to a local endpoint in the direct routing mode, as
-		 * the redirect bypasses nf_conntrack table. This makes a
-		 * second reply from the endpoint to be MASQUERADEd or to be
-		 * DROP-ed by k8s's "--ctstate INVALID -j DROP" depending via
-		 * which interface it was inputed. With bpf_redirect_neigh()
-		 * we bypass request and reply path in the host namespace and
-		 * do not run into this issue.
-		 */
-		skip_redirect = true;
-#endif /* NO_REDIRECT && !ENABLE_REDIRECT_FAST */
 		/* Verifier workaround: modified ctx access. */
 		if (!revalidate_data(ctx, &data, &data_end, &ip4))
 			return DROP_INVALID;
 	}
 #endif /* ENABLE_NODEPORT */
 
+#if defined(NO_REDIRECT) && !defined(ENABLE_REDIRECT_FAST)
+	/* Without bpf_redirect_neigh() helper, we cannot redirect a
+	 * packet to a local endpoint in the direct routing mode, as
+	 * the redirect bypasses nf_conntrack table. This makes a
+	 * second reply from the endpoint to be MASQUERADEd or to be
+	 * DROP-ed by k8s's "--ctstate INVALID -j DROP" depending via
+	 * which interface it was inputed. With bpf_redirect_neigh()
+	 * we bypass request and reply path in the host namespace and
+	 * do not run into this issue.
+	 */
+	if (!from_host)
+		skip_redirect = true;
+#endif /* NO_REDIRECT && !ENABLE_REDIRECT_FAST */
+
 #ifdef ENABLE_HOST_FIREWALL
 	if (from_host) {
 		/* We're on the egress path of cilium_host. */
-		ret = ipv4_host_policy_egress(ctx, secctx, ipcache_srcid);
+		ret = ipv4_host_policy_egress(ctx, secctx, ipcache_srcid, &monitor);
 		if (IS_ERR(ret))
 			return ret;
 	} else if (!ctx_skip_host_fw(ctx)) {
 		/* We're on the ingress path of the native device. */
-		ret = ipv4_host_policy_ingress(ctx, &remoteID);
+		ret = ipv4_host_policy_ingress(ctx, &remote_id);
 		if (IS_ERR(ret))
 			return ret;
 	}
@@ -545,7 +552,7 @@ handle_ipv4(struct __ctx_buff *ctx, __u32 secctx,
 	if (!from_host)
 		return CTX_ACT_OK;
 
-#ifdef ENCAP_IFINDEX
+#ifdef TUNNEL_MODE
 	info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
 	if (info != NULL && info->tunnel_endpoint != 0) {
 		ret = encap_and_redirect_with_nodeid(ctx, info->tunnel_endpoint,
@@ -634,10 +641,33 @@ int tail_handle_ipv4_from_netdev(struct __ctx_buff *ctx)
 {
 	return tail_handle_ipv4(ctx, 0, false);
 }
+
+#ifdef ENABLE_HOST_FIREWALL
+static __always_inline int
+handle_to_netdev_ipv4(struct __ctx_buff *ctx, __u32 *monitor)
+{
+	void *data, *data_end;
+	struct iphdr *ip4;
+	__u32 src_id = 0, ipcache_srcid = 0;
+
+	if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_HOST)
+		src_id = HOST_ID;
+
+	src_id = resolve_srcid_ipv4(ctx, src_id, &ipcache_srcid, true);
+
+	if (!revalidate_data(ctx, &data, &data_end, &ip4))
+		return DROP_INVALID;
+
+	/* We need to pass the srcid from ipcache to host firewall. See
+	 * comment in ipv4_host_policy_egress() for details.
+	 */
+	return ipv4_host_policy_egress(ctx, src_id, ipcache_srcid, monitor);
+}
+#endif /* ENABLE_HOST_FIREWALL */
 #endif /* ENABLE_IPV4 */
 
 #ifdef ENABLE_IPSEC
-#ifndef ENCAP_IFINDEX
+#ifndef TUNNEL_MODE
 static __always_inline int
 do_netdev_encrypt_pools(struct __ctx_buff *ctx __maybe_unused)
 {
@@ -787,7 +817,7 @@ static __always_inline int do_netdev_encrypt(struct __ctx_buff *ctx, __u16 proto
 	return CTX_ACT_OK;
 }
 
-#else /* ENCAP_IFINDEX */
+#else /* TUNNEL_MODE */
 static __always_inline int do_netdev_encrypt_encap(struct __ctx_buff *ctx)
 {
 	__u32 seclabel, tunnel_endpoint = 0;
@@ -804,7 +834,7 @@ static __always_inline int do_netdev_encrypt(struct __ctx_buff *ctx, __u16 proto
 {
 	return do_netdev_encrypt_encap(ctx);
 }
-#endif /* ENCAP_IFINDEX */
+#endif /* TUNNEL_MODE */
 #endif /* ENABLE_IPSEC */
 
 static __always_inline int
@@ -939,6 +969,21 @@ handle_netdev(struct __ctx_buff *ctx, const bool from_host)
 __section("from-netdev")
 int from_netdev(struct __ctx_buff *ctx)
 {
+	__u32 __maybe_unused vlan_id;
+
+	/* Filter allowed vlan id's and pass them back to kernel.
+	 */
+	if (ctx->vlan_present) {
+		vlan_id = ctx->vlan_tci & 0xfff;
+		if (vlan_id) {
+			if (allow_vlan(ctx->ifindex, vlan_id))
+				return CTX_ACT_OK;
+			else
+				return send_drop_notify_error(ctx, 0, DROP_VLAN_FILTERED,
+							      CTX_ACT_DROP, METRIC_INGRESS);
+		}
+	}
+
 	return handle_netdev(ctx, false);
 }
 
@@ -967,7 +1012,22 @@ int to_netdev(struct __ctx_buff *ctx __maybe_unused)
 {
 	__u32 __maybe_unused src_id = 0;
 	__u16 __maybe_unused proto = 0;
+	__u32 monitor = 0;
+	__u32 __maybe_unused vlan_id;
 	int ret = CTX_ACT_OK;
+
+	/* Filter allowed vlan id's and pass them back to kernel.
+	 */
+	if (ctx->vlan_present) {
+		vlan_id = ctx->vlan_tci & 0xfff;
+		if (vlan_id) {
+			if (allow_vlan(ctx->ifindex, vlan_id))
+				return CTX_ACT_OK;
+			else
+				return send_drop_notify_error(ctx, 0, DROP_VLAN_FILTERED,
+							      CTX_ACT_DROP, METRIC_EGRESS);
+		}
+	}
 
 #ifdef ENABLE_HOST_FIREWALL
 	if (!proto && !validate_ethertype(ctx, &proto)) {
@@ -985,29 +1045,12 @@ int to_netdev(struct __ctx_buff *ctx __maybe_unused)
 # endif
 # ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
-		ret = handle_to_netdev_ipv6(ctx);
+		ret = handle_to_netdev_ipv6(ctx, &monitor);
 		break;
 # endif
 # ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP): {
-		void *data, *data_end;
-		struct iphdr *ip4;
-		__u32 ipcache_srcid = 0;
-
-		/* to-netdev is attached to the egress path of the native
-		 * device.
-		 */
-		if ((ctx->mark & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_HOST)
-			src_id = HOST_ID;
-		src_id = resolve_srcid_ipv4(ctx, src_id, &ipcache_srcid, true);
-
-		if (!revalidate_data(ctx, &data, &data_end, &ip4))
-			return DROP_INVALID;
-
-		/* We need to pass the srcid from ipcache to host firewall. See
-		 * comment in ipv4_host_policy_egress() for details.
-		 */
-		ret = ipv4_host_policy_egress(ctx, src_id, ipcache_srcid);
+		ret = handle_to_netdev_ipv4(ctx, &monitor);
 		break;
 	}
 # endif
@@ -1037,6 +1080,10 @@ out:
 	 defined(ENABLE_MASQUERADE) || \
 	 defined(ENABLE_EGRESS_GATEWAY))
 	if ((ctx->mark & MARK_MAGIC_SNAT_DONE) != MARK_MAGIC_SNAT_DONE) {
+		/*
+		 * handle_nat_fwd tail calls in the majority of cases,
+		 * so control might never return to this program.
+		 */
 		ret = handle_nat_fwd(ctx);
 		if (IS_ERR(ret))
 			return send_drop_notify_error(ctx, 0, ret,
@@ -1051,7 +1098,8 @@ out:
 					      METRIC_EGRESS);
 #endif
 	send_trace_notify(ctx, TRACE_TO_NETWORK, src_id, 0, 0,
-			  0, ret, 0);
+			  0, ret, monitor);
+
 	return ret;
 }
 
@@ -1066,17 +1114,17 @@ int to_host(struct __ctx_buff *ctx)
 	__u16 __maybe_unused proto = 0;
 	int ret = CTX_ACT_OK;
 	bool traced = false;
-	__u32 srcID = 0;
+	__u32 src_id = 0;
 
 	if ((magic & MARK_MAGIC_HOST_MASK) == MARK_MAGIC_ENCRYPT) {
 		ctx->mark = magic; /* CB_ENCRYPT_MAGIC */
-		srcID = ctx_load_meta(ctx, CB_ENCRYPT_IDENTITY);
-		set_identity_mark(ctx, srcID);
+		src_id = ctx_load_meta(ctx, CB_ENCRYPT_IDENTITY);
+		set_identity_mark(ctx, src_id);
 	} else if ((magic & 0xFFFF) == MARK_MAGIC_TO_PROXY) {
 		/* Upper 16 bits may carry proxy port number */
 		__be16 port = magic >> 16;
 
-		ctx_store_meta(ctx, 0, CB_PROXY_MAGIC);
+		ctx_store_meta(ctx, CB_PROXY_MAGIC, 0);
 		ret = ctx_redirect_to_proxy_first(ctx, port);
 		if (IS_ERR(ret))
 			goto out;
@@ -1096,7 +1144,7 @@ int to_host(struct __ctx_buff *ctx)
 #endif
 
 	if (!traced)
-		send_trace_notify(ctx, TRACE_TO_STACK, srcID, 0, 0,
+		send_trace_notify(ctx, TRACE_TO_STACK, src_id, 0, 0,
 				  CILIUM_IFINDEX, ret, 0);
 
 #ifdef ENABLE_HOST_FIREWALL
@@ -1115,12 +1163,12 @@ int to_host(struct __ctx_buff *ctx)
 # endif
 # ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
-		ret = ipv6_host_policy_ingress(ctx, &srcID);
+		ret = ipv6_host_policy_ingress(ctx, &src_id);
 		break;
 # endif
 # ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
-		ret = ipv4_host_policy_ingress(ctx, &srcID);
+		ret = ipv4_host_policy_ingress(ctx, &src_id);
 		break;
 # endif
 	default:
@@ -1133,7 +1181,7 @@ int to_host(struct __ctx_buff *ctx)
 
 out:
 	if (IS_ERR(ret))
-		return send_drop_notify_error(ctx, srcID, ret, CTX_ACT_DROP,
+		return send_drop_notify_error(ctx, src_id, ret, CTX_ACT_DROP,
 					      METRIC_INGRESS);
 
 	return ret;
@@ -1145,12 +1193,12 @@ declare_tailcall_if(__or(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6))
 			 is_defined(DEBUG)), CILIUM_CALL_IPV6_TO_HOST_POLICY_ONLY)
 int tail_ipv6_host_policy_ingress(struct __ctx_buff *ctx)
 {
-	__u32 srcID = 0;
+	__u32 src_id = 0;
 	int ret;
 
-	ret = ipv6_host_policy_ingress(ctx, &srcID);
+	ret = ipv6_host_policy_ingress(ctx, &src_id);
 	if (IS_ERR(ret))
-		return send_drop_notify_error(ctx, srcID, ret, CTX_ACT_DROP,
+		return send_drop_notify_error(ctx, src_id, ret, CTX_ACT_DROP,
 					      METRIC_INGRESS);
 	return ret;
 }
@@ -1161,12 +1209,12 @@ declare_tailcall_if(__or(__and(is_defined(ENABLE_IPV4), is_defined(ENABLE_IPV6))
 			 is_defined(DEBUG)), CILIUM_CALL_IPV4_TO_HOST_POLICY_ONLY)
 int tail_ipv4_host_policy_ingress(struct __ctx_buff *ctx)
 {
-	__u32 srcID = 0;
+	__u32 src_id = 0;
 	int ret;
 
-	ret = ipv4_host_policy_ingress(ctx, &srcID);
+	ret = ipv4_host_policy_ingress(ctx, &src_id);
 	if (IS_ERR(ret))
-		return send_drop_notify_error(ctx, srcID, ret, CTX_ACT_DROP,
+		return send_drop_notify_error(ctx, src_id, ret, CTX_ACT_DROP,
 					      METRIC_INGRESS);
 	return ret;
 }
@@ -1231,6 +1279,7 @@ from_host_to_lxc(struct __ctx_buff *ctx)
 {
 	int ret = CTX_ACT_OK;
 	__u16 proto = 0;
+	__u32 __maybe_unused monitor = 0;
 
 	if (!validate_ethertype(ctx, &proto))
 		return DROP_UNSUPPORTED_L2;
@@ -1243,7 +1292,7 @@ from_host_to_lxc(struct __ctx_buff *ctx)
 # endif
 # ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
-		ret = ipv6_host_policy_egress(ctx, HOST_ID);
+		ret = ipv6_host_policy_egress(ctx, HOST_ID, &monitor);
 		break;
 # endif
 # ifdef ENABLE_IPV4
@@ -1255,7 +1304,7 @@ from_host_to_lxc(struct __ctx_buff *ctx)
 		 * src_id is HOST_ID. Therefore, we don't need to pass a value
 		 * for the last parameter. That avoids an ipcache lookup.
 		 */
-		ret = ipv4_host_policy_egress(ctx, HOST_ID, 0);
+		ret = ipv4_host_policy_egress(ctx, HOST_ID, 0, &monitor);
 		break;
 # endif
 	default:

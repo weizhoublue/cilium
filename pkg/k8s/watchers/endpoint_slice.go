@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package watchers
 
@@ -22,6 +11,7 @@ import (
 	slim_discover_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
 	slim_discover_v1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/option"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -57,7 +47,7 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 			defer func() { k.K8sEventReceived(metricEndpointSlice, metricCreate, valid, equal) }()
 			if k8sEP := k8s.ObjToV1EndpointSlice(obj); k8sEP != nil {
 				valid = true
-				k.K8sSvcCache.UpdateEndpointSlicesV1(k8sEP, swgEps)
+				k.updateK8sEndpointSliceV1(k8sEP, swgEps)
 				k.K8sEventProcessed(metricEndpointSlice, metricCreate, true)
 			}
 		}
@@ -72,7 +62,7 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 						return
 					}
 
-					k.K8sSvcCache.UpdateEndpointSlicesV1(newk8sEP, swgEps)
+					k.updateK8sEndpointSliceV1(newk8sEP, swgEps)
 					k.K8sEventProcessed(metricEndpointSlice, metricUpdate, true)
 				}
 			}
@@ -102,7 +92,7 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 			defer func() { k.K8sEventReceived(metricEndpointSlice, metricCreate, valid, equal) }()
 			if k8sEP := k8s.ObjToV1Beta1EndpointSlice(obj); k8sEP != nil {
 				valid = true
-				k.K8sSvcCache.UpdateEndpointSlicesV1Beta1(k8sEP, swgEps)
+				k.updateK8sEndpointSliceV1Beta1(k8sEP, swgEps)
 				k.K8sEventProcessed(metricEndpointSlice, metricCreate, true)
 			}
 		}
@@ -117,7 +107,7 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 						return
 					}
 
-					k.K8sSvcCache.UpdateEndpointSlicesV1Beta1(newk8sEP, swgEps)
+					k.updateK8sEndpointSliceV1Beta1(newk8sEP, swgEps)
 					k.K8sEventProcessed(metricEndpointSlice, metricUpdate, true)
 				}
 			}
@@ -161,4 +151,20 @@ func (k *K8sWatcher) endpointSlicesInit(k8sClient kubernetes.Interface, swgEps *
 	k.k8sAPIGroups.RemoveAPI(apiGroup)
 	close(ecr)
 	return false
+}
+
+func (k *K8sWatcher) updateK8sEndpointSliceV1(eps *slim_discover_v1.EndpointSlice, swgEps *lock.StoppableWaitGroup) {
+	k.K8sSvcCache.UpdateEndpointSlicesV1(eps, swgEps)
+
+	if option.Config.BGPAnnounceLBIP {
+		k.bgpSpeakerManager.OnUpdateEndpointSliceV1(eps)
+	}
+}
+
+func (k *K8sWatcher) updateK8sEndpointSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice, swgEps *lock.StoppableWaitGroup) {
+	k.K8sSvcCache.UpdateEndpointSlicesV1Beta1(eps, swgEps)
+
+	if option.Config.BGPAnnounceLBIP {
+		k.bgpSpeakerManager.OnUpdateEndpointSliceV1Beta1(eps)
+	}
 }

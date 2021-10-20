@@ -11,10 +11,12 @@ cilium config [<option>=(enable|disable) ...] [flags]
 ### Options
 
 ```
+  -a, --all             Display all cilium configurations
   -h, --help            help for config
       --list-options    List available options
   -n, --num-pages int   Number of pages for perf ring buffer. New values have to be > 0
   -o, --output string   json| jsonpath='{}'
+  -r, --read-only       Display read only configurations
 ```
 
 ### Options inherited from parent commands
@@ -28,4 +30,5 @@ cilium config [<option>=(enable|disable) ...] [flags]
 ### SEE ALSO
 
 * [cilium](../cilium)	 - CLI
+* [cilium config get](../cilium_config_get)	 - Retrieve cilium configuration
 

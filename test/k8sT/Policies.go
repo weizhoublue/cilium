@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
@@ -75,11 +64,9 @@ var _ = SkipDescribeIf(func() bool {
 		cnpMatchExpressionDeny   string
 		connectivityCheckYml     string
 
-		app1Service                         = "app1-service"
-		backgroundCancel context.CancelFunc = func() {}
-		backgroundError  error
-		apps             = []string{helpers.App1, helpers.App2, helpers.App3}
-		daemonCfg        map[string]string
+		app1Service = "app1-service"
+		apps        = []string{helpers.App1, helpers.App2, helpers.App3}
+		daemonCfg   map[string]string
 	)
 
 	BeforeAll(func() {
@@ -135,14 +122,8 @@ var _ = SkipDescribeIf(func() bool {
 		kubectl.CloseSSHClient()
 	})
 
-	JustBeforeEach(func() {
-		backgroundCancel, backgroundError = kubectl.BackgroundReport("uptime")
-		Expect(backgroundError).To(BeNil(), "Cannot start background report process")
-	})
-
 	JustAfterEach(func() {
 		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-		backgroundCancel()
 	})
 
 	// getMatcher returns a helper.CMDSucess() matcher for success or
@@ -287,7 +268,7 @@ var _ = SkipDescribeIf(func() bool {
 			trace.ExpectContains("Final verdict: ALLOWED", "Policy trace output mismatch")
 
 			trace = kubectl.CiliumExecMustSucceed(context.TODO(), ciliumPod, fmt.Sprintf(
-				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s",
+				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s --dport 0/ANY",
 				namespaceForTest, appPods[helpers.App3], namespaceForTest, appPods[helpers.App1]))
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
@@ -313,7 +294,7 @@ var _ = SkipDescribeIf(func() bool {
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
 			trace = kubectl.CiliumExecMustSucceed(context.TODO(), ciliumPod, fmt.Sprintf(
-				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s",
+				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s --dport 0/ANY",
 				namespaceForTest, appPods[helpers.App3], namespaceForTest, appPods[helpers.App1]))
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
@@ -422,7 +403,7 @@ var _ = SkipDescribeIf(func() bool {
 			trace.ExpectContains("Final verdict: ALLOWED", "Policy trace output mismatch")
 
 			trace = kubectl.CiliumExecMustSucceed(context.TODO(), ciliumPod, fmt.Sprintf(
-				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s",
+				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s --dport 0/ANY",
 				namespaceForTest, appPods[helpers.App3], namespaceForTest, appPods[helpers.App1]))
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
@@ -448,7 +429,7 @@ var _ = SkipDescribeIf(func() bool {
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
 			trace = kubectl.CiliumExecMustSucceed(context.TODO(), ciliumPod, fmt.Sprintf(
-				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s",
+				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s --dport 0/ANY",
 				namespaceForTest, appPods[helpers.App3], namespaceForTest, appPods[helpers.App1]))
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
@@ -624,7 +605,7 @@ var _ = SkipDescribeIf(func() bool {
 			trace.ExpectContains("Final verdict: ALLOWED", "Policy trace output mismatch")
 
 			trace = kubectl.CiliumExecMustSucceed(context.TODO(), ciliumPod, fmt.Sprintf(
-				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s",
+				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s --dport 0/ANY",
 				namespaceForTest, appPods[helpers.App3], namespaceForTest, appPods[helpers.App1]))
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
@@ -657,7 +638,7 @@ var _ = SkipDescribeIf(func() bool {
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
 			trace = kubectl.CiliumExecMustSucceed(context.TODO(), ciliumPod, fmt.Sprintf(
-				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s",
+				"cilium policy trace --src-k8s-pod %s:%s --dst-k8s-pod %s:%s --dport 0/ANY",
 				namespaceForTest, appPods[helpers.App3], namespaceForTest, appPods[helpers.App1]))
 			trace.ExpectContains("Final verdict: DENIED", "Policy trace output mismatch")
 
@@ -1111,7 +1092,7 @@ var _ = SkipDescribeIf(func() bool {
 
 			BeforeAll(func() {
 				appPods = helpers.GetAppPods(apps, namespaceForTest, kubectl, "id")
-				podsNodes, err := kubectl.GetPodsNodes(namespaceForTest, "-l id=app1")
+				podsNodes, err := kubectl.GetPodsNodes(namespaceForTest, "id=app1")
 				Expect(err).To(BeNil(), "error getting pod->node mapping")
 				Expect(len(podsNodes)).To(Equal(2))
 				// Just grab the first one.
@@ -1121,7 +1102,7 @@ var _ = SkipDescribeIf(func() bool {
 					break
 				}
 
-				podsNodes, err = kubectl.GetPodsNodes(namespaceForTest, "-l id=app2")
+				podsNodes, err = kubectl.GetPodsNodes(namespaceForTest, "id=app2")
 				Expect(err).To(BeNil(), "error getting pod->node mapping")
 				Expect(len(podsNodes)).To(Equal(1))
 				for k := range podsNodes {
@@ -1284,40 +1265,40 @@ var _ = SkipDescribeIf(func() bool {
 
 				checkProxyRedirection(app1PodIP, true, policy.ParserTypeHTTP, false)
 
-				By("Importing policy which selects app1; proxy-visibility annotation should be removed")
+				By("Importing policy which selects app1")
 
 				_, err := kubectl.CiliumPolicyAction(
 					namespaceForTest, l3Policy, helpers.KubectlApply, helpers.HelperTimeout)
 				Expect(err).Should(BeNil(),
 					"policy %s cannot be applied in %q namespace", l3Policy, namespaceForTest)
 
-				By("Checking that proxy visibility annotation is removed due to policy being added")
-				checkProxyRedirection(app1PodIP, false, policy.ParserTypeHTTP, false)
+				By("Checking that proxy visibility annotation is still applied even while a policy was imported")
+				checkProxyRedirection(app1PodIP, true, policy.ParserTypeHTTP, false)
 
 				_, err = kubectl.CiliumPolicyAction(
 					namespaceForTest, l3Policy, helpers.KubectlDelete, helpers.HelperTimeout)
 				Expect(err).Should(BeNil(),
 					"policy %s cannot be deleted in %q namespace", l3Policy, namespaceForTest)
 
-				By("Checking that proxy visibility annotation is re-added after policy is removed")
+				By("Checking that proxy visibility annotation is still applied after policy is removed")
 				checkProxyRedirection(app1PodIP, true, policy.ParserTypeHTTP, false)
 
-				By("Importing policy using named ports which selects app1; proxy-visibility annotation should be removed")
+				By("Importing policy using named ports which selects app1; proxy-visibility annotation should remain")
 
 				_, err = kubectl.CiliumPolicyAction(
 					namespaceForTest, l3NamedPortPolicy, helpers.KubectlApply, helpers.HelperTimeout)
 				Expect(err).Should(BeNil(),
 					"policy %s cannot be applied in %q namespace", l3NamedPortPolicy, namespaceForTest)
 
-				By("Checking that proxy visibility annotation is removed due to policy being added")
-				checkProxyRedirection(app1PodIP, false, policy.ParserTypeHTTP, false)
+				By("Checking that proxy visibility annotation is still applied to policy being added")
+				checkProxyRedirection(app1PodIP, true, policy.ParserTypeHTTP, false)
 
 				_, err = kubectl.CiliumPolicyAction(
 					namespaceForTest, l3NamedPortPolicy, helpers.KubectlDelete, helpers.HelperTimeout)
 				Expect(err).Should(BeNil(),
 					"policy %s cannot be deleted in %q namespace", l3NamedPortPolicy, namespaceForTest)
 
-				By("Checking that proxy visibility annotation is re-added after policy is removed")
+				By("Checking that proxy visibility annotation is still applied after policy is removed")
 				checkProxyRedirection(app1PodIP, true, policy.ParserTypeHTTP, false)
 			})
 		})
@@ -1375,11 +1356,7 @@ var _ = SkipDescribeIf(func() bool {
 						"tunnel":               "disabled",
 						"autoDirectNodeRoutes": "true",
 
-						// These are required to avoid failing on net-next.
-						"masquerade":     "false",
-						"bpf.masquerade": "false",
-
-						"hostFirewall": "true",
+						"hostFirewall.enabled": "true",
 					})
 
 				By("Retrieving backend pod and outside node IP addresses")
@@ -1614,7 +1591,6 @@ var _ = SkipDescribeIf(func() bool {
 			var (
 				cnpFromEntitiesHost       string
 				cnpFromEntitiesRemoteNode string
-				cnpFromEntitiesWorld      string
 				cnpFromEntitiesCluster    string
 				cnpFromEntitiesAll        string
 
@@ -1629,7 +1605,6 @@ var _ = SkipDescribeIf(func() bool {
 			BeforeAll(func() {
 				cnpFromEntitiesHost = helpers.ManifestGet(kubectl.BasePath(), "cnp-from-entities-host.yaml")
 				cnpFromEntitiesRemoteNode = helpers.ManifestGet(kubectl.BasePath(), "cnp-from-entities-remote-node.yaml")
-				cnpFromEntitiesWorld = helpers.ManifestGet(kubectl.BasePath(), "cnp-from-entities-world.yaml")
 				cnpFromEntitiesCluster = helpers.ManifestGet(kubectl.BasePath(), "cnp-from-entities-cluster.yaml")
 				cnpFromEntitiesAll = helpers.ManifestGet(kubectl.BasePath(), "cnp-from-entities-all.yaml")
 
@@ -1733,29 +1708,12 @@ var _ = SkipDescribeIf(func() bool {
 				})
 
 				It("Allows from all hosts with cnp fromEntities host policy", func() {
-					if helpers.NativeRoutingEnabled() {
-						// When running native-routing mode,
-						// the source IP from host traffic is
-						// unlikely the IP assigned to the
-						// cilium-host interface. In the
-						// remote-node identity legacy mode,
-						// only the IP of the cilium-host
-						// interface is considered host. All
-						// other IPs are considered world.
-						By("Installing fromEntities host and world policy")
-						importPolicy(kubectl, testNamespace, cnpFromEntitiesWorld, "from-entities-world")
-						importPolicy(kubectl, testNamespace, cnpFromEntitiesHost, "from-entities-host")
 
-						By("Checking policy correctness")
-						validateConnectivity(HostConnectivityAllow, RemoteNodeConnectivityAllow, PodConnectivityDeny, WorldConnectivityAllow)
-					} else {
-						By("Installing fromEntities host policy")
-						importPolicy(kubectl, testNamespace, cnpFromEntitiesHost, "from-entities-host")
+					By("Installing fromEntities host policy")
+					importPolicy(kubectl, testNamespace, cnpFromEntitiesHost, "from-entities-host")
 
-						By("Checking policy correctness")
-						validateConnectivity(HostConnectivityAllow, RemoteNodeConnectivityAllow, PodConnectivityDeny, WorldConnectivityDeny)
-					}
-
+					By("Checking policy correctness")
+					validateConnectivity(HostConnectivityAllow, RemoteNodeConnectivityAllow, PodConnectivityDeny, WorldConnectivityDeny)
 				})
 			})
 
@@ -1894,7 +1852,7 @@ var _ = SkipDescribeIf(func() bool {
 		}
 
 		testConnectivitytoRedis := func() {
-			webPods, err := kubectl.GetPodsNodes(helpers.DefaultNamespace, "-l app=guestbook")
+			webPods, err := kubectl.GetPodsNodes(helpers.DefaultNamespace, "app=guestbook")
 			ExpectWithOffset(1, err).To(BeNil(), "Error retrieving web pods")
 			ExpectWithOffset(1, webPods).ShouldNot(BeEmpty(), "Cannot retrieve web pods")
 

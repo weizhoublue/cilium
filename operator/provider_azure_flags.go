@@ -1,18 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-//+build ipam_provider_azure
+//go:build ipam_provider_azure
+// +build ipam_provider_azure
 
 package main
 
@@ -28,6 +18,7 @@ func init() {
 
 	flags.String(operatorOption.AzureCloudName, "AzurePublicCloud", "Name of the Azure cloud being used")
 	option.BindEnvWithLegacyEnvFallback(operatorOption.AzureCloudName, "AZURE_CLOUD_NAME")
+	flags.MarkDeprecated(operatorOption.AzureCloudName, "This option will be removed in v1.11")
 
 	flags.String(operatorOption.AzureSubscriptionID, "", "Subscription ID to access Azure API")
 	option.BindEnvWithLegacyEnvFallback(operatorOption.AzureSubscriptionID, "AZURE_SUBSCRIPTION_ID")

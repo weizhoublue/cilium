@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package allocator
 
@@ -882,8 +871,7 @@ type AllocatorEvent struct {
 // identities. The contents are not directly accessible but will be merged into
 // the ForeachCache() function.
 type RemoteCache struct {
-	cache     cache
-	allocator *Allocator
+	cache cache
 }
 
 // WatchRemoteKVStore starts watching an allocator base prefix the kvstore
@@ -893,8 +881,7 @@ type RemoteCache struct {
 // function.
 func (a *Allocator) WatchRemoteKVStore(remoteAlloc *Allocator) *RemoteCache {
 	rc := &RemoteCache{
-		cache:     newCache(remoteAlloc),
-		allocator: remoteAlloc,
+		cache: newCache(remoteAlloc),
 	}
 
 	a.remoteCachesMutex.Lock()
@@ -918,9 +905,9 @@ func (rc *RemoteCache) NumEntries() int {
 // Close stops watching for identities in the kvstore associated with the
 // remote cache and will clear the local cache.
 func (rc *RemoteCache) Close() {
-	rc.allocator.remoteCachesMutex.Lock()
-	delete(rc.allocator.remoteCaches, rc)
-	rc.allocator.remoteCachesMutex.Unlock()
+	rc.cache.allocator.remoteCachesMutex.Lock()
+	delete(rc.cache.allocator.remoteCaches, rc)
+	rc.cache.allocator.remoteCachesMutex.Unlock()
 
 	rc.cache.stop()
 }

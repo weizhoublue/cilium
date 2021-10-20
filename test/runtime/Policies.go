@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
@@ -1756,7 +1745,8 @@ var _ = Describe("RuntimePolicies", func() {
 
 var _ = Describe("RuntimePolicyImportTests", func() {
 	var (
-		vm *helpers.SSHMeta
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
 	)
 
 	BeforeAll(func() {
@@ -1776,8 +1766,12 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 		_ = vm.PolicyDelAll()
 	})
 
+	JustBeforeEach(func() {
+		testStartTime = time.Now()
+	})
+
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 	})
 
 	AfterFailed(func() {
@@ -1895,7 +1889,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 
 		By("Verifying that trace says that %q can reach %q", httpd2Label, httpd1Label)
 
-		res := vm.Exec(fmt.Sprintf(`cilium policy trace -s %s -d %s/TCP`, httpd2Label, httpd1Label))
+		res := vm.Exec(fmt.Sprintf(`cilium policy trace -s %s -d %s/TCP --dport 0/ANY`, httpd2Label, httpd1Label))
 		Expect(res.Stdout()).Should(ContainSubstring(allowedVerdict), "Policy trace did not contain %s", allowedVerdict)
 
 		Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
@@ -1960,13 +1954,13 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 
 		By("Verifying verbose trace for expected output using security identities")
 		res = vm.Exec(fmt.Sprintf(
-			`cilium policy trace --src-identity %d --dst-identity %d`,
+			`cilium policy trace --src-identity %d --dst-identity %d --dport 0/ANY`,
 			httpd2SecurityIdentity, httpd1SecurityIdentity))
 		res.ExpectContains(allowedVerdict, "Policy trace did not contain %s", allowedVerdict)
 
 		By("Verifying verbose trace for expected output using endpoint IDs")
 		res = vm.Exec(fmt.Sprintf(
-			`cilium policy trace --src-endpoint %s --dst-endpoint %s`,
+			`cilium policy trace --src-endpoint %s --dst-endpoint %s --dport 0/ANY`,
 			httpd2EndpointID, httpd1EndpointID))
 		res.ExpectContains(allowedVerdict, "Policy trace did not contain %s", allowedVerdict)
 
@@ -2001,7 +1995,7 @@ var _ = Describe("RuntimePolicyImportTests", func() {
 		ExpectPolicyEnforcementUpdated(vm, helpers.PolicyEnforcementDefault)
 
 		By("Checking that policy trace returns allowed verdict without any policies imported")
-		res = vm.Exec(fmt.Sprintf(`cilium policy trace --src-endpoint %s --dst-endpoint %s`, httpd2EndpointID, httpd1EndpointID))
+		res = vm.Exec(fmt.Sprintf(`cilium policy trace --src-endpoint %s --dst-endpoint %s --dport 0/ANY`, httpd2EndpointID, httpd1EndpointID))
 		res.ExpectContains(allowedVerdict, "Policy trace did not contain %s", allowedVerdict)
 	})
 })

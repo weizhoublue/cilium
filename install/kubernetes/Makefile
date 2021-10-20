@@ -3,13 +3,13 @@
 
 include Makefile.digests ../../Makefile.defs
 
-HUBBLE_PROXY_VERSION := "v1.18.2@sha256:e8b37c1d75787dd1e712ff389b0d37337dc8a174a63bed9c34ba73359dc67da7"
-HUBBLE_UI_VERSION := "v0.7.9@sha256:e0e461c680ccd083ac24fe4f9e19e675422485f04d8720635ec41f2ba9e5562c"
-HUBBLE_UI_BACKEND_VERSION := "v0.7.9@sha256:632c938ef6ff30e3a080c59b734afb1fb7493689275443faa1435f7141aabe76"
+HUBBLE_PROXY_VERSION := "v1.18.4@sha256:e5c2bb2870d0e59ce917a5100311813b4ede96ce4eb0c6bfa879e3fbe3e83935"
+HUBBLE_UI_VERSION := "v0.8.2@sha256:a6f80b0517a5266783d619ae14d846d4fbb692f6aaff37804fc8851bf1095a30"
+HUBBLE_UI_BACKEND_VERSION := "v0.8.2@sha256:43c1e824751639b1df9460e5c5d5a3fd732f834bb96b3012a4164eeee457cbb6"
 MANAGED_ETCD_VERSION := "v2.0.7"
 ETCD_VERSION := "v3.4.13"
 NODEINIT_VERSION := "62bfbe88c17778aad7bef9fa57ff9e2d4a9ba0d8"
-CERTGEN_VERSION := "v0.1.4"
+CERTGEN_VERSION := "v0.1.5"
 
 MIN_K8S_MAJOR := 1
 MIN_K8S_MINOR := 16
@@ -30,10 +30,6 @@ DOCKER_RUN := $(CONTAINER_ENGINE) container run --rm \
 	--workdir /src/install/kubernetes \
 	--volume $(CURDIR)/../..:/src \
 	--user "$(shell id -u):$(shell id -g)"
-
-HELM_DOCS_VERSION := "v1.3.0"
-HELM_DOCS_SHA := "12f065115654c9a1d6819b938487d327f1fdb5c32bdc2a5c74afef22ed68f5ca"
-HELM_DOCS_IMAGE := "docker.io/jnorwood/helm-docs:$(HELM_DOCS_VERSION)@sha256:$(HELM_DOCS_SHA)"
 HELM_DOCS := $(DOCKER_RUN) $(HELM_DOCS_IMAGE)
 
 LOGO_BASE_URL := https://cdn.jsdelivr.net/gh/cilium

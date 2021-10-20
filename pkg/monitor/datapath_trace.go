@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package monitor
 
@@ -112,42 +101,32 @@ func connState(reason uint8) string {
 	return fmt.Sprintf("%d", reason)
 }
 
-func fetchVersion(data []byte, tn *TraceNotify) (version uint16, err error) {
-	offset := unsafe.Offsetof(tn.Version)
-	length := unsafe.Sizeof(tn.Version)
-	reader := bytes.NewReader(data[offset : offset+length])
-	err = binary.Read(reader, byteorder.Native, &version)
-	return version, err
-}
-
 // DecodeTraceNotify will decode 'data' into the provided TraceNotify structure
 func DecodeTraceNotify(data []byte, tn *TraceNotify) error {
 	if len(data) < traceNotifyCommonLen {
 		return fmt.Errorf("Unknown trace event")
 	}
 
-	version, err := fetchVersion(data, tn)
-	if err != nil {
-		return err
-	}
+	offset := unsafe.Offsetof(tn.Version)
+	length := unsafe.Sizeof(tn.Version)
+	version := byteorder.Native.Uint16(data[offset : offset+length])
+
 	switch version {
 	case TraceNotifyVersion0:
-		err = binary.Read(bytes.NewReader(data), byteorder.Native, &tn.TraceNotifyV0)
+		return binary.Read(bytes.NewReader(data), byteorder.Native, &tn.TraceNotifyV0)
 	case TraceNotifyVersion1:
-		err = binary.Read(bytes.NewReader(data), byteorder.Native, tn)
-	default:
-		err = fmt.Errorf("Unrecognized trace event (version %d)", version)
+		return binary.Read(bytes.NewReader(data), byteorder.Native, tn)
 	}
-	return err
+	return fmt.Errorf("Unrecognized trace event (version %d)", version)
 }
 
 // dumpIdentity dumps the source and destination identities in numeric or
 // human-readable format.
 func (n *TraceNotify) dumpIdentity(buf *bufio.Writer, numeric DisplayFormat) {
 	if numeric {
-		fmt.Fprintf(buf, "identity %d->%d", n.SrcLabel, n.DstLabel)
+		fmt.Fprintf(buf, ", identity %d->%d", n.SrcLabel, n.DstLabel)
 	} else {
-		fmt.Fprintf(buf, "identity %s->%s", n.SrcLabel, n.DstLabel)
+		fmt.Fprintf(buf, ", identity %s->%s", n.SrcLabel, n.DstLabel)
 	}
 }
 

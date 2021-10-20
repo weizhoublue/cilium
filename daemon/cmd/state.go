@@ -1,21 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -23,6 +13,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/endpoint"
+	"github.com/cilium/cilium/pkg/ipam"
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
 	"github.com/cilium/cilium/pkg/labels"
@@ -344,7 +335,7 @@ func (d *Daemon) allocateIPsLocked(ep *endpoint.Endpoint) error {
 	if option.Config.EnableIPv6 && ep.IPv6 != nil {
 		_, err = d.ipam.AllocateIPWithoutSyncUpstream(ep.IPv6.IP(), ep.HumanStringLocked()+" [restored]")
 		if err != nil {
-			return fmt.Errorf("unable to reallocate %s IPv6 address: %s", ep.IPv6.IP(), err)
+			return fmt.Errorf("unable to reallocate %s IPv6 address: %w", ep.IPv6.IP(), err)
 		}
 
 		defer func() {
@@ -355,8 +346,30 @@ func (d *Daemon) allocateIPsLocked(ep *endpoint.Endpoint) error {
 	}
 
 	if option.Config.EnableIPv4 && ep.IPv4 != nil {
-		if _, err = d.ipam.AllocateIPWithoutSyncUpstream(ep.IPv4.IP(), ep.HumanStringLocked()+" [restored]"); err != nil {
-			return fmt.Errorf("unable to reallocate %s IPv4 address: %s", ep.IPv4.IP(), err)
+		_, err = d.ipam.AllocateIPWithoutSyncUpstream(ep.IPv4.IP(), ep.HumanStringLocked()+"[restored]")
+		switch {
+		// We only check for BypassIPAllocUponRestore for IPv4 because we
+		// assume that this flag is only turned on for IPv4-only IPAM modes
+		// such as ENI.
+		//
+		// Additionally, only check for a specific error which can be caused by
+		// https://github.com/cilium/cilium/pull/15453. Other errors are not
+		// bypassed.
+		case err != nil &&
+			errors.Is(err, ipam.NewIPNotAvailableInPoolError(ep.IPv4.IP())) &&
+			option.Config.BypassIPAvailabilityUponRestore:
+			log.WithError(err).WithFields(logrus.Fields{
+				logfields.IPAddr:     ep.IPv4.IP(),
+				logfields.EndpointID: ep.ID,
+				logfields.K8sPodName: ep.GetK8sNamespaceAndPodName(),
+			}).Warn(
+				"Bypassing IP not available error on endpoint restore. This is " +
+					"to prevent errors upon Cilium upgrade and should not be " +
+					"relied upon. Consider restarting this pod in order to get " +
+					"a fresh IP from the pool.",
+			)
+		case err != nil:
+			return fmt.Errorf("unable to reallocate %s IPv4 address: %w", ep.IPv4.IP(), err)
 		}
 	}
 

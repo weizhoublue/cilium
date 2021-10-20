@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package option
 
@@ -40,6 +29,10 @@ const (
 	// BGPConfigPath is the file path to the BGP configuration. It is
 	// compatible with MetalLB's configuration.
 	BGPConfigPath = "bgp-config-path"
+
+	// SkipCRDCreation specifies whether the CustomResourceDefinition will be
+	// disabled for the operator
+	SkipCRDCreation = "skip-crd-creation"
 
 	// CNPNodeStatusGCInterval is the GC interval for nodes which have been
 	// removed from the cluster in CiliumNetworkPolicy and
@@ -148,10 +141,6 @@ const (
 
 	// ParallelAllocWorkers specifies the number of parallel workers to be used for IPAM allocation
 	ParallelAllocWorkers = "parallel-alloc-workers"
-
-	// UpdateEC2AdapterLimitViaAPIDeprecated configures the operator to use the EC2
-	// API to fill out the instancetype to adapter limit mapping.
-	UpdateEC2AdapterLimitViaAPIDeprecated = "update-ec2-apdater-limit-via-api"
 
 	// UpdateEC2AdapterLimitViaAPI configures the operator to use the EC2
 	// API to fill out the instancetype to adapter limit mapping.
@@ -278,6 +267,10 @@ type OperatorConfig struct {
 	// compatible with MetalLB's configuration.
 	BGPConfigPath string
 
+	// SkipCRDCreation disables creation of the CustomResourceDefinition
+	// for the operator
+	SkipCRDCreation bool
+
 	// IPAM options
 
 	// IPAMAPIBurst is the burst value allowed when accessing external IPAM APIs
@@ -394,6 +387,7 @@ func (c *OperatorConfig) Populate() {
 	c.LeaderElectionRetryPeriod = viper.GetDuration(LeaderElectionRetryPeriod)
 	c.BGPAnnounceLBIP = viper.GetBool(BGPAnnounceLBIP)
 	c.BGPConfigPath = viper.GetString(BGPConfigPath)
+	c.SkipCRDCreation = viper.GetBool(SkipCRDCreation)
 
 	if c.BGPAnnounceLBIP {
 		c.SyncK8sServices = true
@@ -404,8 +398,7 @@ func (c *OperatorConfig) Populate() {
 	// AWS options
 
 	c.AWSReleaseExcessIPs = viper.GetBool(AWSReleaseExcessIPs)
-	c.UpdateEC2AdapterLimitViaAPI = viper.GetBool(UpdateEC2AdapterLimitViaAPIDeprecated) ||
-		viper.GetBool(UpdateEC2AdapterLimitViaAPI)
+	c.UpdateEC2AdapterLimitViaAPI = viper.GetBool(UpdateEC2AdapterLimitViaAPI)
 	c.EC2APIEndpoint = viper.GetString(EC2APIEndpoint)
 
 	// Azure options

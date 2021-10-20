@@ -18,7 +18,7 @@ func (c *Client) CreateTransitGatewayPrefixListReference(ctx context.Context, pa
 		params = &CreateTransitGatewayPrefixListReferenceInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayPrefixListReference", params, optFns, addOperationCreateTransitGatewayPrefixListReferenceMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayPrefixListReference", params, optFns, c.addOperationCreateTransitGatewayPrefixListReferenceMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -41,16 +41,18 @@ type CreateTransitGatewayPrefixListReferenceInput struct {
 	TransitGatewayRouteTableId *string
 
 	// Indicates whether to drop traffic that matches this route.
-	Blackhole bool
+	Blackhole *bool
 
 	// Checks whether you have the required permissions for the action, without
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The ID of the attachment to which traffic is routed.
 	TransitGatewayAttachmentId *string
+
+	noSmithyDocumentSerde
 }
 
 type CreateTransitGatewayPrefixListReferenceOutput struct {
@@ -60,9 +62,11 @@ type CreateTransitGatewayPrefixListReferenceOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCreateTransitGatewayPrefixListReferenceMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCreateTransitGatewayPrefixListReferenceMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCreateTransitGatewayPrefixListReference{}, middleware.After)
 	if err != nil {
 		return err

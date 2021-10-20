@@ -87,11 +87,11 @@ application of any type.
 Once the deployment is ready, issue a request from both spaceships to emulate
 some traffic.
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec xwing -- curl -s -XPOST deathstar.default.svc.cluster.local/v1/request-landing
+    $ kubectl exec xwing -- curl -s -XPOST deathstar.default.svc.cluster.local/v1/request-landing
     Ship landed
-    kubectl exec tiefighter -- curl -s -XPOST deathstar.default.svc.cluster.local/v1/request-landing
+    $ kubectl exec tiefighter -- curl -s -XPOST deathstar.default.svc.cluster.local/v1/request-landing
     Ship landed
 
 These requests will then be displayed in the UI as service dependencies between
@@ -101,10 +101,6 @@ the different pods:
 
 In the bottom of the interface, you may also inspect each recent Hubble flow
 event in your current namespace individually.
-
-.. note::
-    If you enable :ref:`proxy_visibility` on your pods, the Hubble UI service
-    map will display the HTTP endpoints which are being accessed by the requests.
 
 Inspecting a wide variety of network traffic
 ============================================

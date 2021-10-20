@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package policy
 
@@ -19,6 +8,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -151,8 +141,11 @@ type identitySelector interface {
 	// Called with NameManager and SelectorCache locks held
 	removeUser(CachedSelectionUser, identityNotifier) (last bool)
 
-	// This may be called while the NameManager lock is held
-	notifyUsers(added, deleted []identity.NumericIdentity)
+	// This may be called while the NameManager lock is held. wg.Wait()
+	// returns after user notifications have been completed, which may require
+	// taking Endpoint and SelectorCache locks, so these locks must not be
+	// held when calling wg.Wait().
+	notifyUsers(sc *SelectorCache, added, deleted []identity.NumericIdentity, wg *sync.WaitGroup)
 
 	numUsers() int
 }
@@ -183,6 +176,18 @@ func getIdentityCache(ids cache.IdentityCache) scIdentityCache {
 	return idCache
 }
 
+// userNotification stores the information needed to call
+// IdentitySelectionUpdated callbacks to notify users of selector's
+// identity changes. These are queued to be able to call the callbacks
+// in FIFO order while not holding any locks.
+type userNotification struct {
+	user     CachedSelectionUser
+	selector CachedSelector
+	added    []identity.NumericIdentity
+	deleted  []identity.NumericIdentity
+	wg       *sync.WaitGroup
+}
+
 // SelectorCache caches identities, identity selectors, and the
 // subsets of identities each selector selects.
 type SelectorCache struct {
@@ -197,6 +202,14 @@ type SelectorCache struct {
 	selectors map[string]identitySelector
 
 	localIdentityNotifier identityNotifier
+
+	// userCond is a condition variable for receiving signals
+	// about addition of new elements in userNotes
+	userCond *sync.Cond
+	// userMutex protects userNotes and is linked to userCond
+	userMutex lock.Mutex
+	// userNotes holds a FIFO list of user notifications to be made
+	userNotes []userNotification
 }
 
 // GetModel returns the API model of the SelectorCache.
@@ -223,12 +236,49 @@ func (sc *SelectorCache) GetModel() models.SelectorCache {
 	return selCacheMdl
 }
 
+func (sc *SelectorCache) handleUserNotifications() {
+	for {
+		sc.userMutex.Lock()
+		for len(sc.userNotes) == 0 {
+			sc.userCond.Wait()
+		}
+		// get the current batch of notifications and release the lock so that SelectorCache
+		// can't block on userMutex while we call IdentitySelectionUpdated callbacks below.
+		notifications := sc.userNotes
+		sc.userNotes = nil
+		sc.userMutex.Unlock()
+
+		for _, n := range notifications {
+			n.user.IdentitySelectionUpdated(n.selector, n.added, n.deleted)
+			n.wg.Done()
+		}
+	}
+}
+
+func (sc *SelectorCache) queueUserNotification(user CachedSelectionUser, selector CachedSelector, added, deleted []identity.NumericIdentity, wg *sync.WaitGroup) {
+	wg.Add(1)
+	sc.userMutex.Lock()
+	sc.userNotes = append(sc.userNotes, userNotification{
+		user:     user,
+		selector: selector,
+		added:    added,
+		deleted:  deleted,
+		wg:       wg,
+	})
+	sc.userMutex.Unlock()
+	sc.userCond.Signal()
+}
+
 // NewSelectorCache creates a new SelectorCache with the given identities.
 func NewSelectorCache(ids cache.IdentityCache) *SelectorCache {
-	return &SelectorCache{
+	sc := &SelectorCache{
 		idCache:   getIdentityCache(ids),
 		selectors: make(map[string]identitySelector),
 	}
+	sc.userCond = sync.NewCond(&sc.userMutex)
+	go sc.handleUserNotifications()
+
+	return sc
 }
 
 // SetLocalIdentityNotifier injects the provided identityNotifier into the
@@ -375,10 +425,10 @@ type fqdnSelector struct {
 //
 // The caller is responsible for making sure the same identity is not
 // present in both 'added' and 'deleted'.
-func (f *fqdnSelector) notifyUsers(added, deleted []identity.NumericIdentity) {
+func (f *fqdnSelector) notifyUsers(sc *SelectorCache, added, deleted []identity.NumericIdentity, wg *sync.WaitGroup) {
 	for user := range f.users {
 		// pass 'f' to the user as '*fqdnSelector'
-		user.IdentitySelectionUpdated(f, added, deleted)
+		sc.queueUserNotification(user, f, added, deleted, wg)
 	}
 }
 
@@ -434,10 +484,10 @@ type labelIdentitySelector struct {
 //
 // The caller is responsible for making sure the same identity is not
 // present in both 'added' and 'deleted'.
-func (l *labelIdentitySelector) notifyUsers(added, deleted []identity.NumericIdentity) {
+func (l *labelIdentitySelector) notifyUsers(sc *SelectorCache, added, deleted []identity.NumericIdentity, wg *sync.WaitGroup) {
 	for user := range l.users {
 		// pass 'l' to the user as '*labelIdentitySelector'
-		user.IdentitySelectionUpdated(l, added, deleted)
+		sc.queueUserNotification(user, l, added, deleted, wg)
 	}
 }
 
@@ -475,15 +525,18 @@ func (l *labelIdentitySelector) matches(identity scIdentity) bool {
 
 // UpdateFQDNSelector updates the mapping of fqdnKey (the FQDNSelector from a
 // policy rule as a string) to to the provided list of identities. If the contents
-// of the cachedSelections differ from those in the identities slice, all
-// users are notified.
-func (sc *SelectorCache) UpdateFQDNSelector(fqdnSelec api.FQDNSelector, identities []identity.NumericIdentity) {
+// of the cachedSelections differ from those in the identities slice, all users
+// are notified asynchronously. Caller should Wait() on the returned
+// sync.WaitGroup before triggering any policy updates. Policy updates may need
+// Endpoint locks, so this Wait() can deadlock if the caller is holding any
+// endpoint locks.
+func (sc *SelectorCache) UpdateFQDNSelector(fqdnSelec api.FQDNSelector, identities []identity.NumericIdentity, wg *sync.WaitGroup) {
 	sc.mutex.Lock()
-	sc.updateFQDNSelector(fqdnSelec, identities)
+	sc.updateFQDNSelector(fqdnSelec, identities, wg)
 	sc.mutex.Unlock()
 }
 
-func (sc *SelectorCache) updateFQDNSelector(fqdnSelec api.FQDNSelector, identities []identity.NumericIdentity) {
+func (sc *SelectorCache) updateFQDNSelector(fqdnSelec api.FQDNSelector, identities []identity.NumericIdentity, wg *sync.WaitGroup) {
 	fqdnKey := fqdnSelec.String()
 
 	var fqdnSel *fqdnSelector
@@ -567,7 +620,7 @@ func (sc *SelectorCache) updateFQDNSelector(fqdnSelec api.FQDNSelector, identiti
 	// getting the CIDR identities which correspond to this FQDNSelector. This
 	// is the primary difference here between FQDNSelector and IdentitySelector.
 	fqdnSel.updateSelections()
-	fqdnSel.notifyUsers(added, deleted) // disjoint sets, see the comment above
+	fqdnSel.notifyUsers(sc, added, deleted, wg) // disjoint sets, see the comment above
 }
 
 // AddFQDNSelector adds the given api.FQDNSelector in to the selector cache. If
@@ -770,7 +823,11 @@ func (sc *SelectorCache) ChangeUser(selector CachedSelector, from, to CachedSele
 //
 // The caller is responsible for making sure the same identity is not
 // present in both 'added' and 'deleted'.
-func (sc *SelectorCache) UpdateIdentities(added, deleted cache.IdentityCache) {
+//
+// Caller should Wait() on the returned sync.WaitGroup before triggering any
+// policy updates. Policy updates may need Endpoint locks, so this Wait() can
+// deadlock if the caller is holding any endpoint locks.
+func (sc *SelectorCache) UpdateIdentities(added, deleted cache.IdentityCache, wg *sync.WaitGroup) {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
 
@@ -826,7 +883,7 @@ func (sc *SelectorCache) UpdateIdentities(added, deleted cache.IdentityCache) {
 				}
 				if len(dels)+len(adds) > 0 {
 					idSel.updateSelections()
-					idSel.notifyUsers(adds, dels)
+					idSel.notifyUsers(sc, adds, dels, wg)
 				}
 			case *fqdnSelector:
 				// This is a no-op right now. We don't encode in the identities
@@ -838,12 +895,12 @@ func (sc *SelectorCache) UpdateIdentities(added, deleted cache.IdentityCache) {
 
 // RemoveIdentitiesFQDNSelectors removes all identities from being mapped to the
 // set of FQDNSelectors.
-func (sc *SelectorCache) RemoveIdentitiesFQDNSelectors(fqdnSels []api.FQDNSelector) {
+func (sc *SelectorCache) RemoveIdentitiesFQDNSelectors(fqdnSels []api.FQDNSelector, wg *sync.WaitGroup) {
 	sc.mutex.Lock()
 	noIdentities := []identity.NumericIdentity{}
 
 	for i := range fqdnSels {
-		sc.updateFQDNSelector(fqdnSels[i], noIdentities)
+		sc.updateFQDNSelector(fqdnSels[i], noIdentities, wg)
 	}
 	sc.mutex.Unlock()
 }

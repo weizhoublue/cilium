@@ -1,17 +1,7 @@
-// Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2019-2021 Authors of Cilium
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package elf
@@ -19,15 +9,17 @@ package elf
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
-	. "gopkg.in/check.v1"
+	"github.com/cilium/ebpf"
 
-	"github.com/cilium/cilium/pkg/testutils"
+	. "gopkg.in/check.v1"
 )
 
 // Hook up gocheck into the "go test" runner.
@@ -36,7 +28,7 @@ type ELFTestSuite struct{}
 var (
 	_ = Suite(&ELFTestSuite{})
 
-	baseObjPath = filepath.Join(testutils.CiliumRootDir, "test", "bpf", "elf-demo.o")
+	baseObjPath = filepath.Join("..", "..", "test", "bpf", "elf-demo.o")
 )
 
 const elfObjCopy = "elf-demo-copy.o"
@@ -176,6 +168,11 @@ func (s *ELFTestSuite) TestWrite(c *C) {
 		if test.elfValid == notValidOptions {
 			continue
 		}
+
+		// Ensure the ELF can be parsed by the loader.
+		_, err := ebpf.LoadCollectionSpec(objectCopy)
+		c.Assert(err, IsNil)
+
 		err = compareFiles(baseObjPath, objectCopy)
 		c.Assert(err, Equals, test.elfChangeErr)
 
@@ -209,7 +206,11 @@ func BenchmarkWriteELF(b *testing.B) {
 	defer os.RemoveAll(tmpDir)
 
 	elf, err := Open(baseObjPath)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
+		// If the ELF file couldn't be found most likely it
+		// wasn't built. See https://github.com/cilium/cilium/issues/17535
+		b.Skip("ELF file not found, skipping benchmark")
+	} else if err != nil {
 		b.Fatal(err)
 	}
 	defer elf.Close()

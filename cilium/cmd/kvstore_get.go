@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -54,7 +43,7 @@ var kvstoreGetCmd = &cobra.Command{
 				return
 			}
 			for k, v := range pairs {
-				fmt.Printf("%s => %s\n", k, string(v.Data))
+				fmt.Printf("%s => %s\n", k, v.Data)
 			}
 		} else {
 			val, err := kvstore.Client().Get(ctx, key)
@@ -70,7 +59,7 @@ var kvstoreGetCmd = &cobra.Command{
 				}
 				return
 			}
-			fmt.Printf("%s => %s\n", key, string(val))
+			fmt.Printf("%s => %s\n", key, val)
 		}
 	},
 }

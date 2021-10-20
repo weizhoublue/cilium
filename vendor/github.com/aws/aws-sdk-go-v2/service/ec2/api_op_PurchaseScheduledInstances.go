@@ -24,7 +24,7 @@ func (c *Client) PurchaseScheduledInstances(ctx context.Context, params *Purchas
 		params = &PurchaseScheduledInstancesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "PurchaseScheduledInstances", params, optFns, addOperationPurchaseScheduledInstancesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "PurchaseScheduledInstances", params, optFns, c.addOperationPurchaseScheduledInstancesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,9 @@ type PurchaseScheduledInstancesInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of PurchaseScheduledInstances.
@@ -62,9 +64,11 @@ type PurchaseScheduledInstancesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationPurchaseScheduledInstancesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationPurchaseScheduledInstancesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpPurchaseScheduledInstances{}, middleware.After)
 	if err != nil {
 		return err

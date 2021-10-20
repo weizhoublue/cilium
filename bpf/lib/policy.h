@@ -87,13 +87,13 @@ account(struct __ctx_buff *ctx, struct policy_entry *policy)
 }
 
 static __always_inline int
-__policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
-		    __u32 remoteID, __u16 dport, __u8 proto, int dir,
+__policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 local_id,
+		    __u32 remote_id, __u16 dport, __u8 proto, int dir,
 		    bool is_untracked_fragment, __u8 *match_type)
 {
 	struct policy_entry *policy;
 	struct policy_key key = {
-		.sec_label = remoteID,
+		.sec_label = remote_id,
 		.dport = dport,
 		.protocol = proto,
 		.egress = !dir,
@@ -123,12 +123,50 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
 	}
 #endif /* ALLOW_ICMP_FRAG_NEEDED */
 
+#ifdef ENABLE_ICMP_RULE
+	if (proto == IPPROTO_ICMP) {
+		void *data, *data_end;
+		struct iphdr *ip4;
+		struct icmphdr icmphdr __align_stack_8;
+		__u32 off;
+
+		if (!revalidate_data(ctx, &data, &data_end, &ip4))
+			return DROP_INVALID;
+		off = ((void *)ip4 - data) + ipv4_hdrlen(ip4);
+		if (ctx_load_bytes(ctx, off, &icmphdr, sizeof(icmphdr)) < 0)
+			return DROP_INVALID;
+
+		/* Convert from unsigned char to unsigned short considering byte order(little-endian).
+		 * In the little-endian case, for example, 2byte data "AB" convert to "BA".
+		 * Therefore, the "icmp_type" should be shifted not just casting.
+		 */
+		key.dport = (__u16)(icmphdr.type << 8);
+	} else if (proto == IPPROTO_ICMPV6) {
+		void *data, *data_end;
+		struct ipv6hdr *ip6;
+		__u32 off;
+		__u8 icmp_type;
+
+		if (!revalidate_data(ctx, &data, &data_end, &ip6))
+			return DROP_INVALID;
+		off = ((void *)ip6 - data) + ipv6_hdrlen(ctx, ETH_HLEN, &ip6->nexthdr);
+		if (ctx_load_bytes(ctx, off, &icmp_type, sizeof(icmp_type)) < 0)
+			return DROP_INVALID;
+
+		/* Convert from unsigned char to unsigned short considering byte order(little-endian).
+		 * In the little-endian case, for example, 2byte data "AB" convert to "BA".
+		 * Therefore, the "icmp_type" should be shifted not just casting.
+		 */
+		key.dport = (__u16)(icmp_type << 8);
+	}
+#endif /* ENABLE_ICMP_RULE */
+
 	/* L4 lookup can't be done on untracked fragments. */
 	if (!is_untracked_fragment) {
 		/* Start with L3/L4 lookup. */
 		policy = map_lookup_elem(map, &key);
 		if (likely(policy)) {
-			cilium_dbg3(ctx, DBG_L4_CREATE, remoteID, localID,
+			cilium_dbg3(ctx, DBG_L4_CREATE, remote_id, local_id,
 				    dport << 16 | proto);
 
 			account(ctx, policy);
@@ -148,7 +186,7 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
 				return DROP_POLICY_DENY;
 			return policy->proxy_port;
 		}
-		key.sec_label = remoteID;
+		key.sec_label = remote_id;
 	}
 
 	/* If L4 policy check misses, fall back to L3. */
@@ -186,8 +224,8 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
 /**
  * Determine whether the policy allows this traffic on ingress.
  * @arg ctx		Packet to allow or deny
- * @arg srcID		Source security identity for this packet
- * @arg dstID		Destination security identity for this packet
+ * @arg src_id		Source security identity for this packet
+ * @arg dst_id		Destination security identity for this packet
  * @arg dport		Destination port of this packet
  * @arg proto		L3 Protocol of this packet
  * @arg is_untracked_fragment	True if packet is a TCP/UDP datagram fragment
@@ -200,19 +238,19 @@ __policy_can_access(const void *map, struct __ctx_buff *ctx, __u32 localID,
  *   - Negative error code if the packet should be dropped
  */
 static __always_inline int
-policy_can_access_ingress(struct __ctx_buff *ctx, __u32 srcID, __u32 dstID,
+policy_can_access_ingress(struct __ctx_buff *ctx, __u32 src_id, __u32 dst_id,
 			  __u16 dport, __u8 proto, bool is_untracked_fragment,
 			  __u8 *match_type, __u8 *audited)
 {
 	int ret;
 
-	ret = __policy_can_access(&POLICY_MAP, ctx, dstID, srcID, dport,
+	ret = __policy_can_access(&POLICY_MAP, ctx, dst_id, src_id, dport,
 				  proto, CT_INGRESS, is_untracked_fragment,
 				  match_type);
 	if (ret >= CTX_ACT_OK)
 		return ret;
 
-	cilium_dbg(ctx, DBG_POLICY_DENIED, srcID, dstID);
+	cilium_dbg(ctx, DBG_POLICY_DENIED, src_id, dst_id);
 
 	*audited = 0;
 #ifdef POLICY_AUDIT_MODE
@@ -236,20 +274,20 @@ static __always_inline bool is_encap(__u16 dport, __u8 proto)
 #endif
 
 static __always_inline int
-policy_can_egress(struct __ctx_buff *ctx, __u32 srcID, __u32 dstID,
+policy_can_egress(struct __ctx_buff *ctx, __u32 src_id, __u32 dst_id,
 		  __u16 dport, __u8 proto, __u8 *match_type, __u8 *audited)
 {
 	int ret;
 
 #ifdef ENCAP_IFINDEX
-	if (srcID != HOST_ID && is_encap(dport, proto))
+	if (src_id != HOST_ID && is_encap(dport, proto))
 		return DROP_ENCAP_PROHIBITED;
 #endif
-	ret = __policy_can_access(&POLICY_MAP, ctx, srcID, dstID, dport, proto,
-				  CT_EGRESS, false, match_type);
+	ret = __policy_can_access(&POLICY_MAP, ctx, src_id, dst_id, dport,
+				  proto, CT_EGRESS, false, match_type);
 	if (ret >= 0)
 		return ret;
-	cilium_dbg(ctx, DBG_POLICY_DENIED, srcID, dstID);
+	cilium_dbg(ctx, DBG_POLICY_DENIED, src_id, dst_id);
 	*audited = 0;
 #ifdef POLICY_AUDIT_MODE
 	if (IS_ERR(ret)) {
@@ -262,19 +300,19 @@ policy_can_egress(struct __ctx_buff *ctx, __u32 srcID, __u32 dstID,
 
 static __always_inline int policy_can_egress6(struct __ctx_buff *ctx,
 					      const struct ipv6_ct_tuple *tuple,
-					      __u32 srcID, __u32 dstID,
+					      __u32 src_id, __u32 dst_id,
 					      __u8 *match_type, __u8 *audited)
 {
-	return policy_can_egress(ctx, srcID, dstID, tuple->dport,
+	return policy_can_egress(ctx, src_id, dst_id, tuple->dport,
 				 tuple->nexthdr, match_type, audited);
 }
 
 static __always_inline int policy_can_egress4(struct __ctx_buff *ctx,
 					      const struct ipv4_ct_tuple *tuple,
-					      __u32 srcID, __u32 dstID,
+					      __u32 src_id, __u32 dst_id,
 					      __u8 *match_type, __u8 *audited)
 {
-	return policy_can_egress(ctx, srcID, dstID, tuple->dport,
+	return policy_can_egress(ctx, src_id, dst_id, tuple->dport,
 				 tuple->nexthdr, match_type, audited);
 }
 

@@ -4,6 +4,7 @@ package ec2
 
 import (
 	"context"
+	"fmt"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -20,7 +21,7 @@ func (c *Client) CreateNetworkInterface(ctx context.Context, params *CreateNetwo
 		params = &CreateNetworkInterfaceInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CreateNetworkInterface", params, optFns, addOperationCreateNetworkInterfaceMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CreateNetworkInterface", params, optFns, c.addOperationCreateNetworkInterfaceMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +39,11 @@ type CreateNetworkInterfaceInput struct {
 	// This member is required.
 	SubnetId *string
 
+	// Unique, case-sensitive identifier that you provide to ensure the idempotency of
+	// the request. For more information, see Ensuring Idempotency
+	// (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html).
+	ClientToken *string
+
 	// A description for the network interface.
 	Description *string
 
@@ -45,7 +51,7 @@ type CreateNetworkInterfaceInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The IDs of one or more security groups.
 	Groups []string
@@ -53,20 +59,41 @@ type CreateNetworkInterfaceInput struct {
 	// Indicates the type of network interface. To create an Elastic Fabric Adapter
 	// (EFA), specify efa. For more information, see  Elastic Fabric Adapter
 	// (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa.html) in the Amazon
-	// Elastic Compute Cloud User Guide.
+	// Elastic Compute Cloud User Guide. To create a trunk network interface, specify
+	// efa. For more information, see  Network interface trunking
+	// (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/eni-trunking.html) in the
+	// Amazon Elastic Compute Cloud User Guide.
 	InterfaceType types.NetworkInterfaceCreationType
+
+	// The number of IPv4 prefixes that Amazon Web Services automatically assigns to
+	// the network interface. You cannot use this option if you use the Ipv4 Prefixes
+	// option.
+	Ipv4PrefixCount *int32
+
+	// One or more IPv4 prefixes assigned to the network interface. You cannot use this
+	// option if you use the Ipv4PrefixCount option.
+	Ipv4Prefixes []types.Ipv4PrefixSpecificationRequest
 
 	// The number of IPv6 addresses to assign to a network interface. Amazon EC2
 	// automatically selects the IPv6 addresses from the subnet range. You can't use
 	// this option if specifying specific IPv6 addresses. If your subnet has the
 	// AssignIpv6AddressOnCreation attribute set to true, you can specify 0 to override
 	// this setting.
-	Ipv6AddressCount int32
+	Ipv6AddressCount *int32
 
 	// One or more specific IPv6 addresses from the IPv6 CIDR block range of your
 	// subnet. You can't use this option if you're specifying a number of IPv6
 	// addresses.
 	Ipv6Addresses []types.InstanceIpv6Address
+
+	// The number of IPv6 prefixes that Amazon Web Services automatically assigns to
+	// the network interface. You cannot use this option if you use the Ipv6Prefixes
+	// option.
+	Ipv6PrefixCount *int32
+
+	// One or more IPv6 prefixes assigned to the network interface. You cannot use this
+	// option if you use the Ipv6PrefixCount option.
+	Ipv6Prefixes []types.Ipv6PrefixSpecificationRequest
 
 	// The primary private IPv4 address of the network interface. If you don't specify
 	// an IPv4 address, Amazon EC2 selects one for you from the subnet's IPv4 CIDR
@@ -86,23 +113,31 @@ type CreateNetworkInterfaceInput struct {
 	// type. For more information, see IP Addresses Per ENI Per Instance Type
 	// (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-eni.html#AvailableIpPerENI)
 	// in the Amazon Virtual Private Cloud User Guide.
-	SecondaryPrivateIpAddressCount int32
+	SecondaryPrivateIpAddressCount *int32
 
 	// The tags to apply to the new network interface.
 	TagSpecifications []types.TagSpecification
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of CreateNetworkInterface.
 type CreateNetworkInterfaceOutput struct {
+
+	// The token to use to retrieve the next page of results. This value is null when
+	// there are no more results to return.
+	ClientToken *string
 
 	// Information about the network interface.
 	NetworkInterface *types.NetworkInterface
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCreateNetworkInterfaceMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCreateNetworkInterfaceMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCreateNetworkInterface{}, middleware.After)
 	if err != nil {
 		return err
@@ -147,6 +182,9 @@ func addOperationCreateNetworkInterfaceMiddlewares(stack *middleware.Stack, opti
 	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addIdempotencyToken_opCreateNetworkInterfaceMiddleware(stack, options); err != nil {
+		return err
+	}
 	if err = addOpCreateNetworkInterfaceValidationMiddleware(stack); err != nil {
 		return err
 	}
@@ -163,6 +201,39 @@ func addOperationCreateNetworkInterfaceMiddlewares(stack *middleware.Stack, opti
 		return err
 	}
 	return nil
+}
+
+type idempotencyToken_initializeOpCreateNetworkInterface struct {
+	tokenProvider IdempotencyTokenProvider
+}
+
+func (*idempotencyToken_initializeOpCreateNetworkInterface) ID() string {
+	return "OperationIdempotencyTokenAutoFill"
+}
+
+func (m *idempotencyToken_initializeOpCreateNetworkInterface) HandleInitialize(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+	out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+) {
+	if m.tokenProvider == nil {
+		return next.HandleInitialize(ctx, in)
+	}
+
+	input, ok := in.Parameters.(*CreateNetworkInterfaceInput)
+	if !ok {
+		return out, metadata, fmt.Errorf("expected middleware input to be of type *CreateNetworkInterfaceInput ")
+	}
+
+	if input.ClientToken == nil {
+		t, err := m.tokenProvider.GetIdempotencyToken()
+		if err != nil {
+			return out, metadata, err
+		}
+		input.ClientToken = &t
+	}
+	return next.HandleInitialize(ctx, in)
+}
+func addIdempotencyToken_opCreateNetworkInterfaceMiddleware(stack *middleware.Stack, cfg Options) error {
+	return stack.Initialize.Add(&idempotencyToken_initializeOpCreateNetworkInterface{tokenProvider: cfg.IdempotencyTokenProvider}, middleware.Before)
 }
 
 func newServiceMetadataMiddleware_opCreateNetworkInterface(region string) *awsmiddleware.RegisterServiceMetadata {

@@ -1,16 +1,5 @@
-// Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package ctmap
 
@@ -169,16 +158,16 @@ func (k *CtKey4) NewValue() bpf.MapValue { return &CtEntry{} }
 // ToNetwork converts CtKey4 ports to network byte order.
 func (k *CtKey4) ToNetwork() CtKey {
 	n := *k
-	n.SourcePort = byteorder.HostToNetwork(n.SourcePort).(uint16)
-	n.DestPort = byteorder.HostToNetwork(n.DestPort).(uint16)
+	n.SourcePort = byteorder.HostToNetwork16(n.SourcePort)
+	n.DestPort = byteorder.HostToNetwork16(n.DestPort)
 	return &n
 }
 
 // ToHost converts CtKey ports to host byte order.
 func (k *CtKey4) ToHost() CtKey {
 	n := *k
-	n.SourcePort = byteorder.NetworkToHost(n.SourcePort).(uint16)
-	n.DestPort = byteorder.NetworkToHost(n.DestPort).(uint16)
+	n.SourcePort = byteorder.NetworkToHost16(n.SourcePort)
+	n.DestPort = byteorder.NetworkToHost16(n.DestPort)
 	return &n
 }
 
@@ -501,7 +490,7 @@ func (k *CtKey6Global) GetTupleKey() tuple.TupleKey {
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
 type CtEntry struct {
 	RxPackets uint64 `align:"rx_packets"`
-	RxBytes   uint64 `align:"rx_bytes"`
+	RxBytes   uint64 `align:"$union0"`
 	TxPackets uint64 `align:"tx_packets"`
 	TxBytes   uint64 `align:"tx_bytes"`
 	Lifetime  uint32 `align:"lifetime"`
@@ -592,7 +581,7 @@ func (c *CtEntry) StringWithTimeDiff(toRemSecs func(uint32) string) string {
 		c.TxFlagsSeen,
 		c.LastTxReport,
 		c.flagsString(),
-		byteorder.NetworkToHost(c.RevNAT),
+		byteorder.NetworkToHost16(c.RevNAT),
 		c.SourceSecurityID,
 		c.IfIndex)
 }

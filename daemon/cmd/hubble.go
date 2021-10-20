@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -29,7 +18,6 @@ import (
 	"github.com/cilium/cilium/pkg/hubble/container"
 	"github.com/cilium/cilium/pkg/hubble/exporter"
 	"github.com/cilium/cilium/pkg/hubble/exporter/exporteroption"
-	"github.com/cilium/cilium/pkg/hubble/math"
 	"github.com/cilium/cilium/pkg/hubble/metrics"
 	"github.com/cilium/cilium/pkg/hubble/monitor"
 	"github.com/cilium/cilium/pkg/hubble/observer"
@@ -338,7 +326,7 @@ func (d *Daemon) GetNamesOf(sourceEpID uint32, ip net.IP) []string {
 // with service information.
 //
 //  - ServiceGetter: https://github.com/cilium/hubble/blob/04ab72591faca62a305ce0715108876167182e04/pkg/parser/getters/getters.go#L52
-func (d *Daemon) GetServiceByAddr(ip net.IP, port uint16) (flowpb.Service, bool) {
+func (d *Daemon) GetServiceByAddr(ip net.IP, port uint16) *flowpb.Service {
 	addr := loadbalancer.L3n4Addr{
 		IP: ip,
 		L4Addr: loadbalancer.L4Addr{
@@ -347,12 +335,12 @@ func (d *Daemon) GetServiceByAddr(ip net.IP, port uint16) (flowpb.Service, bool)
 	}
 	namespace, name, ok := d.svc.GetServiceNameByAddr(addr)
 	if !ok {
-		return flowpb.Service{}, false
+		return nil
 	}
-	return flowpb.Service{
+	return &flowpb.Service{
 		Namespace: namespace,
 		Name:      name,
-	}, true
+	}
 }
 
 // GetK8sMetadata returns the Kubernetes metadata for the given IP address.
@@ -409,22 +397,7 @@ func (d *Daemon) GetK8sStore(name string) k8scache.Store {
 }
 
 // getHubbleEventBufferCapacity returns the user configured capacity for
-// Hubble's events buffer. The deprecated flag hubble-flow-buffer-size is
-// evaluated if greater than 0, otherwise the new flag
-// hubble-event-buffer-capacity is used instead.
+// Hubble's events buffer.
 func getHubbleEventBufferCapacity(logger logrus.FieldLogger) (container.Capacity, error) {
-	// check deprecated old flag for compatibility
-	// TODO: remove support for HubbleFlowBufferSize once 1.11 is out
-	if option.Config.HubbleFlowBufferSize > 0 {
-		logger.Warningf("Option '%s' is deprecated and will be removed in Cilium 1.11", option.HubbleFlowBufferSize)
-		c, err := container.NewCapacity(option.Config.HubbleFlowBufferSize)
-		if err == nil {
-			return c, nil
-		}
-		// old flag behavior was to silently round up the buffer capacity to a
-		// valid value (eg: 1500 -> 2047, 5000 -> 8191, etc) so adjust provided
-		// value to the nearest valid one for compatibility purpose
-		return container.NewCapacity((1<<math.MSB(uint64(option.Config.HubbleFlowBufferSize)) - 1))
-	}
 	return container.NewCapacity(option.Config.HubbleEventBufferCapacity)
 }

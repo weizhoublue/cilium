@@ -1,4 +1,4 @@
-# Copyright 2017-2020 Authors of Cilium
+# Copyright 2017-2021 Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
 ##@ Default
@@ -12,7 +12,7 @@ debug: all
 
 include Makefile.defs
 
-SUBDIRS_CILIUM_CONTAINER := proxylib envoy bpf cilium daemon cilium-health bugtool
+SUBDIRS_CILIUM_CONTAINER := proxylib envoy bpf cilium daemon cilium-health bugtool tools/mount
 SUBDIRS := $(SUBDIRS_CILIUM_CONTAINER) operator plugins tools hubble-relay
 
 SUBDIRS_CILIUM_CONTAINER += plugins/cilium-cni
@@ -59,13 +59,9 @@ DOCKER_FLAGS ?=
 
 TEST_LDFLAGS=-ldflags "-X github.com/cilium/cilium/pkg/kvstore.consulDummyAddress=https://consul:8443 \
 	-X github.com/cilium/cilium/pkg/kvstore.etcdDummyAddress=http://etcd:4002 \
-	-X github.com/cilium/cilium/pkg/testutils.CiliumRootDir=$(ROOT_DIR) \
 	-X github.com/cilium/cilium/pkg/datapath.DatapathSHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
-TEST_UNITTEST_LDFLAGS= -ldflags "-X github.com/cilium/cilium/pkg/kvstore.consulDummyConfigFile=/tmp/cilium-consul-certs/cilium-consul.yaml \
-	-X github.com/cilium/cilium/pkg/testutils.CiliumRootDir=$(ROOT_DIR) \
-	-X github.com/cilium/cilium/pkg/datapath.DatapathSHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
-	-X github.com/cilium/cilium/pkg/logging.DefaultLogLevelStr=$(LOGLEVEL)"
+TEST_UNITTEST_LDFLAGS=-ldflags "-X github.com/cilium/cilium/pkg/datapath.DatapathSHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 define print_help_line
 	@printf "  \033[36m%-29s\033[0m %s.\n" $(1) $(2)
@@ -136,10 +132,8 @@ $(SUBDIRS): force ## Execute default make target(make all) for the provided subd
 
 PRIV_TEST_PKGS_EVAL := $(shell for pkg in $(TESTPKGS); do echo $$pkg; done | xargs grep --include='*.go' -ril '+build [^!]*privileged_tests' | xargs dirname | sort | uniq)
 PRIV_TEST_PKGS ?= $(PRIV_TEST_PKGS_EVAL)
-tests-privileged: GO_TAGS_FLAGS+=privileged_tests ## Run unit-tests for Cilium that requires elevated privileges.
+tests-privileged: GO_TAGS_FLAGS+=privileged_tests ## Run integration-tests for Cilium that requires elevated privileges.
 tests-privileged:
-	# cilium-map-migrate is a dependency of some unit tests.
-	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C bpf cilium-map-migrate
 	$(MAKE) init-coverage
 	for pkg in $(patsubst %,github.com/cilium/cilium/%,$(PRIV_TEST_PKGS)); do \
 		PATH=$(PATH):$(ROOT_DIR)/bpf $(GO_TEST) $(TEST_LDFLAGS) $$pkg $(GOTEST_UNIT_BASE) $(GOTEST_COVER_OPTS) \
@@ -148,7 +142,7 @@ tests-privileged:
 	done
 	$(MAKE) generate-cov
 
-start-kvstores: ## Start running kvstores required for running Cilium unit-tests. More specifically this will run etcd and consul containers.
+start-kvstores: ## Start running kvstores required for running Cilium integration-tests. More specifically this will run etcd and consul containers.
 ifeq ($(SKIP_KVSTORES),"false")
 	@echo Starting key-value store containers...
 	-$(QUIET)$(CONTAINER_ENGINE) rm -f "cilium-etcd-test-container" 2> /dev/null
@@ -184,7 +178,7 @@ ifeq ($(SKIP_KVSTORES),"false")
 	$(QUIET)rm -rf /tmp/cilium-consul-certs
 endif
 
-generate-cov: ## Generate coverage report for Cilium unit-tests.
+generate-cov: ## Generate coverage report for Cilium integration-tests.
 	# Remove generated code from coverage
 	$(QUIET) grep -Ev '(^github.com/cilium/cilium/api/v1)|(generated.deepcopy.go)|(^github.com/cilium/cilium/pkg/k8s/client/)' \
 		coverage-all-tmp.out > coverage-all.out
@@ -192,14 +186,14 @@ generate-cov: ## Generate coverage report for Cilium unit-tests.
 	$(QUIET) rm coverage.out coverage-all-tmp.out
 	@rmdir ./daemon/1 ./daemon/1_backup 2> /dev/null || true
 
-init-coverage: ## Initialize converage report for Cilium unit-tests.
+init-coverage: ## Initialize converage report for Cilium integration-tests.
 	$(QUIET) echo "mode: count" > coverage-all-tmp.out
 	$(QUIET) echo "mode: count" > coverage.out
 
-unit-tests: start-kvstores ## Runs all unit-tests for Cilium.
+integration-tests: GO_TAGS_FLAGS+=integration_tests
+integration-tests: start-kvstores ## Runs all integration-tests for Cilium.
 	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C tools/maptool/
 	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C test/bpf/
-	test/bpf/unit-test
 ifeq ($(SKIP_VET),"false")
 	$(MAKE) govet
 endif
@@ -216,9 +210,10 @@ endif
 	$(MAKE) generate-cov
 	$(MAKE) stop-kvstores
 
-bench: start-kvstores ## Run benchmarks for Cilium unit-tests in the repository.
+bench: start-kvstores ## Run benchmarks for Cilium integration-tests in the repository.
 	# Process the packages in different subshells. See comment in the
-	# "unit-tests" target above for an explanation.## Builds components required for cilium-agent container.
+	# "integration-tests" target above for an explanation.## Builds components
+	# required for cilium-agent container.
 	$(QUIET)for pkg in $(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)); do \
 		$(GO_TEST) $(TEST_UNITTEST_LDFLAGS) $(GOTEST_BASE) $(BENCHFLAGS) \
 			$$pkg \
@@ -229,7 +224,7 @@ bench: start-kvstores ## Run benchmarks for Cilium unit-tests in the repository.
 bench-privileged: GO_TAGS_FLAGS+=privileged_tests ## Run benchmarks for priviliged tests.
 bench-privileged:
 	# Process the packages in different subshells. See comment in the
-	# "unit-tests" target above for an explanation.
+	# "integration-tests" target above for an explanation.
 	$(QUIET)for pkg in $(patsubst %,github.com/cilium/cilium/%,$(TESTPKGS)); do \
 		$(GO_TEST) $(TEST_UNITTEST_LDFLAGS) $(GOTEST_BASE) $(BENCHFLAGS) $$pkg \
 		|| exit 1; \
@@ -303,7 +298,8 @@ CRD_OPTIONS ?= "crd:crdVersions=v1"
 manifests: ## Generate K8s manifests e.g. CRD, RBAC etc.
 	$(eval TMPDIR := $(shell mktemp -d))
 	cd "./vendor/sigs.k8s.io/controller-tools/cmd/controller-gen" && \
-	go run ./... $(CRD_OPTIONS) paths="$(PWD)/pkg/k8s/apis/cilium.io/v2;$(PWD)/pkg/k8s/apis/cilium.io/v2alpha1" output:crd:artifacts:config="$(TMPDIR)";
+	$(QUIET)$(GO) run ./... $(CRD_OPTIONS) paths="$(PWD)/pkg/k8s/apis/cilium.io/v2;$(PWD)/pkg/k8s/apis/cilium.io/v2alpha1" output:crd:artifacts:config="$(TMPDIR)";
+	$(QUIET)$(GO) run ./tools/crdcheck "$(TMPDIR)"
 	mv ${TMPDIR}/cilium.io_ciliumnetworkpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumnetworkpolicies.yaml
 	mv ${TMPDIR}/cilium.io_ciliumclusterwidenetworkpolicies.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumclusterwidenetworkpolicies.yaml
 	mv ${TMPDIR}/cilium.io_ciliumendpoints.yaml ./pkg/k8s/apis/cilium.io/client/crds/v2/ciliumendpoints.yaml
@@ -397,6 +393,7 @@ generate-k8s-api: ## Generate Cilium k8s API client, deepcopy and deepequal Go s
 	ipam:types\
 	alibabacloud:types\
 	k8s:types\
+	k8s:utils\
 	maps:ctmap\
 	maps:encrypt\
 	maps:eppolicymap\
@@ -475,9 +472,10 @@ govet: ## Run govet on Go source files in the repository.
     ./test/k8sT/... \
     ./tools/...
 
-lint: ## Run golangci-lint.
+lint: ## Run golangci-lint and check if the helper headers in bpf/mock are up-to-date.
 	@$(ECHO_CHECK) golangci-lint
 	$(QUIET) golangci-lint run
+	$(QUIET) $(MAKE) $(SUBMAKEOPTS) -C bpf/mock/ check_helper_headers
 
 logging-subsys-field: ## Validate logrus subsystem field for logs in Go source code.
 	@$(ECHO_CHECK) contrib/scripts/check-logging-subsys-field.sh
@@ -495,6 +493,9 @@ microk8s: check-microk8s ## Build cilium-dev docker image and import to mircrok8
 	@echo "  DEPLOY image to microk8s ($(LOCAL_IMAGE))"
 	$(QUIET)$(CONTAINER_ENGINE) tag $(IMAGE_REPOSITORY)/cilium-dev:$(LOCAL_IMAGE_TAG) $(LOCAL_IMAGE)
 	$(QUIET)./contrib/scripts/microk8s-import.sh $(LOCAL_IMAGE)
+
+kind: ## Create a kind cluster for Cilium development.
+	$(QUIET)./contrib/scripts/kind.sh
 
 precheck: logging-subsys-field ## Peform build precheck for the source code.
 ifeq ($(SKIP_K8S_CODE_GEN_CHECK),"false")
@@ -565,7 +566,7 @@ postcheck: build ## Run Cilium build postcheck (update-cmdref, build documentati
 licenses-all: ## Generate file with all the License from dependencies.
 	@$(GO) run ./tools/licensegen > LICENSE.all || ( rm -f LICENSE.all ; false )
 
-update-go-version: update-dev-doctor-go-version update-gh-actions-go-version update-travis-go-version update-test-go-version update-images-go-version ## Update Go version for all the components (travis, dev-doctor, gh-actions etc.).
+update-go-version: update-dev-doctor-go-version update-gh-actions-go-version update-main-go-version update-travis-go-version update-test-go-version update-images-go-version ## Update Go version for all the components (travis, dev-doctor, gh-actions etc.).
 
 update-dev-doctor-go-version: ## Update dev-doctor Go version.
 	$(QUIET) sed -i 's/^const minGoVersionStr = ".*"/const minGoVersionStr = "$(GO_MAJOR_AND_MINOR_VERSION)"/' tools/dev-doctor/config.go
@@ -574,6 +575,14 @@ update-dev-doctor-go-version: ## Update dev-doctor Go version.
 update-gh-actions-go-version: ## Update Go version in GitHub action config.
 	$(QUIET) for fl in $(shell find .github/workflows -name "*.yaml" -print) ; do sed -i 's/go-version: .*/go-version: $(GO_IMAGE_VERSION)/g' $$fl ; done
 	@echo "Updated go version in GitHub Actions to $(GO_IMAGE_VERSION)"
+
+update-main-go-version: ## Update Go version in main.go.
+	$(QUIET) for fl in $(shell find .  -name main.go -not -path "./vendor/*" -print); do \
+		sed -i \
+			-e 's|^//go:build go.*|//go:build go$(GO_MAJOR_AND_MINOR_VERSION)|g' \
+			-e 's|^// +build go.*|// +build go$(GO_MAJOR_AND_MINOR_VERSION)|g' \
+			$$fl ; \
+	done
 
 update-travis-go-version: ## Update Go version in TravisCI config.
 	$(QUIET) sed -i 's/go: ".*/go: "$(GO_VERSION)"/g' .travis.yml
@@ -602,7 +611,7 @@ help: Makefile ## Display help for the Makefile, from https://www.thapaliya.com/
 	$(call print_help_line,"docker-plugin-image","Build cilium-docker plugin image")
 	$(call print_help_line,"docker-hubble-relay-image","Build hubble-relay docker image")
 	$(call print_help_line,"docker-clustermesh-apiserver-image","Build docker image for Cilium clustermesh APIServer")
-	$(call print_help_line,"docker-opeartor-image","Build cilium-operator docker image")
+	$(call print_help_line,"docker-operator-image","Build cilium-operator docker image")
 	$(call print_help_line,"docker-operator-*-image","Build platform specific cilium-operator images(aws, azure, generic)")
 	$(call print_help_line,"docker-*-image-unstripped","Build unstripped version of above docker images(cilium, hubble-relay, operator etc.)")
 

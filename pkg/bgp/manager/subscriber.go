@@ -1,17 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Google Inc.
-// Copyright 2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package manager
 
@@ -20,6 +8,7 @@ import (
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 
+	metallbk8s "go.universe.tf/metallb/pkg/k8s"
 	"go.universe.tf/metallb/pkg/k8s/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -131,7 +120,9 @@ func (m *Manager) process(event interface{}) types.SyncState {
 // reconcile calls down to the MetalLB controller to reconcile the service
 // object, which will allocate it an LB IP.
 func (m *Manager) reconcile(name string, svc *slim_corev1.Service) types.SyncState {
-	return m.SetBalancer(m.Logger(), name, toV1Service(svc), nil)
+	return m.SetBalancer(m.Logger(), name, toV1Service(svc), metallbk8s.EpsOrSlices{
+		Type: metallbk8s.Eps,
+	})
 }
 
 // forceResync re-adds all the services from the indexer to the queue. See

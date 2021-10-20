@@ -1,16 +1,5 @@
-// Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2016-2021 Authors of Cilium
 
 package endpoint
 
@@ -47,7 +36,6 @@ import (
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
-	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
@@ -352,6 +340,12 @@ type Endpoint struct {
 	noTrackPort uint16
 }
 
+// EndpointSyncControllerName returns the controller name to synchronize
+// endpoint in to kubernetes.
+func EndpointSyncControllerName(epID uint16) string {
+	return fmt.Sprintf("sync-to-k8s-ciliumendpoint (%v)", epID)
+}
+
 // SetAllocator sets the identity allocator for this endpoint.
 func (e *Endpoint) SetAllocator(allocator cache.IdentityAllocator) {
 	e.unconditionalLock()
@@ -539,29 +533,6 @@ func (e *Endpoint) HostInterface() string {
 		return ""
 	}
 	return e.ifName
-}
-
-// getK8sPodLabels returns all labels that exist in the endpoint and were
-// derived from k8s pod.
-func (e *Endpoint) getK8sPodLabels() labels.Labels {
-	e.unconditionalRLock()
-	defer e.runlock()
-	allLabels := e.OpLabels.AllLabels()
-	if allLabels == nil {
-		return nil
-	}
-
-	allLabelsFromK8s := allLabels.GetFromSource(labels.LabelSourceK8s)
-
-	k8sEPPodLabels := labels.Labels{}
-	for k, v := range allLabelsFromK8s {
-		if !strings.HasPrefix(v.Key, ciliumio.PodNamespaceMetaLabels) &&
-			!strings.HasPrefix(v.Key, ciliumio.PolicyLabelServiceAccount) &&
-			!strings.HasPrefix(v.Key, ciliumio.PodNamespaceLabel) {
-			k8sEPPodLabels[k] = v
-		}
-	}
-	return k8sEPPodLabels
 }
 
 // GetLabelsSHA returns the SHA of labels
@@ -851,8 +822,10 @@ func parseEndpoint(ctx context.Context, owner regeneration.Owner, bEp []byte) (*
 	// If host label is present, it's the host endpoint.
 	ep.isHost = ep.HasLabels(labels.LabelHost)
 
-	// Overwrite datapath configuration with the current agent configuration.
-	ep.DatapathConfiguration = NewDatapathConfiguration()
+	if ep.isHost {
+		// Overwrite datapath configuration with the current agent configuration.
+		ep.DatapathConfiguration = NewDatapathConfiguration()
+	}
 
 	// We need to check for nil in Status, CurrentStatuses and Log, since in
 	// some use cases, status will be not nil and Cilium will eventually
@@ -1328,12 +1301,14 @@ func (e *Endpoint) setState(toState State, reason string) bool {
 		// transitioning to StateWaitingToRegenerate, as this means that a
 		// regeneration is already queued up. Callers would then queue up
 		// another unneeded regeneration, which is undesired.
-		case StateWaitingForIdentity, StateDisconnecting, StateRestoring:
+		// Transition to StateWaitingForIdentity is also not allowed as that
+		// will break the ensuing regeneration.
+		case StateDisconnecting, StateRestoring:
 			goto OKState
-		// Don't log this state transition being invalid below so that we don't
+		// Don't log these state transition being invalid below so that we don't
 		// put warnings in the logs for a case which does not result in incorrect
 		// behavior.
-		case StateWaitingToRegenerate:
+		case StateWaitingForIdentity, StateWaitingToRegenerate:
 			return false
 		}
 	case StateRegenerating:
@@ -1956,6 +1931,10 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (
 	// Unconditionally force policy recomputation after a new identity has been
 	// assigned.
 	e.forcePolicyComputation()
+
+	// Trigger the sync-to-k8s-ciliumendpoint controller to sync the new
+	// endpoint's identity.
+	e.controllers.TriggerController(EndpointSyncControllerName(e.ID))
 
 	e.unlock()
 

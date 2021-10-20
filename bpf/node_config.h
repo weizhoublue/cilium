@@ -76,7 +76,7 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define CAPTURE6_SIZE 16384
 #endif /* ENABLE_IPV6 */
 
-#define ENCAP_GENEVE 1
+#define EGRESS_MAP test_cilium_egress_v4
 #define ENDPOINTS_MAP test_cilium_lxc
 #define EVENTS_MAP test_cilium_events
 #define SIGNAL_MAP test_cilium_signals
@@ -89,12 +89,12 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define EP_POLICY_MAP test_cilium_ep_to_policy
 #define LB6_REVERSE_NAT_MAP test_cilium_lb6_reverse_nat
 #define LB6_SERVICES_MAP_V2 test_cilium_lb6_services
-#define LB6_BACKEND_MAP test_cilium_lb6_backends
+#define LB6_BACKEND_MAP_V2 test_cilium_lb6_backends
 #define LB6_REVERSE_NAT_SK_MAP test_cilium_lb6_reverse_sk
 #define LB6_REVERSE_NAT_SK_MAP_SIZE 262144
 #define LB4_REVERSE_NAT_MAP test_cilium_lb4_reverse_nat
 #define LB4_SERVICES_MAP_V2 test_cilium_lb4_services
-#define LB4_BACKEND_MAP test_cilium_lb4_backends
+#define LB4_BACKEND_MAP_V2 test_cilium_lb4_backends
 #define LB4_REVERSE_NAT_SK_MAP test_cilium_lb4_reverse_sk
 #define LB4_REVERSE_NAT_SK_MAP_SIZE 262144
 #define LB4_AFFINITY_MAP test_cilium_lb4_affinity
@@ -112,8 +112,6 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define ENDPOINTS_MAP_SIZE 65536
 #define METRICS_MAP_SIZE 65536
 #define CILIUM_NET_MAC  { .addr = { 0xce, 0x72, 0xa7, 0x03, 0x88, 0x57 } }
-#define LB_REDIRECT 1
-#define LB_DST_MAC { .addr = { 0xce, 0x72, 0xa7, 0x03, 0x88, 0x58 } }
 #define CILIUM_LB_MAP_MAX_ENTRIES	65536
 #define POLICY_MAP_SIZE 16384
 #define IPCACHE_MAP_SIZE 512000
@@ -192,3 +190,22 @@ DEFINE_IPV6(HOST_IP, 0xbe, 0xef, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0xa, 0x
 #define IPCACHE4_PREFIXES 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, \
 4, 3, 2, 1
 #define IPCACHE6_PREFIXES 4, 3, 2, 1
+
+#define VLAN_FILTER(ifindex, vlan_id) switch (ifindex) { \
+case 116: \
+switch (vlan_id) { \
+case 4000: \
+case 4001: \
+return true; \
+} \
+break; \
+case 117: \
+switch (vlan_id) { \
+case 4003: \
+case 4004: \
+case 4005: \
+return true; \
+} \
+break; \
+} \
+return false;

@@ -21,7 +21,7 @@ func (c *Client) ExportImage(ctx context.Context, params *ExportImageInput, optF
 		params = &ExportImageInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ExportImage", params, optFns, addOperationExportImageMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ExportImage", params, optFns, c.addOperationExportImageMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ type ExportImageInput struct {
 	ImageId *string
 
 	// Information about the destination Amazon S3 bucket. The bucket must exist and
-	// grant WRITE and READ_ACP permissions to the AWS account
+	// grant WRITE and READ_ACP permissions to the Amazon Web Services account
 	// vm-import-export@amazon.com.
 	//
 	// This member is required.
@@ -60,7 +60,7 @@ type ExportImageInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The name of the role that grants VM Import/Export permission to export images to
 	// your Amazon S3 bucket. If this parameter is not specified, the default role is
@@ -69,6 +69,8 @@ type ExportImageInput struct {
 
 	// The tags to apply to the export image task during creation.
 	TagSpecifications []types.TagSpecification
+
+	noSmithyDocumentSerde
 }
 
 type ExportImageOutput struct {
@@ -107,9 +109,11 @@ type ExportImageOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationExportImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationExportImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpExportImage{}, middleware.After)
 	if err != nil {
 		return err

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package lbmap
 
@@ -178,7 +167,7 @@ type RevNatValue interface {
 
 // BackendIDByServiceIDSet is the type of a set for checking whether a backend
 // belongs to a given service
-type BackendIDByServiceIDSet map[uint16]map[uint16]struct{} // svc ID => backend ID
+type BackendIDByServiceIDSet map[uint16]map[loadbalancer.BackendID]struct{} // svc ID => backend ID
 
 type SourceRangeSetByServiceID map[uint16][]*cidr.CIDR // svc ID => src range CIDRs
 

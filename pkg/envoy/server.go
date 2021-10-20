@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package envoy
 
@@ -77,6 +66,8 @@ const (
 	ingressClusterName    = "ingress-cluster"
 	ingressTLSClusterName = "ingress-cluster-tls"
 	metricsListenerName   = "envoy-prometheus-metrics-listener"
+	listenerIPv6Address   = "::"
+	listenerIPv4Address   = "0.0.0.0"
 	EnvoyTimeout          = 300 * time.Second // must be smaller than endpoint.EndpointGenerationTimeout
 )
 
@@ -113,6 +104,12 @@ type XDSServer struct {
 	// mutex must be held when accessing this.
 	// Value holds the number of redirects using the listener named by the key.
 	listeners map[string]*Listener
+
+	// proxyListeners is the count of redirection proxy listeners in 'listeners'.
+	// When this is zero, cilium should not wait for NACKs/ACKs from envoy.
+	// This value is different from len(listeners) due to non-proxy listeners
+	// (e.g., prometheus listener)
+	proxyListeners int
 
 	// networkPolicyCache publishes network policy configuration updates to
 	// Envoy proxies.
@@ -380,7 +377,10 @@ func (s *XDSServer) AddMetricsListener(port uint16, wg *completion.WaitGroup) {
 	if port == 0 {
 		return // 0 == disabled
 	}
-
+	listenerAddr := listenerIPv6Address
+	if !option.Config.EnableIPv6 {
+		listenerAddr = listenerIPv4Address
+	}
 	log.WithField(logfields.Port, port).Debug("Envoy: AddMetricsListener")
 
 	s.addListener(metricsListenerName, port, func() *envoy_config_listener.Listener {
@@ -419,7 +419,7 @@ func (s *XDSServer) AddMetricsListener(port uint16, wg *completion.WaitGroup) {
 				Address: &envoy_config_core.Address_SocketAddress{
 					SocketAddress: &envoy_config_core.SocketAddress{
 						Protocol:      envoy_config_core.SocketAddress_TCP,
-						Address:       "::",
+						Address:       listenerAddr,
 						Ipv4Compat:    true,
 						PortSpecifier: &envoy_config_core.SocketAddress_PortValue{PortValue: uint32(port)},
 					},
@@ -440,21 +440,24 @@ func (s *XDSServer) AddMetricsListener(port uint16, wg *completion.WaitGroup) {
 		if err != nil {
 			log.WithField(logfields.Port, port).WithError(err).Debug("Envoy: Adding metrics listener failed")
 			// Remove the added listener in case of a failure
-			s.RemoveListener(metricsListenerName, nil)
+			s.removeListener(metricsListenerName, nil, false)
 		} else {
 			log.WithField(logfields.Port, port).Info("Envoy: Listening for prometheus metrics")
 		}
-	})
+	}, false)
 }
 
 // addListener either reuses an existing listener with 'name', or creates a new one.
 // 'listenerConf()' is only called if a new listener is being created.
-func (s *XDSServer) addListener(name string, port uint16, listenerConf func() *envoy_config_listener.Listener, wg *completion.WaitGroup, cb func(err error)) {
+func (s *XDSServer) addListener(name string, port uint16, listenerConf func() *envoy_config_listener.Listener, wg *completion.WaitGroup, cb func(err error), isProxyListener bool) {
 	s.mutex.Lock()
 	listener := s.listeners[name]
 	if listener == nil {
 		listener = &Listener{}
 		s.listeners[name] = listener
+		if isProxyListener {
+			s.proxyListeners++
+		}
 	}
 	listener.count++
 	listener.mutex.Lock() // needed for other than 'count'
@@ -505,10 +508,15 @@ func (s *XDSServer) addListener(name string, port uint16, listenerConf func() *e
 
 func (s *XDSServer) getListenerConf(name string, kind policy.L7ParserType, port uint16, isIngress bool, mayUseOriginalSourceAddr bool) *envoy_config_listener.Listener {
 	clusterName := egressClusterName
+	listenerAddr := listenerIPv6Address
 	socketMark := int64(0xB00)
 	if isIngress {
 		clusterName = ingressClusterName
 		socketMark = 0xA00
+	}
+
+	if !option.Config.EnableIPv6 {
+		listenerAddr = listenerIPv4Address
 	}
 
 	listenerConf := &envoy_config_listener.Listener{
@@ -517,7 +525,7 @@ func (s *XDSServer) getListenerConf(name string, kind policy.L7ParserType, port 
 			Address: &envoy_config_core.Address_SocketAddress{
 				SocketAddress: &envoy_config_core.SocketAddress{
 					Protocol:      envoy_config_core.SocketAddress_TCP,
-					Address:       "::",
+					Address:       listenerAddr,
 					Ipv4Compat:    true,
 					PortSpecifier: &envoy_config_core.SocketAddress_PortValue{PortValue: uint32(port)},
 				},
@@ -585,11 +593,16 @@ func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, port uint
 
 	s.addListener(name, port, func() *envoy_config_listener.Listener {
 		return s.getListenerConf(name, kind, port, isIngress, mayUseOriginalSourceAddr)
-	}, wg, nil)
+	}, wg, nil, true)
 }
 
 // RemoveListener removes an existing Envoy Listener.
 func (s *XDSServer) RemoveListener(name string, wg *completion.WaitGroup) xds.AckingResourceMutatorRevertFunc {
+	return s.removeListener(name, wg, true)
+}
+
+// removeListener removes an existing Envoy Listener.
+func (s *XDSServer) removeListener(name string, wg *completion.WaitGroup, isProxyListener bool) xds.AckingResourceMutatorRevertFunc {
 	log.Debugf("Envoy: RemoveListener %s", name)
 
 	var listenerRevertFunc xds.AckingResourceMutatorRevertFunc
@@ -599,6 +612,9 @@ func (s *XDSServer) RemoveListener(name string, wg *completion.WaitGroup) xds.Ac
 	if ok && listener != nil {
 		listener.count--
 		if listener.count == 0 {
+			if isProxyListener {
+				s.proxyListeners--
+			}
 			delete(s.listeners, name)
 			listenerRevertFunc = s.listenerMutator.Delete(ListenerTypeURL, name, []string{"127.0.0.1"}, wg, nil)
 		}
@@ -612,6 +628,9 @@ func (s *XDSServer) RemoveListener(name string, wg *completion.WaitGroup) xds.Ac
 		s.mutex.Lock()
 		if listenerRevertFunc != nil {
 			listenerRevertFunc(completion)
+			if isProxyListener {
+				s.proxyListeners++
+			}
 		}
 		listener.count++
 		s.listeners[name] = listener
@@ -1002,7 +1021,6 @@ func createBootstrap(filePath string, nodeId, cluster string, xdsSock, egressClu
 			},
 		},
 		Admin: &envoy_config_bootstrap.Admin{
-			AccessLogPath: "/dev/null",
 			Address: &envoy_config_core.Address{
 				Address: &envoy_config_core.Address_Pipe{
 					Pipe: &envoy_config_core.Pipe{Path: adminPath},
@@ -1395,7 +1413,7 @@ func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *polic
 	// query for network policies and therefore will never ACK them, and we'd
 	// wait forever.
 	if !ep.HasSidecarProxy() {
-		if len(s.listeners) == 0 {
+		if s.proxyListeners == 0 {
 			wg = nil
 		}
 	}
@@ -1453,7 +1471,7 @@ func (s *XDSServer) UseCurrentNetworkPolicy(ep logger.EndpointUpdater, policy *p
 	// If there are no listeners configured, the local node's Envoy proxy won't
 	// query for network policies and therefore will never ACK them, and we'd
 	// wait forever.
-	if !ep.HasSidecarProxy() && len(s.listeners) == 0 {
+	if !ep.HasSidecarProxy() && s.proxyListeners == 0 {
 		return
 	}
 

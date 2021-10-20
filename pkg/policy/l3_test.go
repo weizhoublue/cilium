@@ -1,24 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
 
 import (
-	"net"
-
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/labels"
@@ -28,8 +16,7 @@ import (
 )
 
 func (ds *PolicyTestSuite) SetUpTest(c *C) {
-	_, v6node, err := net.ParseCIDR("2001:DB8::/96")
-	c.Assert(err, IsNil)
+	v6node := cidr.MustParseCIDR("2001:DB8::/96")
 	v4node := cidr.MustParseCIDR("192.0.2.3/24")
 	node.SetIPv6NodeRange(v6node)
 	node.SetIPv4AllocRange(v4node)

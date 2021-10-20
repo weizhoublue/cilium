@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package loader
 
@@ -53,6 +42,7 @@ const (
 	initArgIPv6NodeIP
 	initArgMode
 	initArgTunnelMode
+	initArgTunnelPort
 	initArgDevices
 	initArgHostDev1
 	initArgHostDev2
@@ -363,6 +353,12 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		args[initArgTunnelMode] = option.TunnelVXLAN
 	}
 
+	args[initArgTunnelPort] = "<nil>"
+	switch args[initArgTunnelMode] {
+	case option.TunnelVXLAN, option.TunnelGeneve:
+		args[initArgTunnelPort] = fmt.Sprintf("%d", option.Config.TunnelPort)
+	}
+
 	if option.Config.EnableNodePort {
 		args[initArgNodePort] = "true"
 	} else {
@@ -453,25 +449,11 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		return err
 	}
 
-	if option.Config.InstallIptRules {
-		if err := iptMgr.TransientRulesStart(option.Config.HostDevice); err != nil {
-			log.WithError(err).Warning("failed to install transient iptables rules")
-		}
+	if err := iptMgr.InstallRules(option.Config.HostDevice, firstInitialization, option.Config.InstallIptRules); err != nil {
+		return err
 	}
-	// The iptables rules are only removed on the first initialization to
-	// remove stale rules or when iptables is enabled. The first invocation
-	// is silent as rules may not exist.
-	if firstInitialization || option.Config.InstallIptRules {
-		iptMgr.RemoveRules(firstInitialization)
-	}
-	if option.Config.InstallIptRules {
-		err := iptMgr.InstallRules(option.Config.HostDevice)
-		iptMgr.TransientRulesEnd(false)
-		if err != nil {
-			return err
-		}
-	}
-	// Reinstall proxy rules for any running proxies
+
+	// Reinstall proxy rules for any running proxies if needed
 	if p != nil {
 		p.ReinstallRules()
 	}

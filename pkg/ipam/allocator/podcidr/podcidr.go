@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package podcidr
 
@@ -301,9 +290,16 @@ func syncToK8s(nodeGetterUpdater ipam.CiliumNodeGetterUpdater, ciliumNodesToK8s 
 				err = nil
 			}
 		case k8sOpDelete:
-			err = nodeGetterUpdater.Delete(nodeName)
-			if k8sErrors.IsNotFound(err) || k8sErrors.IsGone(err) {
+			// There's no reason to handle a delete operation when we've
+			// already received the delete event for the resource anyway. We'll
+			// fetch it in case it still exists in k8s and warn if we find it.
+			_, err = nodeGetterUpdater.Get(nodeName)
+			if err != nil && k8sErrors.IsNotFound(err) {
+				// This is not an error because we expect the resource to
+				// already be deleted from k8s.
 				err = nil
+			} else {
+				log.WithError(err).Warn("Received a CiliumNode delete event, but the resource may not have been deleted (see error).")
 			}
 		}
 		switch {
@@ -598,7 +594,7 @@ func releaseCIDRs(cidrAllocators []CIDRAllocator, cidrsToRelease []*net.IPNet) {
 				log.WithError(err).Error("failed to release cidr")
 				continue
 			}
-			log.Debug("node released cidrs")
+			log.Info("node released cidrs")
 			break
 		}
 	}

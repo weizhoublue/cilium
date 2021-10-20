@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package datapath
 
@@ -64,18 +53,11 @@ type IptablesManager interface {
 	// rules for redirecting host proxy traffic on a specific ProxyPort)
 	InstallProxyRules(proxyPort uint16, ingress bool, name string) error
 
-	// RemoveProxyRules creates the necessary datapath config (e.g., iptables
-	// rules for redirecting host proxy traffic on a specific ProxyPort)
-	RemoveProxyRules(proxyPort uint16, ingress bool, name string) error
-
 	// SupportsOriginalSourceAddr tells if the datapath supports
 	// use of original source addresses in proxy upstream
 	// connections.
 	SupportsOriginalSourceAddr() bool
-	RemoveRules(quiet bool)
-	InstallRules(ifName string) error
-	TransientRulesStart(ifName string) error
-	TransientRulesEnd(quiet bool)
+	InstallRules(ifName string, quiet, install bool) error
 
 	// GetProxyPort fetches the existing proxy port configured for the
 	// specified listener. Used early in bootstrap to reopen proxy ports.

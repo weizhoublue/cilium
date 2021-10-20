@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -338,7 +327,7 @@ func (d *Daemon) allocateIPs() error {
 	if option.Config.EnableIPv4 {
 		log.Infof("  IPv4 allocation prefix: %s", node.GetIPv4AllocRange())
 
-		if c := option.Config.IPv4NativeRoutingCIDR(); c != nil {
+		if c := option.Config.GetIPv4NativeRoutingCIDR(); c != nil {
 			log.Infof("  IPv4 native routing prefix: %s", c.String())
 		}
 
@@ -386,12 +375,12 @@ func (d *Daemon) configureIPAM() {
 	}
 
 	if option.Config.IPv6Range != AutoCIDR {
-		_, net, err := net.ParseCIDR(option.Config.IPv6Range)
+		allocCIDR, err := cidr.ParseCIDR(option.Config.IPv6Range)
 		if err != nil {
 			log.WithError(err).WithField(logfields.V6Prefix, option.Config.IPv6Range).Fatal("Invalid IPv6 allocation prefix")
 		}
 
-		node.SetIPv6NodeRange(net)
+		node.SetIPv6NodeRange(allocCIDR)
 	}
 
 	if err := node.AutoComplete(); err != nil {

@@ -13,7 +13,7 @@ import (
 )
 
 // Describes one or more of your DHCP options sets. For more information, see DHCP
-// Options Sets
+// options sets
 // (https://docs.aws.amazon.com/vpc/latest/userguide/VPC_DHCP_Options.html) in the
 // Amazon Virtual Private Cloud User Guide.
 func (c *Client) DescribeDhcpOptions(ctx context.Context, params *DescribeDhcpOptionsInput, optFns ...func(*Options)) (*DescribeDhcpOptionsOutput, error) {
@@ -21,7 +21,7 @@ func (c *Client) DescribeDhcpOptions(ctx context.Context, params *DescribeDhcpOp
 		params = &DescribeDhcpOptionsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeDhcpOptions", params, optFns, addOperationDescribeDhcpOptionsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeDhcpOptions", params, optFns, c.addOperationDescribeDhcpOptionsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ type DescribeDhcpOptionsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters.
 	//
@@ -53,26 +53,28 @@ type DescribeDhcpOptionsInput struct {
 	// * value - The value
 	// for one of the options.
 	//
-	// * owner-id - The ID of the AWS account that owns the
-	// DHCP options set.
+	// * owner-id - The ID of the Amazon Web Services account
+	// that owns the DHCP options set.
 	//
-	// * tag: - The key/value combination of a tag assigned to the
-	// resource. Use the tag key in the filter name and the tag value as the filter
-	// value. For example, to find all resources that have a tag with the key Owner and
-	// the value TeamA, specify tag:Owner for the filter name and TeamA for the filter
-	// value.
+	// * tag: - The key/value combination of a tag
+	// assigned to the resource. Use the tag key in the filter name and the tag value
+	// as the filter value. For example, to find all resources that have a tag with the
+	// key Owner and the value TeamA, specify tag:Owner for the filter name and TeamA
+	// for the filter value.
 	//
-	// * tag-key - The key of a tag assigned to the resource. Use this filter
-	// to find all resources assigned a tag with a specific key, regardless of the tag
-	// value.
+	// * tag-key - The key of a tag assigned to the resource.
+	// Use this filter to find all resources assigned a tag with a specific key,
+	// regardless of the tag value.
 	Filters []types.Filter
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeDhcpOptionsOutput struct {
@@ -86,9 +88,11 @@ type DescribeDhcpOptionsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeDhcpOptionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeDhcpOptionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeDhcpOptions{}, middleware.After)
 	if err != nil {
 		return err
@@ -184,8 +188,8 @@ func NewDescribeDhcpOptionsPaginator(client DescribeDhcpOptionsAPIClient, params
 	}
 
 	options := DescribeDhcpOptionsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -214,7 +218,11 @@ func (p *DescribeDhcpOptionsPaginator) NextPage(ctx context.Context, optFns ...f
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeDhcpOptions(ctx, &params, optFns...)
 	if err != nil {

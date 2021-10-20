@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
@@ -277,8 +267,8 @@ var (
 				FromEndpoints: []api.EndpointSelector{api.WildcardEndpointSelector},
 			},
 		}})
-	lblsAllowLocalHostIngress = labels.LabelArray{
-		labels.NewLabel(LabelKeyPolicyDerivedFrom, LabelAllowLocalHostIngress, labels.LabelSourceReserved),
+	lblsAllowAllIngress = labels.LabelArray{
+		labels.NewLabel(LabelKeyPolicyDerivedFrom, LabelAllowAnyIngress, labels.LabelSourceReserved),
 	}
 
 	lbls_____NoDeny = labels.ParseLabelArray("deny")
@@ -326,13 +316,13 @@ var (
 	mapKeyAllowAll__ = Key{0, 0, 0, dirIngress}
 	// Desired map entries for no L7 redirect / redirect to Proxy
 	mapEntryL7None_ = func(lbls ...labels.LabelArray) MapStateEntry {
-		return NewMapStateEntry(nil, labels.LabelArrayList(lbls).Sort(), false, false).WithoutSelectors()
+		return NewMapStateEntry(nil, labels.LabelArrayList(lbls).Sort(), false, false).WithOwners()
 	}
 	mapEntryL7Deny_ = func(lbls ...labels.LabelArray) MapStateEntry {
-		return NewMapStateEntry(nil, labels.LabelArrayList(lbls).Sort(), false, true).WithoutSelectors()
+		return NewMapStateEntry(nil, labels.LabelArrayList(lbls).Sort(), false, true).WithOwners()
 	}
 	mapEntryL7Proxy = func(lbls ...labels.LabelArray) MapStateEntry {
-		return NewMapStateEntry(nil, labels.LabelArrayList(lbls).Sort(), true, false).WithoutSelectors()
+		return NewMapStateEntry(nil, labels.LabelArrayList(lbls).Sort(), true, false).WithOwners()
 	}
 )
 
@@ -382,7 +372,7 @@ func (d *policyDistillery) distillPolicy(owner PolicyOwner, epLabels labels.Labe
 		allowAllIngress := true
 		allowAllEgress := false // Skip egress
 		result.AllowAllIdentities(allowAllIngress, allowAllEgress)
-		result.clearCachedSelectors()
+		result.clearOwners()
 		return result, nil
 	}
 
@@ -414,18 +404,18 @@ func (d *policyDistillery) distillPolicy(owner PolicyOwner, epLabels labels.Labe
 		}
 	}
 	l4IngressPolicy.Detach(d.Repository.GetSelectorCache())
-	result.clearCachedSelectors()
+	result.clearOwners()
 	return result, nil
 }
 
-// clearCachedSelectors removes CachedSelectors from MapStateEntries
+// clearOwners removes CachedSelectors from MapStateEntries
 // for testing purposes.  Table-driven testing pattern used for these
 // tests does not allow expected MapStateEntries to contain actual
 // CachedSelectors as those have not been inserted to the selector
 // cache at the time when the expectations are created.
-func (m MapState) clearCachedSelectors() {
+func (m MapState) clearOwners() {
 	for k, v := range m {
-		v.selectors = make(map[CachedSelector]struct{})
+		v.owners = make(map[MapStateOwner]struct{})
 		m[k] = v
 	}
 }
@@ -600,6 +590,13 @@ func testCaseToMapState(t generatedBPFKey) MapState {
 		}
 	}
 
+	// Add dependency deny-L3->deny-L3L4 if allow-L4 exists
+	denyL3, denyL3exists := m[mapKeyDeny_Foo__]
+	denyL3L4, denyL3L4exists := m[mapKeyDeny_FooL4]
+	allowL4, allowL4exists := m[mapKeyAllow___L4]
+	if allowL4exists && !allowL4.IsDeny && denyL3exists && denyL3.IsDeny && denyL3L4exists && denyL3L4.IsDeny {
+		mapKeyDeny_Foo__.AddDependent(m, mapKeyDeny_FooL4)
+	}
 	return m
 }
 
@@ -1104,7 +1101,7 @@ func Test_AllowAll(t *testing.T) {
 		rules    api.Rules
 		result   MapState
 	}{
-		{0, api.EndpointSelectorNone, api.Rules{rule____AllowAll}, MapState{mapKeyAllowAll__: mapEntryL7None_(lblsAllowLocalHostIngress)}},
+		{0, api.EndpointSelectorNone, api.Rules{rule____AllowAll}, MapState{mapKeyAllowAll__: mapEntryL7None_(lblsAllowAllIngress)}},
 		{1, api.WildcardEndpointSelector, api.Rules{rule____AllowAll}, MapState{mapKeyAllowAll__: mapEntryL7None_(lbls____AllowAll)}},
 	}
 

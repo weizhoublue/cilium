@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ipam
 
@@ -214,8 +203,17 @@ func deriveVpcCIDR(node *ciliumv2.CiliumNode) (result *cidr.CIDR) {
 			c, err := cidr.ParseCIDR(eni.VPC.PrimaryCIDR)
 			if err == nil {
 				result = c
+				return
 			}
-			return
+		}
+	}
+	if len(node.Status.Azure.Interfaces) > 0 {
+		for _, azif := range node.Status.Azure.Interfaces {
+			c, err := cidr.ParseCIDR(azif.CIDR)
+			if err == nil {
+				result = c
+				return
+			}
 		}
 	}
 	// return AlibabaCloud vpc CIDR
@@ -223,6 +221,7 @@ func deriveVpcCIDR(node *ciliumv2.CiliumNode) (result *cidr.CIDR) {
 		c, err := cidr.ParseCIDR(node.Spec.AlibabaCloud.CIDRBlock)
 		if err == nil {
 			result = c
+			return
 		}
 	}
 	return
@@ -260,9 +259,9 @@ func (n *nodeStore) hasMinimumIPsInPool() (minimumReached bool, required, numAva
 			minimumReached = true
 		}
 
-		if n.conf.IPAMMode() == ipamOption.IPAMENI || n.conf.IPAMMode() == ipamOption.IPAMAlibabaCloud {
+		if n.conf.IPAMMode() == ipamOption.IPAMENI || n.conf.IPAMMode() == ipamOption.IPAMAzure || n.conf.IPAMMode() == ipamOption.IPAMAlibabaCloud {
 			if vpcCIDR := deriveVpcCIDR(n.ownNode); vpcCIDR != nil {
-				if nativeCIDR := n.conf.IPv4NativeRoutingCIDR(); nativeCIDR != nil {
+				if nativeCIDR := n.conf.GetIPv4NativeRoutingCIDR(); nativeCIDR != nil {
 					logFields := logrus.Fields{
 						"vpc-cidr":                   vpcCIDR.String(),
 						option.IPv4NativeRoutingCIDR: nativeCIDR.String(),
@@ -392,7 +391,7 @@ func (n *nodeStore) allocate(ip net.IP) (*ipamTypes.AllocationIP, error) {
 
 	ipInfo, ok := n.ownNode.Spec.IPAM.Pool[ip.String()]
 	if !ok {
-		return nil, fmt.Errorf("IP %s is not available", ip.String())
+		return nil, NewIPNotAvailableInPoolError(ip)
 	}
 
 	return &ipInfo, nil
@@ -502,8 +501,8 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 				result.CIDRs = []string{eni.VPC.PrimaryCIDR}
 				result.CIDRs = append(result.CIDRs, eni.VPC.CIDRs...)
 				// Add manually configured Native Routing CIDR
-				if a.conf.IPv4NativeRoutingCIDR() != nil {
-					result.CIDRs = append(result.CIDRs, a.conf.IPv4NativeRoutingCIDR().String())
+				if a.conf.GetIPv4NativeRoutingCIDR() != nil {
+					result.CIDRs = append(result.CIDRs, a.conf.GetIPv4NativeRoutingCIDR().String())
 				}
 				if eni.Subnet.CIDR != "" {
 					// The gateway for a subnet and VPC is always x.x.x.1
@@ -515,6 +514,7 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 				return
 			}
 		}
+		return nil, fmt.Errorf("unable to find ENI %s", ipInfo.Resource)
 
 	// In Azure mode, the Resource points to the azure interface so we can
 	// derive the master interface
@@ -523,6 +523,7 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 			if iface.ID == ipInfo.Resource {
 				result.PrimaryMAC = iface.MAC
 				result.GatewayIP = iface.Gateway
+				result.CIDRs = append(result.CIDRs, iface.CIDR)
 				// For now, we can hardcode the interface number to a valid
 				// integer because it will not be used in the allocation result
 				// anyway. To elaborate, Azure IPAM mode automatically sets
@@ -538,6 +539,7 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 				return
 			}
 		}
+		return nil, fmt.Errorf("unable to find ENI %s", ipInfo.Resource)
 
 	// In AlibabaCloud mode, the Resource points to the ENI so we can derive the
 	// master interface and all CIDRs of the VPC
@@ -554,10 +556,9 @@ func (a *crdAllocator) buildAllocationResult(ip net.IP, ipInfo *ipamTypes.Alloca
 			result.InterfaceNumber = strconv.Itoa(alibabaCloud.GetENIIndexFromTags(eni.Tags))
 			return
 		}
+		return nil, fmt.Errorf("unable to find ENI %s", ipInfo.Resource)
 	}
 
-	result = nil
-	err = fmt.Errorf("unable to find ENI %s", ipInfo.Resource)
 	return
 }
 
@@ -695,4 +696,35 @@ func (a *crdAllocator) RestoreFinished() {
 	a.store.restoreCloseOnce.Do(func() {
 		close(a.store.restoreFinished)
 	})
+}
+
+// NewIPNotAvailableInPoolError returns an error resprenting the given IP not
+// being available in the IPAM pool.
+func NewIPNotAvailableInPoolError(ip net.IP) error {
+	return &ErrIPNotAvailableInPool{ip: ip}
+}
+
+// ErrIPNotAvailableInPool represents an error when an IP is not available in
+// the pool.
+type ErrIPNotAvailableInPool struct {
+	ip net.IP
+}
+
+func (e *ErrIPNotAvailableInPool) Error() string {
+	return fmt.Sprintf("IP %s is not available", e.ip.String())
+}
+
+// Is provides this error type with the logic for use with errors.Is.
+func (e *ErrIPNotAvailableInPool) Is(target error) bool {
+	if e == nil || target == nil {
+		return false
+	}
+	t, ok := target.(*ErrIPNotAvailableInPool)
+	if !ok {
+		return ok
+	}
+	if t == nil {
+		return false
+	}
+	return t.ip.Equal(e.ip)
 }

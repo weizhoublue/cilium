@@ -60,7 +60,10 @@ Here are the required Helm values:
 
 .. parsed-literal::
 
-   helm install cilium |CHART_RELEASE| --set bgp.enabled=true --set bgp.announce.lbIP=true
+   helm install cilium |CHART_RELEASE| \\
+     --namespace kube-system \\
+     --set bgp.enabled=true \\
+     --set bgp.announce.loadbalancerIP=true
 
 Verify that Cilium Agent pod is running.
 
@@ -95,7 +98,7 @@ backends:
    apiVersion: apps/v1
    kind: Deployment
    metadata:
-     app: nginx
+     name: nginx
    spec:
      selector:
        matchLabels:
@@ -155,14 +158,3 @@ Verify that traffic to the external IP is directed to the backends:
 
    $ # Exec / SSH into BGP router
    $ curl 192.0.2.154
-
-Limitations
-===========
-
-BGP support relies on MetalLB. Due to the `lack of upstream support
-<https://github.com/metallb/metallb/issues/811>`_ for ``EndpointSlices`` in
-MetalLB, Cilium will fallback to using the original ``Endpoints`` resource.
-
-The Kubernetes documentation provides a simple `explanation
-<https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/>`_ of
-the advantages of ``EndpointSlices`` and the issues with ``Endpoints``.

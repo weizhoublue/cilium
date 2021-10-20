@@ -23,7 +23,7 @@ func (c *Client) DescribeVpcEndpointServices(ctx context.Context, params *Descri
 		params = &DescribeVpcEndpointServicesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeVpcEndpointServices", params, optFns, addOperationDescribeVpcEndpointServicesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeVpcEndpointServices", params, optFns, c.addOperationDescribeVpcEndpointServicesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +40,7 @@ type DescribeVpcEndpointServicesInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters.
 	//
@@ -63,7 +63,7 @@ type DescribeVpcEndpointServicesInput struct {
 	// The maximum number of items to return for this request. The request returns a
 	// token that you can specify in a subsequent call to get the next set of results.
 	// Constraint: If the value is greater than 1,000, we return only 1,000 items.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next set of items to return. (You received this token from a
 	// prior call.)
@@ -71,6 +71,8 @@ type DescribeVpcEndpointServicesInput struct {
 
 	// One or more service names.
 	ServiceNames []string
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of DescribeVpcEndpointServices.
@@ -88,9 +90,11 @@ type DescribeVpcEndpointServicesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeVpcEndpointServicesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeVpcEndpointServicesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeVpcEndpointServices{}, middleware.After)
 	if err != nil {
 		return err

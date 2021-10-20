@@ -24,7 +24,7 @@ func (c *Client) DescribeScheduledInstanceAvailability(ctx context.Context, para
 		params = &DescribeScheduledInstanceAvailabilityInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeScheduledInstanceAvailability", params, optFns, addOperationDescribeScheduledInstanceAvailabilityMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeScheduledInstanceAvailability", params, optFns, c.addOperationDescribeScheduledInstanceAvailabilityMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ type DescribeScheduledInstanceAvailabilityInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The filters.
 	//
@@ -70,19 +70,21 @@ type DescribeScheduledInstanceAvailabilityInput struct {
 	// The maximum number of results to return in a single call. This value can be
 	// between 5 and 300. The default value is 300. To retrieve the remaining results,
 	// make another call with the returned NextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The maximum available duration, in hours. This value must be greater than
 	// MinSlotDurationInHours and less than 1,720.
-	MaxSlotDurationInHours int32
+	MaxSlotDurationInHours *int32
 
 	// The minimum available duration, in hours. The minimum required duration is 1,200
 	// hours per year. For example, the minimum daily schedule is 4 hours, the minimum
 	// weekly schedule is 24 hours, and the minimum monthly schedule is 100 hours.
-	MinSlotDurationInHours int32
+	MinSlotDurationInHours *int32
 
 	// The token for the next set of results.
 	NextToken *string
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of DescribeScheduledInstanceAvailability.
@@ -97,9 +99,11 @@ type DescribeScheduledInstanceAvailabilityOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeScheduledInstanceAvailabilityMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeScheduledInstanceAvailabilityMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeScheduledInstanceAvailability{}, middleware.After)
 	if err != nil {
 		return err
@@ -201,8 +205,8 @@ func NewDescribeScheduledInstanceAvailabilityPaginator(client DescribeScheduledI
 	}
 
 	options := DescribeScheduledInstanceAvailabilityPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -231,7 +235,11 @@ func (p *DescribeScheduledInstanceAvailabilityPaginator) NextPage(ctx context.Co
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeScheduledInstanceAvailability(ctx, &params, optFns...)
 	if err != nil {

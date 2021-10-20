@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build linux
 // +build linux
 
 package bpf
@@ -96,7 +86,7 @@ type bpfAttrMapOpElem struct {
 }
 
 // UpdateElementFromPointers updates the map in fd with the given value in the given key.
-func UpdateElementFromPointers(fd int, structPtr unsafe.Pointer, sizeOfStruct uintptr) error {
+func UpdateElementFromPointers(fd int, mapName string, structPtr unsafe.Pointer, sizeOfStruct uintptr) error {
 	var duration *spanstat.SpanStat
 	if option.Config.MetricsConfig.BPFSyscallDurationEnabled {
 		duration = spanstat.Start()
@@ -113,7 +103,16 @@ func UpdateElementFromPointers(fd int, structPtr unsafe.Pointer, sizeOfStruct ui
 	}
 
 	if ret != 0 || err != 0 {
-		return fmt.Errorf("Unable to update element for map with file descriptor %d: %s", fd, err)
+		switch err {
+		case unix.E2BIG:
+			return fmt.Errorf("Unable to update element for %s map with file descriptor %d: the map is full, please consider resizing it. %w", mapName, fd, err)
+		case unix.EEXIST:
+			return fmt.Errorf("Unable to update element for %s map with file descriptor %d: specified key already exists. %w", mapName, fd, err)
+		case unix.ENOENT:
+			return fmt.Errorf("Unable to update element for %s map with file descriptor %d: key does not exist. %w", mapName, fd, err)
+		default:
+			return fmt.Errorf("Unable to update element for %s map with file descriptor %d: %w", mapName, fd, err)
+		}
 	}
 
 	return nil
@@ -125,7 +124,7 @@ func UpdateElementFromPointers(fd int, structPtr unsafe.Pointer, sizeOfStruct ui
 // bpf.BPF_NOEXIST to create new element if it didn't exist;
 // bpf.BPF_EXIST to update existing element.
 // Deprecated, use UpdateElementFromPointers
-func UpdateElement(fd int, key, value unsafe.Pointer, flags uint64) error {
+func UpdateElement(fd int, mapName string, key, value unsafe.Pointer, flags uint64) error {
 	uba := bpfAttrMapOpElem{
 		mapFd: uint32(fd),
 		key:   uint64(uintptr(key)),
@@ -133,7 +132,7 @@ func UpdateElement(fd int, key, value unsafe.Pointer, flags uint64) error {
 		flags: uint64(flags),
 	}
 
-	ret := UpdateElementFromPointers(fd, unsafe.Pointer(&uba), unsafe.Sizeof(uba))
+	ret := UpdateElementFromPointers(fd, mapName, unsafe.Pointer(&uba), unsafe.Sizeof(uba))
 	runtime.KeepAlive(key)
 	runtime.KeepAlive(value)
 	return ret

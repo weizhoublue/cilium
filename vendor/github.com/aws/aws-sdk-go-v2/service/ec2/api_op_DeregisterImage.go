@@ -23,7 +23,7 @@ func (c *Client) DeregisterImage(ctx context.Context, params *DeregisterImageInp
 		params = &DeregisterImageInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DeregisterImage", params, optFns, addOperationDeregisterImageMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DeregisterImage", params, optFns, c.addOperationDeregisterImageMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -45,15 +45,19 @@ type DeregisterImageInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type DeregisterImageOutput struct {
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDeregisterImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDeregisterImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDeregisterImage{}, middleware.After)
 	if err != nil {
 		return err

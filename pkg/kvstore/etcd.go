@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package kvstore
 
@@ -24,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cilium/cilium/pkg/contexthelpers"
@@ -38,11 +28,11 @@ import (
 
 	"github.com/blang/semver/v4"
 	"github.com/sirupsen/logrus"
-	client "go.etcd.io/etcd/clientv3"
-	"go.etcd.io/etcd/clientv3/concurrency"
-	clientyaml "go.etcd.io/etcd/clientv3/yaml"
-	v3rpcErrors "go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
-	"go.etcd.io/etcd/pkg/tlsutil"
+	v3rpcErrors "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/client/pkg/v3/tlsutil"
+	client "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
+	clientyaml "go.etcd.io/etcd/client/v3/yaml"
 	"golang.org/x/time/rate"
 	"sigs.k8s.io/yaml"
 )
@@ -61,10 +51,6 @@ const (
 	EtcdRateLimitOption = "etcd.qps"
 
 	minRequiredVersionStr = ">=3.1.0"
-
-	// consecutiveQuorumErrorsThreshold is the number of acceptable quorum
-	// errors before the agent assumes permanent failure
-	consecutiveQuorumErrorsThreshold = 2
 )
 
 var (
@@ -84,7 +70,8 @@ var (
 	// versionCheckTimeout is the time we wait trying to verify the version
 	// of an etcd endpoint. The timeout can be encountered on network
 	// connectivity problems.
-	versionCheckTimeout = 30 * time.Second
+	// This field needs to be accessed with the atomic library.
+	versionCheckTimeout = int64(30 * time.Second)
 
 	// statusCheckTimeout is the timeout when performing status checks with
 	// all etcd endpoints
@@ -853,7 +840,8 @@ func (e *etcdClient) checkMinVersion(ctx context.Context) error {
 	eps := e.client.Endpoints()
 
 	for _, ep := range eps {
-		v, err := getEPVersion(ctx, e.client.Maintenance, ep, versionCheckTimeout)
+		vcTimeout := atomic.LoadInt64(&versionCheckTimeout)
+		v, err := getEPVersion(ctx, e.client.Maintenance, ep, time.Duration(vcTimeout))
 		if err != nil {
 			e.getLogger().WithError(Hint(err)).WithField(fieldEtcdEndpoint, ep).
 				Warn("Unable to verify version of etcd endpoint")
@@ -1153,7 +1141,7 @@ func (e *etcdClient) statusChecker() {
 		e.statusLock.Lock()
 
 		switch {
-		case consecutiveQuorumErrors > consecutiveQuorumErrorsThreshold:
+		case consecutiveQuorumErrors > option.Config.KVstoreMaxConsecutiveQuorumErrors:
 			e.latestErrorStatus = fmt.Errorf("quorum check failed %d times in a row: %s",
 				consecutiveQuorumErrors, quorumError)
 			e.latestStatusSnapshot = e.latestErrorStatus.Error()

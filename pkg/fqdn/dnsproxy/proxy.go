@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package dnsproxy
 
@@ -39,6 +28,7 @@ import (
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/spanstat"
 
+	"github.com/golang/groupcache/lru"
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -148,17 +138,22 @@ type DNSProxy struct {
 	// rejectReply is the OPCode send from the DNS-proxy to the endpoint if the
 	// DNS request is invalid
 	rejectReply int32
+
+	// regexCompileLRU contains an LRU cache for the regex.Compile of rules.
+	// Keeping an LRU cache avoids excessive memory allocations when compiling
+	// regex strings via regex.Compile.
+	regexCompileLRU *lru.Cache
 }
 
 // perEPAllow maps EndpointIDs to ports + selectors + rules
 type perEPAllow map[uint64]portToSelectorAllow
 
 // portToSelectorAllow maps port numbers to selectors + rules
-type portToSelectorAllow map[uint16]cachedSelectorREEntry
+type portToSelectorAllow map[uint16]CachedSelectorREEntry
 
-// cachedSelectorREEntry maps port numbers to selectors to rules, mirroring
+// CachedSelectorREEntry maps port numbers to selectors to rules, mirroring
 // policy.L7DataMap but the DNS rules are compiled into a single regexp
-type cachedSelectorREEntry map[policy.CachedSelector]*regexp.Regexp
+type CachedSelectorREEntry map[policy.CachedSelector]*regexp.Regexp
 
 // structure for restored rules that can be used while Cilium agent is restoring endpoints
 type perEPRestored map[uint64]restore.DNSRules
@@ -184,7 +179,7 @@ func (p *DNSProxy) checkRestored(endpointID uint64, destPort uint16, destIP stri
 
 // GetRules creates a fresh copy of EP's DNS rules to be stored
 // for later restoration.
-func (p *DNSProxy) GetRules(endpointID uint16) restore.DNSRules {
+func (p *DNSProxy) GetRules(endpointID uint16) (restore.DNSRules, error) {
 	p.Lock()
 	defer p.Unlock()
 
@@ -226,7 +221,7 @@ func (p *DNSProxy) GetRules(endpointID uint16) restore.DNSRules {
 		}
 		restored[port] = ipRules
 	}
-	return restored
+	return restored, nil
 }
 
 // RestoreRules is used in the beginning of endpoint restoration to
@@ -270,7 +265,7 @@ func (p *DNSProxy) RemoveRestoredRules(endpointID uint16) {
 // setPortRulesForID sets the matching rules for endpointID and destPort for
 // later lookups. It converts newRules into a unified regexp that can be reused
 // later.
-func (allow perEPAllow) setPortRulesForID(endpointID uint64, destPort uint16, newRules policy.L7DataMap) error {
+func (allow perEPAllow) setPortRulesForID(lru *lru.Cache, endpointID uint64, destPort uint16, newRules policy.L7DataMap) error {
 	// This is the delete case
 	if len(newRules) == 0 {
 		epPorts := allow[endpointID]
@@ -281,29 +276,9 @@ func (allow perEPAllow) setPortRulesForID(endpointID uint64, destPort uint16, ne
 		return nil
 	}
 
-	newRE := make(cachedSelectorREEntry)
-	for selector, l7Rules := range newRules {
-		if l7Rules == nil {
-			l7Rules = &policy.PerSelectorPolicy{L7Rules: api.L7Rules{DNS: []api.PortRuleDNS{{MatchPattern: "*"}}}}
-		}
-		reStrings := make([]string, 0, len(l7Rules.DNS))
-		for _, dnsRule := range l7Rules.DNS {
-			if len(dnsRule.MatchName) > 0 {
-				dnsRuleName := strings.ToLower(dns.Fqdn(dnsRule.MatchName))
-				dnsPatternAsRE := matchpattern.ToRegexp(dnsRuleName)
-				reStrings = append(reStrings, "("+dnsPatternAsRE+")")
-			}
-			if len(dnsRule.MatchPattern) > 0 {
-				dnsPattern := matchpattern.Sanitize(dnsRule.MatchPattern)
-				dnsPatternAsRE := matchpattern.ToRegexp(dnsPattern)
-				reStrings = append(reStrings, "("+dnsPatternAsRE+")")
-			}
-		}
-		re, err := regexp.Compile(strings.Join(reStrings, "|"))
-		if err != nil {
-			return err
-		}
-		newRE[selector] = re
+	newRE, err := GetSelectorRegexMap(newRules, lru)
+	if err != nil {
+		return err
 	}
 
 	epPorts, exist := allow[endpointID]
@@ -316,9 +291,32 @@ func (allow perEPAllow) setPortRulesForID(endpointID uint64, destPort uint16, ne
 	return nil
 }
 
+// setPortRulesForIDFromUnifiedFormat sets the matching rules for endpointID and destPort for
+// later lookups.
+func (allow perEPAllow) setPortRulesForIDFromUnifiedFormat(endpointID uint64, destPort uint16, newRules CachedSelectorREEntry) error {
+	// This is the delete case
+	if len(newRules) == 0 {
+		epPorts := allow[endpointID]
+		delete(epPorts, destPort)
+		if len(epPorts) == 0 {
+			delete(allow, endpointID)
+		}
+		return nil
+	}
+
+	epPorts, exist := allow[endpointID]
+	if !exist {
+		epPorts = make(portToSelectorAllow)
+		allow[endpointID] = epPorts
+	}
+
+	epPorts[destPort] = newRules
+	return nil
+}
+
 // getPortRulesForID returns a precompiled regex representing DNS rules for the
 // passed-in endpointID and destPort with setPortRulesForID
-func (allow perEPAllow) getPortRulesForID(endpointID uint64, destPort uint16) (rules cachedSelectorREEntry, exists bool) {
+func (allow perEPAllow) getPortRulesForID(endpointID uint64, destPort uint16) (rules CachedSelectorREEntry, exists bool) {
 	rules, exists = allow[endpointID][destPort]
 	return rules, exists
 }
@@ -391,6 +389,7 @@ func StartDNSProxy(address string, port uint16, enableDNSCompression bool, maxRe
 		restoredEPs:              make(restoredEPs),
 		EnableDNSCompression:     enableDNSCompression,
 		maxIPsPerRestoredDNSRule: maxRestoreDNSIPs,
+		regexCompileLRU:          lru.New(128),
 	}
 	atomic.StoreInt32(&p.rejectReply, dns.RcodeRefused)
 
@@ -466,7 +465,20 @@ func (p *DNSProxy) UpdateAllowed(endpointID uint64, destPort uint16, newRules po
 	p.Lock()
 	defer p.Unlock()
 
-	err := p.allowed.setPortRulesForID(endpointID, destPort, newRules)
+	err := p.allowed.setPortRulesForID(p.regexCompileLRU, endpointID, destPort, newRules)
+	if err == nil {
+		// Rules were updated based on policy, remove restored rules
+		p.removeRestoredRulesLocked(endpointID)
+	}
+	return err
+}
+
+// UpdateAllowedFromSelectorRegexes sets newRules for endpointID and destPort.
+func (p *DNSProxy) UpdateAllowedFromSelectorRegexes(endpointID uint64, destPort uint16, newRules CachedSelectorREEntry) error {
+	p.Lock()
+	defer p.Unlock()
+
+	err := p.allowed.setPortRulesForIDFromUnifiedFormat(endpointID, destPort, newRules)
 	if err == nil {
 		// Rules were updated based on policy, remove restored rules
 		p.removeRestoredRulesLocked(endpointID)
@@ -672,6 +684,10 @@ func (p *DNSProxy) SetRejectReply(opt string) {
 	}
 }
 
+func (p *DNSProxy) GetBindPort() uint16 {
+	return p.BindPort
+}
+
 // ExtractMsgDetails extracts a canonical query name, any IPs in a response,
 // the lowest applicable TTL, rcode, anwer rr types and question types
 // When a CNAME is returned the chain is collapsed down, keeping the lowest TTL,
@@ -783,4 +799,41 @@ func shouldCompressResponse(request, response *dns.Msg) bool {
 	}
 
 	return false
+}
+
+func GetSelectorRegexMap(l7 policy.L7DataMap, lru *lru.Cache) (CachedSelectorREEntry, error) {
+	newRE := make(CachedSelectorREEntry)
+	for selector, l7Rules := range l7 {
+		if l7Rules == nil {
+			l7Rules = &policy.PerSelectorPolicy{L7Rules: api.L7Rules{DNS: []api.PortRuleDNS{{MatchPattern: "*"}}}}
+		}
+		reStrings := make([]string, 0, len(l7Rules.DNS))
+		for _, dnsRule := range l7Rules.DNS {
+			if len(dnsRule.MatchName) > 0 {
+				dnsRuleName := strings.ToLower(dns.Fqdn(dnsRule.MatchName))
+				dnsPatternAsRE := matchpattern.ToRegexp(dnsRuleName)
+				reStrings = append(reStrings, "("+dnsPatternAsRE+")")
+			}
+			if len(dnsRule.MatchPattern) > 0 {
+				dnsPattern := matchpattern.Sanitize(dnsRule.MatchPattern)
+				dnsPatternAsRE := matchpattern.ToRegexp(dnsPattern)
+				reStrings = append(reStrings, "("+dnsPatternAsRE+")")
+			}
+		}
+		mp := strings.Join(reStrings, "|")
+		rei, ok := lru.Get(mp)
+		if ok {
+			re := rei.(*regexp.Regexp)
+			newRE[selector] = re
+		} else {
+			re, err := regexp.Compile(mp)
+			if err != nil {
+				return nil, err
+			}
+			lru.Add(mp, re)
+			newRE[selector] = re
+		}
+	}
+
+	return newRE, nil
 }

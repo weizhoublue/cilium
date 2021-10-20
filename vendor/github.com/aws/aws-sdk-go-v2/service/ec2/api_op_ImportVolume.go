@@ -14,9 +14,9 @@ import (
 // Creates an import volume task using metadata from the specified disk image. This
 // API action supports only single-volume VMs. To import multi-volume VMs, use
 // ImportImage instead. To import a disk to a snapshot, use ImportSnapshot instead.
-// This API action is not supported by the AWS Command Line Interface (AWS CLI).
-// For information about using the Amazon EC2 CLI, which is deprecated, see
-// Importing Disks to Amazon EBS
+// This API action is not supported by the Command Line Interface (CLI). For
+// information about using the Amazon EC2 CLI, which is deprecated, see Importing
+// Disks to Amazon EBS
 // (https://awsdocs.s3.amazonaws.com/EC2/ec2-clt.pdf#importing-your-volumes-into-amazon-ebs)
 // in the Amazon EC2 CLI Reference PDF file. For information about the import
 // manifest referenced by this API action, see VM Import Manifest
@@ -26,7 +26,7 @@ func (c *Client) ImportVolume(ctx context.Context, params *ImportVolumeInput, op
 		params = &ImportVolumeInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ImportVolume", params, optFns, addOperationImportVolumeMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ImportVolume", params, optFns, c.addOperationImportVolumeMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,9 @@ type ImportVolumeInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type ImportVolumeOutput struct {
@@ -70,9 +72,11 @@ type ImportVolumeOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationImportVolumeMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationImportVolumeMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpImportVolume{}, middleware.After)
 	if err != nil {
 		return err

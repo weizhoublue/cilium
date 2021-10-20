@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package ciliumTest
 
@@ -315,7 +304,7 @@ var _ = AfterEach(func() {
 	}
 
 	// This piece of code is to enable zip attachments on Junit Output.
-	if ginkgo.CurrentGinkgoTestDescription().Failed && helpers.IsRunningOnJenkins() {
+	if TestFailed() && helpers.IsRunningOnJenkins() {
 		// ReportDirectory is already created. No check the error
 		path, _ := helpers.CreateReportDirectory()
 		zipFileName := fmt.Sprintf("%s_%s.zip", helpers.MakeUID(), GetTestName())
@@ -323,7 +312,7 @@ var _ = AfterEach(func() {
 
 		_, err := exec.Command(
 			"/bin/bash", "-c",
-			fmt.Sprintf("zip -qr %s %s", zipFilePath, path)).CombinedOutput()
+			fmt.Sprintf("zip -qr \"%s\" \"%s\"", zipFilePath, path)).CombinedOutput()
 		if err != nil {
 			log.WithError(err).Errorf("cannot create zip file '%s'", zipFilePath)
 		}
@@ -331,7 +320,7 @@ var _ = AfterEach(func() {
 		GinkgoPrint("[[ATTACHMENT|%s]]", zipFileName)
 	}
 
-	if !ginkgo.CurrentGinkgoTestDescription().Failed && helpers.IsRunningOnJenkins() {
+	if !TestFailed() && helpers.IsRunningOnJenkins() {
 		// If the test success delete the monitor.log filename to not store all
 		// the data in Jenkins
 		testPath, err := helpers.CreateReportDirectory()

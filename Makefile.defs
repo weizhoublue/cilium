@@ -94,7 +94,7 @@ ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/.git),)
     BPF_SRCFILES := $(shell git ls-files $(ROOT_DIR)/bpf/ | LC_ALL=C sort | tr "\n" ' ')
 else
     # this line has to be in-sync with bpf/.gitignore, please note usage of make patterns like `%.i`
-    BPF_SRCFILES_IGNORE += bpf/cilium-map-migrate bpf/cilium-probe-kernel-hz bpf/%.i bpf/%.s bpf/.rebuild_all
+    BPF_SRCFILES_IGNORE += bpf/cilium-probe-kernel-hz bpf/%.i bpf/%.s bpf/.rebuild_all
     BPF_SRCFILES := $(shell find $(ROOT_DIR)/bpf/ -type f | LC_ALL=C sort | tr "\n" ' ')
 endif
 
@@ -169,3 +169,7 @@ GO_LIST = GO111MODULE=off $(GO) list
 ifeq ($(BASE_IMAGE),)
     BASE_IMAGE=scratch
 endif
+
+HELM_DOCS_VERSION ?= "5ddabba"
+HELM_DOCS_SHA ?= "c4a91daac6bf9c181fac79e09712fcf1f9102fcab1bbacbc733883965f5fd244"
+HELM_DOCS_IMAGE ?= "docker.io/bmcustodio/helm-docs:$(HELM_DOCS_VERSION)@sha256:$(HELM_DOCS_SHA)"

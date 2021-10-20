@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build privileged_tests
 // +build privileged_tests
 
 package ctmap
@@ -44,7 +34,7 @@ func Test(t *testing.T) {
 }
 
 func (k *CTMapTestSuite) SetUpSuite(c *C) {
-	bpf.CheckOrMountFS("", false)
+	bpf.CheckOrMountFS("")
 	err := bpf.ConfigureResourceLimits()
 	c.Assert(err, IsNil)
 }
@@ -84,7 +74,7 @@ func (k *CTMapTestSuite) Benchmark_MapUpdate(c *C) {
 	for i := 0; i < c.N; i++ {
 		key.DestPort = uint16(i % 0xFFFF)
 		key.SourcePort = uint16(i / 0xFFFF)
-		err := bpf.UpdateElement(m.Map.GetFd(), unsafe.Pointer(key), unsafe.Pointer(value), 0)
+		err := bpf.UpdateElement(m.Map.GetFd(), m.Map.Name(), unsafe.Pointer(key), unsafe.Pointer(value), 0)
 		c.Assert(err, IsNil)
 	}
 
@@ -147,7 +137,7 @@ func (k *CTMapTestSuite) TestCtGcIcmp(c *C) {
 		TxBytes:   216,
 		Lifetime:  37459,
 	}
-	err = bpf.UpdateElement(ctMap.Map.GetFd(), unsafe.Pointer(ctKey),
+	err = bpf.UpdateElement(ctMap.Map.GetFd(), ctMap.Map.Name(), unsafe.Pointer(ctKey),
 		unsafe.Pointer(ctVal), 0)
 	c.Assert(err, IsNil)
 
@@ -169,7 +159,7 @@ func (k *CTMapTestSuite) TestCtGcIcmp(c *C) {
 		Addr:      types.IPv4{192, 168, 34, 11},
 		Port:      0x3195,
 	}
-	err = bpf.UpdateElement(natMap.Map.GetFd(), unsafe.Pointer(natKey),
+	err = bpf.UpdateElement(natMap.Map.GetFd(), natMap.Map.Name(), unsafe.Pointer(natKey),
 		unsafe.Pointer(natVal), 0)
 	c.Assert(err, IsNil)
 	natKey = &nat.NatKey4{
@@ -190,7 +180,7 @@ func (k *CTMapTestSuite) TestCtGcIcmp(c *C) {
 		Addr:      types.IPv4{192, 168, 34, 11},
 		Port:      0x3195,
 	}
-	err = bpf.UpdateElement(natMap.Map.GetFd(), unsafe.Pointer(natKey),
+	err = bpf.UpdateElement(natMap.Map.GetFd(), natMap.Map.Name(), unsafe.Pointer(natKey),
 		unsafe.Pointer(natVal), 0)
 	c.Assert(err, IsNil)
 
@@ -283,7 +273,7 @@ func (k *CTMapTestSuite) TestOrphanNatGC(c *C) {
 		TxBytes:   216,
 		Lifetime:  37459,
 	}
-	err = bpf.UpdateElement(ctMapAny.Map.GetFd(), unsafe.Pointer(ctKey),
+	err = bpf.UpdateElement(ctMapAny.Map.GetFd(), ctMapAny.Map.Name(), unsafe.Pointer(ctKey),
 		unsafe.Pointer(ctVal), 0)
 	c.Assert(err, IsNil)
 
@@ -305,7 +295,7 @@ func (k *CTMapTestSuite) TestOrphanNatGC(c *C) {
 		Addr:      types.IPv4{10, 23, 32, 45},
 		Port:      0x51d6,
 	}
-	err = bpf.UpdateElement(natMap.Map.GetFd(), unsafe.Pointer(natKey),
+	err = bpf.UpdateElement(natMap.Map.GetFd(), natMap.Map.Name(), unsafe.Pointer(natKey),
 		unsafe.Pointer(natVal), 0)
 	c.Assert(err, IsNil)
 	natKey = &nat.NatKey4{
@@ -326,7 +316,7 @@ func (k *CTMapTestSuite) TestOrphanNatGC(c *C) {
 		Addr:      types.IPv4{10, 23, 32, 45},
 		Port:      0x50d6,
 	}
-	err = bpf.UpdateElement(natMap.Map.GetFd(), unsafe.Pointer(natKey),
+	err = bpf.UpdateElement(natMap.Map.GetFd(), natMap.Map.Name(), unsafe.Pointer(natKey),
 		unsafe.Pointer(natVal), 0)
 	c.Assert(err, IsNil)
 
@@ -354,7 +344,7 @@ func (k *CTMapTestSuite) TestOrphanNatGC(c *C) {
 	c.Assert(len(buf), Equals, 0)
 
 	// Create only CT_INGRESS NAT entry which should be removed
-	err = bpf.UpdateElement(natMap.Map.GetFd(), unsafe.Pointer(natKey),
+	err = bpf.UpdateElement(natMap.Map.GetFd(), natMap.Map.Name(), unsafe.Pointer(natKey),
 		unsafe.Pointer(natVal), 0)
 	c.Assert(err, IsNil)
 
@@ -409,7 +399,7 @@ func (k *CTMapTestSuite) TestOrphanNatGC(c *C) {
 		Addr:      types.IPv6{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
 		Port:      0x51d6,
 	}
-	err = bpf.UpdateElement(natMapV6.Map.GetFd(), unsafe.Pointer(natKeyV6),
+	err = bpf.UpdateElement(natMapV6.Map.GetFd(), natMapV6.Map.Name(), unsafe.Pointer(natKeyV6),
 		unsafe.Pointer(natValV6), 0)
 	c.Assert(err, IsNil)
 

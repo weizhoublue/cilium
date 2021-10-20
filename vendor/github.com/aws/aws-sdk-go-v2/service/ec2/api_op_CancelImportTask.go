@@ -16,7 +16,7 @@ func (c *Client) CancelImportTask(ctx context.Context, params *CancelImportTaskI
 		params = &CancelImportTaskInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CancelImportTask", params, optFns, addOperationCancelImportTaskMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CancelImportTask", params, optFns, c.addOperationCancelImportTaskMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -35,10 +35,12 @@ type CancelImportTaskInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The ID of the import image or import snapshot task to be canceled.
 	ImportTaskId *string
+
+	noSmithyDocumentSerde
 }
 
 type CancelImportTaskOutput struct {
@@ -54,9 +56,11 @@ type CancelImportTaskOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCancelImportTaskMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCancelImportTaskMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCancelImportTask{}, middleware.After)
 	if err != nil {
 		return err

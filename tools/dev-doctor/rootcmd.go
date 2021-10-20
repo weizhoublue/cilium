@@ -1,16 +1,5 @@
-// Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2020-2021 Authors of Cilium
 
 package main
 
@@ -50,6 +39,9 @@ func rootCmdRun(cmd *cobra.Command, args []string) {
 	checks := []check{
 		osArchCheck{},
 		unameCheck{},
+		rootDirCheck{
+			rootDir: goPath() + "/src/github.com/cilium/cilium",
+		},
 		&binaryCheck{
 			name:          "make",
 			ifNotFound:    checkError,
@@ -69,6 +61,28 @@ func rootCmdRun(cmd *cobra.Command, args []string) {
 			versionArgs:   []string{"--version"},
 			versionRegexp: regexp.MustCompile(`clang version (\d+\.\d+\.\d+)`),
 			minVersion:    &semver.Version{Major: 10, Minor: 0, Patch: 0},
+		},
+		&binaryCheck{
+			name:          "docker-server",
+			command:       "docker",
+			ifNotFound:    checkWarning,
+			versionArgs:   []string{"version", "--format", "{{ .Server.Version }}"},
+			versionRegexp: regexp.MustCompile(`(\d+\.\d+\.\d+)`),
+		},
+		&binaryCheck{
+			name:          "docker-client",
+			command:       "docker",
+			ifNotFound:    checkWarning,
+			versionArgs:   []string{"version", "--format", "{{ .Client.Version }}"},
+			versionRegexp: regexp.MustCompile(`(\d+\.\d+\.\d+)`),
+		},
+		&binaryCheck{
+			name:          "docker-buildx",
+			command:       "docker",
+			ifNotFound:    checkWarning,
+			versionArgs:   []string{"buildx", "version"},
+			versionRegexp: regexp.MustCompile(`github\.com/docker/buildx v(\d+\.\d+\.\d+)`),
+			hint:          "see https://docs.docker.com/engine/install/",
 		},
 		// FIXME add libelf-devel check?
 		&binaryCheck{
@@ -162,7 +176,8 @@ func rootCmdRun(cmd *cobra.Command, args []string) {
 				ifNotFound:    checkError,
 				versionArgs:   []string{"--version"},
 				versionRegexp: regexp.MustCompile(`hub\s+version\s+(\d+.\d+\.\d+)`),
-				minVersion:    &semver.Version{Major: 2, Minor: 0, Patch: 0},
+				minVersion:    &semver.Version{Major: 2, Minor: 14, Patch: 0},
+				hint:          `Download the latest version from https://github.com/github/hub/releases.`,
 			},
 			&envVarCheck{
 				name:            "GITHUB_TOKEN",

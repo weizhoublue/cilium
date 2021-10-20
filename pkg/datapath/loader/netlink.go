@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package loader
 
@@ -22,10 +11,12 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/command/exec"
 	"github.com/cilium/cilium/pkg/defaults"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/sysctl"
 
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -67,34 +58,31 @@ func replaceQdisc(ifName string) error {
 // replaceDatapath the qdisc and BPF program for a endpoint or XDP program.
 func replaceDatapath(ctx context.Context, ifName, objPath, progSec, progDirection string, xdp bool, xdpMode string) error {
 	var (
-		err        error
 		loaderProg string
 		args       []string
 	)
 
 	if !xdp {
-		if err = replaceQdisc(ifName); err != nil {
+		if err := replaceQdisc(ifName); err != nil {
 			return fmt.Errorf("Failed to replace Qdisc for %s: %s", ifName, err)
 		}
 	}
 
-	// FIXME: Replace cilium-map-migrate with Golang map migration
-	cmd := exec.CommandContext(ctx, "cilium-map-migrate", "-s", objPath)
-	cmd.Env = bpf.Environment()
-	if _, err = cmd.CombinedOutput(log, true); err != nil {
-		return err
+	// Temporarily rename bpffs pins of maps whose definitions have changed in
+	// a new version of a datapath ELF.
+	if err := bpf.StartBPFFSMigration(bpf.GetMapRoot(), objPath); err != nil {
+		return fmt.Errorf("Failed to start bpffs map migration: %w", err)
 	}
+
+	// Schedule finalizing the migration. If the iproute2 call below is successful,
+	// any 'pending' pins will be removed. If not, any pending maps will be re-pinned
+	// back to their initial paths.
+	var revert bool
 	defer func() {
-		var retCode string
-		if err == nil {
-			retCode = "0"
-		} else {
-			retCode = "1"
+		if err := bpf.FinalizeBPFFSMigration(bpf.GetMapRoot(), objPath, revert); err != nil {
+			log.WithError(err).WithField("device", ifName).WithField("objPath", objPath).
+				Error("Could not finalize bpffs map migration")
 		}
-		args := []string{"-e", objPath, "-r", retCode}
-		cmd := exec.CommandContext(ctx, "cilium-map-migrate", args...)
-		cmd.Env = bpf.Environment()
-		_, _ = cmd.CombinedOutput(log, true) // ignore errors
 	}()
 
 	// FIXME: replace exec with native call
@@ -109,9 +97,11 @@ func replaceDatapath(ctx context.Context, ifName, objPath, progSec, progDirectio
 			"sec", progSec,
 		}
 	}
-	cmd = exec.CommandContext(ctx, loaderProg, args...).WithFilters(libbpfFixupMsg)
-	_, err = cmd.CombinedOutput(log, true)
-	if err != nil {
+
+	cmd := exec.CommandContext(ctx, loaderProg, args...).WithFilters(libbpfFixupMsg)
+	if _, err := cmd.CombinedOutput(log, true); err != nil {
+		// Program/object replacement unsuccessful, revert bpffs migration.
+		revert = true
 		return fmt.Errorf("Failed to load prog with %s: %w", loaderProg, err)
 	}
 
@@ -120,25 +110,16 @@ func replaceDatapath(ctx context.Context, ifName, objPath, progSec, progDirectio
 
 // graftDatapath replaces obj in tail call map
 func graftDatapath(ctx context.Context, mapPath, objPath, progSec string) error {
-	var err error
-
-	// FIXME: Replace cilium-map-migrate with Golang map migration
-	cmd := exec.CommandContext(ctx, "cilium-map-migrate", "-s", objPath)
-	cmd.Env = bpf.Environment()
-	if _, err = cmd.CombinedOutput(log, true); err != nil {
-		return err
+	if err := bpf.StartBPFFSMigration(bpf.GetMapRoot(), objPath); err != nil {
+		return fmt.Errorf("Failed to start bpffs map migration: %w", err)
 	}
+
+	var revert bool
 	defer func() {
-		var retCode string
-		if err == nil {
-			retCode = "0"
-		} else {
-			retCode = "1"
+		if err := bpf.FinalizeBPFFSMigration(bpf.GetMapRoot(), objPath, revert); err != nil {
+			log.WithError(err).WithFields(logrus.Fields{logfields.BPFMapPath: mapPath, "objPath": objPath}).
+				Error("Could not finalize bpffs map migration")
 		}
-		args := []string{"-e", objPath, "-r", retCode}
-		cmd := exec.CommandContext(ctx, "cilium-map-migrate", args...)
-		cmd.Env = bpf.Environment()
-		_, _ = cmd.CombinedOutput(log, true) // ignore errors
 	}()
 
 	// FIXME: replace exec with native call
@@ -146,9 +127,9 @@ func graftDatapath(ctx context.Context, mapPath, objPath, progSec string) error 
 	args := []string{"exec", "bpf", "graft", mapPath, "key", "0",
 		"obj", objPath, "sec", progSec,
 	}
-	cmd = exec.CommandContext(ctx, "tc", args...).WithFilters(libbpfFixupMsg)
-	_, err = cmd.CombinedOutput(log, true)
-	if err != nil {
+	cmd := exec.CommandContext(ctx, "tc", args...).WithFilters(libbpfFixupMsg)
+	if _, err := cmd.CombinedOutput(log, true); err != nil {
+		revert = true
 		return fmt.Errorf("Failed to graft tc object: %s", err)
 	}
 

@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
@@ -120,8 +109,8 @@ var _ = skipSuite("K8sKubeProxyFreeMatrix tests", func() {
 
 		podNode1 = getPodName("id=app1")
 		podNode2 = getPodName("id=app3")
-		hostNetworkPodNode1 = getPodNodeName(helpers.K8s1, "-l id=host-client")
-		hostNetworkPodNode2 = getPodNodeName(helpers.K8s2, "-l id=host-client")
+		hostNetworkPodNode1 = getPodNodeName(helpers.K8s1, "id=host-client")
+		hostNetworkPodNode2 = getPodNodeName(helpers.K8s2, "id=host-client")
 
 		// map the public and private ip addresses of k8s1. We need to do this
 		// since the public and private IP addresses are also ephemeral across

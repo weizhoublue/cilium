@@ -20,7 +20,7 @@ func (c *Client) UnmonitorInstances(ctx context.Context, params *UnmonitorInstan
 		params = &UnmonitorInstancesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "UnmonitorInstances", params, optFns, addOperationUnmonitorInstancesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "UnmonitorInstances", params, optFns, c.addOperationUnmonitorInstancesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,9 @@ type UnmonitorInstancesInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type UnmonitorInstancesOutput struct {
@@ -51,9 +53,11 @@ type UnmonitorInstancesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationUnmonitorInstancesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationUnmonitorInstancesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpUnmonitorInstances{}, middleware.After)
 	if err != nil {
 		return err

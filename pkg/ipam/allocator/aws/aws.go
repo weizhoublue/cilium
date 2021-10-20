@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package aws
 
@@ -71,7 +60,7 @@ func (a *AllocatorAWS) Init(ctx context.Context) error {
 // Start kicks of ENI allocation, the initial connection to AWS
 // APIs is done in a blocking manner, given that is successful, a controller is
 // started to manage allocation based on CiliumNode custom resources
-func (a *AllocatorAWS) Start(getterUpdater ipam.CiliumNodeGetterUpdater) (allocator.NodeEventHandler, error) {
+func (a *AllocatorAWS) Start(ctx context.Context, getterUpdater ipam.CiliumNodeGetterUpdater) (allocator.NodeEventHandler, error) {
 	var iMetrics ipam.MetricsAPI
 
 	log.Info("Starting ENI allocator...")
@@ -88,7 +77,7 @@ func (a *AllocatorAWS) Start(getterUpdater ipam.CiliumNodeGetterUpdater) (alloca
 		return nil, fmt.Errorf("unable to initialize ENI node manager: %w", err)
 	}
 
-	if err := nodeManager.Start(context.TODO()); err != nil {
+	if err := nodeManager.Start(ctx); err != nil {
 		return nil, err
 	}
 

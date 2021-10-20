@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8s
 
@@ -522,19 +511,7 @@ func NewClusterService(id ServiceID, k8sService *Service, k8sEndpoints *Endpoint
 // ParseClusterService() is paired with EqualsClusterService() that
 // has the above wired in.
 func ParseClusterService(svc *serviceStore.ClusterService) *Service {
-	feIPs := make([]net.IP, len(svc.Frontends))
-	var ipStr string
-	ports := serviceStore.PortConfiguration{}
-
-	i := 0
-	for ipStr = range svc.Frontends {
-		feIPs[i] = net.ParseIP(ipStr)
-		i++
-	}
-
-	ip.SortIPList(feIPs)
 	svcInfo := &Service{
-		FrontendIPs:     feIPs,
 		IsHeadless:      len(svc.Frontends) == 0,
 		IncludeExternal: true,
 		Shared:          true,
@@ -545,13 +522,21 @@ func ParseClusterService(svc *serviceStore.ClusterService) *Service {
 		Type:            loadbalancer.SVCTypeClusterIP,
 	}
 
-	for name, port := range ports {
-		p := loadbalancer.NewL4Addr(loadbalancer.L4Type(port.Protocol), uint16(port.Port))
-		portName := loadbalancer.FEPortName(name)
-		if _, ok := svcInfo.Ports[portName]; !ok {
-			svcInfo.Ports[portName] = p
+	feIPs := make([]net.IP, len(svc.Frontends))
+	i := 0
+	for ipStr, ports := range svc.Frontends {
+		feIPs[i] = net.ParseIP(ipStr)
+		for name, port := range ports {
+			p := loadbalancer.NewL4Addr(loadbalancer.L4Type(port.Protocol), uint16(port.Port))
+			portName := loadbalancer.FEPortName(name)
+			if _, ok := svcInfo.Ports[portName]; !ok {
+				svcInfo.Ports[portName] = p
+			}
 		}
+		i++
 	}
+	ip.SortIPList(feIPs)
+	svcInfo.FrontendIPs = feIPs
 
 	return svcInfo
 }
@@ -568,12 +553,15 @@ func (s *Service) EqualsClusterService(svc *serviceStore.ClusterService) bool {
 	}
 
 	feIPs := make([]net.IP, len(svc.Frontends))
-	var ipStr string
-	ports := serviceStore.PortConfiguration{}
-
+	fePorts := serviceStore.PortConfiguration{}
 	i := 0
-	for ipStr = range svc.Frontends {
+	for ipStr, ports := range svc.Frontends {
 		feIPs[i] = net.ParseIP(ipStr)
+		for name, port := range ports {
+			if _, ok := fePorts[name]; !ok {
+				fePorts[name] = port
+			}
+		}
 		i++
 	}
 
@@ -594,12 +582,12 @@ func (s *Service) EqualsClusterService(svc *serviceStore.ClusterService) bool {
 		s.SessionAffinityTimeoutSec == 0 &&
 		s.Type == loadbalancer.SVCTypeClusterIP {
 
-		if ((s.Ports == nil) != (ports == nil)) ||
-			len(s.Ports) != len(ports) {
+		if ((s.Ports == nil) != (fePorts == nil)) ||
+			len(s.Ports) != len(fePorts) {
 			return false
 		}
 		for portName, port := range s.Ports {
-			oPort, ok := ports[string(portName)]
+			oPort, ok := fePorts[string(portName)]
 			if !ok {
 				return false
 			}

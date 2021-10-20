@@ -131,7 +131,7 @@ The following configuration options must be set to run the datapath in native
 routing mode:
 
 * ``tunnel: disabled``: Enable native routing mode.
-* ``native-routing-cidr: x.x.x.x/y``: Set the CIDR in which native routing
+* ``ipv4-native-routing-cidr: x.x.x.x/y``: Set the CIDR in which native routing
   can be performed.
 
 
@@ -177,16 +177,12 @@ Ingress
    represented on the node as interface ``ethN``.
 
 2. An IP routing rule ensures that traffic to all local pod IPs is done using
-   the main routing table:
-
-   .. code-block:: bash
+   the main routing table::
 
        20:	from all to 192.168.105.44 lookup main
 
 3. The main routing table contains an exact match route to steer traffic into a
-   veth pair which is hooked into the pod:
-
-   .. code-block:: bash
+   veth pair which is hooked into the pod::
 
        192.168.105.44 dev lxc5a4def8d96c5
 
@@ -209,16 +205,12 @@ Egress
 
 3. An IP routing rule ensures that traffic from individual endpoints are using
    a routing table specific to the ENI from which the endpoint IP was
-   allocated:
-
-   .. code-block:: bash
+   allocated::
 
        30:	from 192.168.105.44 to 192.168.0.0/16 lookup 92
 
 4. The ENI specific routing table contains a default route which redirects
-   to the router of the VPC via the ENI interface:
-
-   .. code-block:: bash
+   to the router of the VPC via the ENI interface::
 
        default via 192.168.0.1 dev eth2
        192.168.0.1 dev eth2
@@ -278,8 +270,8 @@ Addressing
    distribution.
 
 Masquerading
-   All traffic not staying with the ``native-routing-cidr`` (defaults to the
-   Cluster CIDR) will be masqueraded to the node's IP address to become
+   All traffic not staying with the ``ipv4-native-routing-cidr`` (defaults to
+   the Cluster CIDR) will be masqueraded to the node's IP address to become
    publicly routable.
 
 Load-balancing
@@ -304,7 +296,7 @@ The following configuration options must be set to run the datapath on GKE:
   * ``enable-endpoint-routes: true``: Enable per-endpoint routing on the node
   * ``enable-local-node-route: false``: Disable installation of the local node route
 
-* ``native-routing-cidr: x.x.x.x/y``: Set the CIDR in which native routing
+* ``ipv4-native-routing-cidr: x.x.x.x/y``: Set the CIDR in which native routing
   is supported.
 
 See the getting started guide :ref:`k8s_install_quick` to install Cilium on

@@ -1,17 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Hubble
-// Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package observer
 
@@ -305,7 +293,7 @@ nextEvent:
 		case *flowpb.LostEvent:
 			resp = &observerpb.GetFlowsResponse{
 				Time:     e.Timestamp,
-				NodeName: nodeTypes.GetName(),
+				NodeName: nodeTypes.GetAbsoluteNodeName(),
 				ResponseTypes: &observerpb.GetFlowsResponse_LostEvents{
 					LostEvents: ev,
 				},
@@ -383,7 +371,7 @@ func (s *LocalObserverServer) GetAgentEvents(
 			eventsReader.eventCount++
 			resp := &observerpb.GetAgentEventsResponse{
 				Time:       e.Timestamp,
-				NodeName:   nodeTypes.GetName(),
+				NodeName:   nodeTypes.GetAbsoluteNodeName(),
 				AgentEvent: ev,
 			}
 			err = server.Send(resp)
@@ -444,7 +432,7 @@ func (s *LocalObserverServer) GetDebugEvents(
 			eventsReader.eventCount++
 			resp := &observerpb.GetDebugEventsResponse{
 				Time:       e.Timestamp,
-				NodeName:   nodeTypes.GetName(),
+				NodeName:   nodeTypes.GetAbsoluteNodeName(),
 				DebugEvent: ev,
 			}
 			err = server.Send(resp)
@@ -546,10 +534,6 @@ func (r *eventsReader) Next(ctx context.Context) (*v1.Event, error) {
 			}
 			e, err = r.ringReader.Next()
 			if err != nil {
-				if errors.Is(err, container.ErrInvalidRead) {
-					// this error is sent over the wire and presented to the user
-					return nil, errors.New("requested data has been overwritten and is no longer available")
-				}
 				return nil, err
 			}
 		}
@@ -618,7 +602,8 @@ func newRingReader(ring *container.Ring, req genericRequest, whitelist, blacklis
 	// correct index, then create a new reader that starts from there
 	for i := ring.Len(); i > 0; i, idx = i-1, idx-1 {
 		e, err := reader.Previous()
-		if errors.Is(err, container.ErrInvalidRead) {
+		lost := e.GetLostEvent()
+		if lost != nil && lost.Source == flowpb.LostEventSource_HUBBLE_RING_BUFFER {
 			idx++ // we went backward 1 too far
 			break
 		} else if err != nil {

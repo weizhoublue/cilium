@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package k8sTest
 
 import (
-	"context"
 	"fmt"
 	"net"
 
@@ -29,9 +17,7 @@ import (
 // doesn't need to execute this test suite.
 var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sFQDNTest", func() {
 	var (
-		kubectl          *helpers.Kubectl
-		backgroundCancel context.CancelFunc = func() {}
-		backgroundError  error
+		kubectl *helpers.Kubectl
 
 		demoManifest   = ""
 		ciliumFilename string
@@ -86,6 +72,10 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sFQDNTest", func() {
 		Expect(err).Should(BeNil(), "Testapp is not ready after timeout")
 
 		appPods = helpers.GetAppPods(apps, helpers.DefaultNamespace, kubectl, "id")
+
+		// Validate that coredns is reachable from test pods
+		err = kubectl.NslookupInPod(helpers.DefaultNamespace, appPods[helpers.App2], "kube-dns.kube-system.svc.cluster.local")
+		Expect(err).Should(BeNil(), "Error reaching kube-dns before test: %s", err)
 	})
 
 	AfterFailed(func() {
@@ -98,16 +88,6 @@ var _ = SkipDescribeIf(helpers.RunsOn54Kernel, "K8sFQDNTest", func() {
 
 		UninstallCiliumFromManifest(kubectl, ciliumFilename)
 		kubectl.CloseSSHClient()
-	})
-
-	JustBeforeEach(func() {
-		backgroundCancel, backgroundError = kubectl.BackgroundReport("uptime")
-		Expect(backgroundError).To(BeNil(), "Cannot start background report process")
-	})
-
-	JustAfterEach(func() {
-		kubectl.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
-		backgroundCancel()
 	})
 
 	AfterEach(func() {

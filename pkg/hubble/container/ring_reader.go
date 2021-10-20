@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Hubble
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package container
 
@@ -19,6 +8,7 @@ import (
 	"sync"
 
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
+	"github.com/cilium/cilium/pkg/lock"
 )
 
 // RingReader is a reader for a Ring container.
@@ -26,6 +16,7 @@ type RingReader struct {
 	ring          *Ring
 	idx           uint64
 	ctx           context.Context
+	mutex         lock.Mutex // protects writes to followChan
 	followChan    chan *v1.Event
 	followChanLen int
 	wg            sync.WaitGroup
@@ -86,16 +77,21 @@ func (r *RingReader) NextFollow(ctx context.Context) *v1.Event {
 	// if the context changed between invocations, we also have to restart
 	// readFrom, as the old readFrom instance will be using the old context.
 	if r.ctx != ctx {
+		r.mutex.Lock()
 		if r.followChan == nil {
 			r.followChan = make(chan *v1.Event, r.followChanLen)
 		}
+		r.mutex.Unlock()
+
 		r.wg.Add(1)
 		go func(ctx context.Context) {
 			r.ring.readFrom(ctx, r.idx, r.followChan)
+			r.mutex.Lock()
 			if ctx.Err() != nil && r.followChan != nil { // context is done
 				close(r.followChan)
 				r.followChan = nil
 			}
+			r.mutex.Unlock()
 			r.wg.Done()
 		}(ctx)
 		r.ctx = ctx
@@ -106,8 +102,12 @@ func (r *RingReader) NextFollow(ctx context.Context) *v1.Event {
 		}
 	}()
 
+	r.mutex.Lock()
+	followChan := r.followChan
+	r.mutex.Unlock()
+
 	select {
-	case e, ok := <-r.followChan:
+	case e, ok := <-followChan:
 		if !ok {
 			// the channel is closed so the context is done
 			return nil
@@ -121,9 +121,10 @@ func (r *RingReader) NextFollow(ctx context.Context) *v1.Event {
 	}
 }
 
-// Close waits for any method to return and closes the RingReader. It is not
+// Close waits for any spawned go routines to finish. It is not
 // required to call Close on a RingReader but it may be useful for specific
-// situations such as testing.
+// situations such as testing. Must not be called concurrently with NextFollow,
+// as otherwise NextFollow spawns new go routines that are not waited on.
 func (r *RingReader) Close() error {
 	r.wg.Wait()
 	return nil

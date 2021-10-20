@@ -55,6 +55,24 @@ hint_about_wordlist_update() {
 if [ -n "${SKIP_LINT-}" ]; then
   echo "Skipping syntax and spelling validations..."
 else
+  echo "Running linter..."
+  CONF_PY_ROLES=$(sed -n "/^extlinks = {$/,/^}$/ s/^ *'\([^']\+\)':.*/\1/p" conf.py | tr '\n' ',')
+  CONF_PY_SUBSTITUTIONS=$(sed -n 's/^\.\. |\([^|]\+\)|.*/\1/p' conf.py | tr '\n' ',')
+  ignored_messages="("
+  ignored_messages="${ignored_messages}bpf.rst:.*: \(INFO/1\) Enumerated list start value not ordinal"
+  ignored_messages="${ignored_messages}|Hyperlink target .*is not referenced\."
+  ignored_messages="${ignored_messages}|Duplicate implicit target name:"
+  ignored_messages="${ignored_messages}|Malformed table\."
+  ignored_messages="${ignored_messages})"
+  rstcheck \
+      --report info \
+      --ignore-language bash \
+      --ignore-message "${ignored_messages}" \
+      --ignore-directives tabs \
+      --ignore-roles ${CONF_PY_ROLES}\
+      --ignore-substitutions ${CONF_PY_SUBSTITUTIONS} \
+      -r .
+
   echo "Validating documentation (syntax, spelling)..."
   if build_with_spellchecker ; then
     status_ok=0
@@ -85,4 +103,11 @@ fi
 # fi
 
 echo "Building documentation (${target})..."
-exec sphinx-build -M "${target}" "${script_dir}" "${build_dir}" $@
+sphinx-build -M "${target}" "${script_dir}" "${build_dir}" $@ -q 2> >(tee "${warnings}" >&2)
+
+# We can have warnings but no errors here, or sphinx-build would return non-0
+# and we would have exited because of "set -o errexit".
+if [ -s "${warnings}" ] ; then
+    echo "Please fix the above documentation warnings"
+    exit 1
+fi

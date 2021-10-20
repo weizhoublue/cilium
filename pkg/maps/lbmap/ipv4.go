@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package lbmap
 
@@ -40,6 +29,8 @@ const (
 	Service4MapV2Name = "cilium_lb4_services_v2"
 	// Backend4MapName is the name of the IPv4 LB backends BPF map.
 	Backend4MapName = "cilium_lb4_backends"
+	// Backend4MapV2Name is the name of the IPv4 LB backends v2 BPF map.
+	Backend4MapV2Name = "cilium_lb4_backends_v2"
 	// RevNat4MapName is the name of the IPv4 LB reverse NAT BPF map.
 	RevNat4MapName = "cilium_lb4_reverse_nat"
 )
@@ -55,6 +46,8 @@ var (
 	Service4MapV2 *bpf.Map
 	// Backend4Map is the IPv4 LB backends BPF map.
 	Backend4Map *bpf.Map
+	// Backend4MapV2 is the IPv4 LB backends v2 BPF map.
+	Backend4MapV2 *bpf.Map
 	// RevNat4Map is the IPv4 LB reverse NAT BPF map.
 	RevNat4Map *bpf.Map
 )
@@ -78,6 +71,16 @@ func initSVC(params InitParams) {
 			bpf.MapTypeHash,
 			&Backend4Key{},
 			int(unsafe.Sizeof(Backend4Key{})),
+			&Backend4Value{},
+			int(unsafe.Sizeof(Backend4Value{})),
+			MaxEntries,
+			0, 0,
+			bpf.ConvertKeyValue,
+		).WithCache().WithPressureMetric()
+		Backend4MapV2 = bpf.NewMap(Backend4MapV2Name,
+			bpf.MapTypeHash,
+			&Backend4KeyV2{},
+			int(unsafe.Sizeof(Backend4KeyV2{})),
 			&Backend4Value{},
 			int(unsafe.Sizeof(Backend4Value{})),
 			MaxEntries,
@@ -117,6 +120,16 @@ func initSVC(params InitParams) {
 			0, 0,
 			bpf.ConvertKeyValue,
 		).WithCache().WithPressureMetric()
+		Backend6MapV2 = bpf.NewMap(Backend6MapV2Name,
+			bpf.MapTypeHash,
+			&Backend6KeyV2{},
+			int(unsafe.Sizeof(Backend6KeyV2{})),
+			&Backend6Value{},
+			int(unsafe.Sizeof(Backend6Value{})),
+			MaxEntries,
+			0, 0,
+			bpf.ConvertKeyValue,
+		).WithCache().WithPressureMetric()
 		RevNat6Map = bpf.NewMap(RevNat6MapName,
 			bpf.MapTypeHash,
 			&RevNat6Key{},
@@ -136,8 +149,10 @@ var _ RevNatValue = (*RevNat4Value)(nil)
 var _ ServiceKey = (*Service4Key)(nil)
 var _ ServiceValue = (*Service4Value)(nil)
 var _ BackendKey = (*Backend4Key)(nil)
+var _ BackendKey = (*Backend4KeyV2)(nil)
 var _ BackendValue = (*Backend4Value)(nil)
 var _ Backend = (*Backend4)(nil)
+var _ Backend = (*Backend4V2)(nil)
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
@@ -158,14 +173,14 @@ func (k *RevNat4Key) GetKey() uint16            { return k.Key }
 // ToNetwork converts RevNat4Key to network byte order.
 func (k *RevNat4Key) ToNetwork() RevNatKey {
 	n := *k
-	n.Key = byteorder.HostToNetwork(n.Key).(uint16)
+	n.Key = byteorder.HostToNetwork16(n.Key)
 	return &n
 }
 
 // ToHost converts RevNat4Key to host byte order.
 func (k *RevNat4Key) ToHost() RevNatKey {
 	h := *k
-	h.Key = byteorder.NetworkToHost(h.Key).(uint16)
+	h.Key = byteorder.NetworkToHost16(h.Key)
 	return &h
 }
 
@@ -181,14 +196,14 @@ func (v *RevNat4Value) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(v) }
 // ToNetwork converts RevNat4Value to network byte order.
 func (v *RevNat4Value) ToNetwork() RevNatValue {
 	n := *v
-	n.Port = byteorder.HostToNetwork(n.Port).(uint16)
+	n.Port = byteorder.HostToNetwork16(n.Port)
 	return &n
 }
 
 // ToHost converts RevNat4Value to host byte order.
 func (k *RevNat4Value) ToHost() RevNatValue {
 	h := *k
-	h.Port = byteorder.NetworkToHost(h.Port).(uint16)
+	h.Port = byteorder.NetworkToHost16(h.Port)
 	return &h
 }
 
@@ -205,7 +220,7 @@ func (in *pad2uint8) DeepCopyInto(out *pad2uint8) {
 	return
 }
 
-// Service4Key must match 'struct lb4_key_v2' in "bpf/lib/common.h".
+// Service4Key must match 'struct lb4_key' in "bpf/lib/common.h".
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
 type Service4Key struct {
@@ -261,14 +276,14 @@ func (k *Service4Key) RevNatValue() RevNatValue {
 
 func (k *Service4Key) ToNetwork() ServiceKey {
 	n := *k
-	n.Port = byteorder.HostToNetwork(n.Port).(uint16)
+	n.Port = byteorder.HostToNetwork16(n.Port)
 	return &n
 }
 
 // ToHost converts Service4Key to host byte order.
 func (k *Service4Key) ToHost() ServiceKey {
 	h := *k
-	h.Port = byteorder.NetworkToHost(h.Port).(uint16)
+	h.Port = byteorder.NetworkToHost16(h.Port)
 	return &h
 }
 
@@ -320,33 +335,46 @@ func (s *Service4Value) GetBackendID() loadbalancer.BackendID {
 
 func (s *Service4Value) ToNetwork() ServiceValue {
 	n := *s
-	n.RevNat = byteorder.HostToNetwork(n.RevNat).(uint16)
+	n.RevNat = byteorder.HostToNetwork16(n.RevNat)
 	return &n
 }
 
 // ToHost converts Service4Value to host byte order.
 func (s *Service4Value) ToHost() ServiceValue {
 	h := *s
-	h.RevNat = byteorder.NetworkToHost(h.RevNat).(uint16)
+	h.RevNat = byteorder.NetworkToHost16(h.RevNat)
 	return &h
 }
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type Backend4Key struct {
+type Backend4KeyV2 struct {
 	ID loadbalancer.BackendID
 }
 
-func NewBackend4Key(id loadbalancer.BackendID) *Backend4Key {
-	return &Backend4Key{ID: id}
+func NewBackend4KeyV2(id loadbalancer.BackendID) *Backend4KeyV2 {
+	return &Backend4KeyV2{ID: id}
+}
+
+func (k *Backend4KeyV2) String() string                  { return fmt.Sprintf("%d", k.ID) }
+func (k *Backend4KeyV2) GetKeyPtr() unsafe.Pointer       { return unsafe.Pointer(k) }
+func (k *Backend4KeyV2) NewValue() bpf.MapValue          { return &Backend4Value{} }
+func (k *Backend4KeyV2) Map() *bpf.Map                   { return Backend4MapV2 }
+func (k *Backend4KeyV2) SetID(id loadbalancer.BackendID) { k.ID = id }
+func (k *Backend4KeyV2) GetID() loadbalancer.BackendID   { return k.ID }
+
+// +k8s:deepcopy-gen=true
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
+type Backend4Key struct {
+	ID uint16
 }
 
 func (k *Backend4Key) String() string                  { return fmt.Sprintf("%d", k.ID) }
 func (k *Backend4Key) GetKeyPtr() unsafe.Pointer       { return unsafe.Pointer(k) }
 func (k *Backend4Key) NewValue() bpf.MapValue          { return &Backend4Value{} }
 func (k *Backend4Key) Map() *bpf.Map                   { return Backend4Map }
-func (k *Backend4Key) SetID(id loadbalancer.BackendID) { k.ID = id }
-func (k *Backend4Key) GetID() loadbalancer.BackendID   { return k.ID }
+func (k *Backend4Key) SetID(id loadbalancer.BackendID) { k.ID = uint16(id) }
+func (k *Backend4Key) GetID() loadbalancer.BackendID   { return loadbalancer.BackendID(k.ID) }
 
 // Backend4Value must match 'struct lb4_backend' in "bpf/lib/common.h".
 // +k8s:deepcopy-gen=true
@@ -385,32 +413,41 @@ func (b *Backend4Value) GetPort() uint16    { return b.Port }
 
 func (v *Backend4Value) ToNetwork() BackendValue {
 	n := *v
-	n.Port = byteorder.HostToNetwork(n.Port).(uint16)
+	n.Port = byteorder.HostToNetwork16(n.Port)
 	return &n
 }
 
 // ToHost converts Backend4Value to host byte order.
 func (v *Backend4Value) ToHost() BackendValue {
 	h := *v
-	h.Port = byteorder.NetworkToHost(h.Port).(uint16)
+	h.Port = byteorder.NetworkToHost16(h.Port)
 	return &h
 }
 
-type Backend4 struct {
-	Key   *Backend4Key
+type Backend4V2 struct {
+	Key   *Backend4KeyV2
 	Value *Backend4Value
 }
 
-func NewBackend4(id loadbalancer.BackendID, ip net.IP, port uint16, proto u8proto.U8proto) (*Backend4, error) {
+func NewBackend4V2(id loadbalancer.BackendID, ip net.IP, port uint16, proto u8proto.U8proto) (*Backend4V2, error) {
 	val, err := NewBackend4Value(ip, port, proto)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Backend4{
-		Key:   NewBackend4Key(id),
+	return &Backend4V2{
+		Key:   NewBackend4KeyV2(id),
 		Value: val,
 	}, nil
+}
+
+func (b *Backend4V2) Map() *bpf.Map          { return Backend4MapV2 }
+func (b *Backend4V2) GetKey() BackendKey     { return b.Key }
+func (b *Backend4V2) GetValue() BackendValue { return b.Value }
+
+type Backend4 struct {
+	Key   *Backend4Key
+	Value *Backend4Value
 }
 
 func (b *Backend4) Map() *bpf.Map          { return Backend4Map }

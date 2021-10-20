@@ -25,7 +25,7 @@ func (c *Client) DescribeVpcClassicLinkDnsSupport(ctx context.Context, params *D
 		params = &DescribeVpcClassicLinkDnsSupportInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeVpcClassicLinkDnsSupport", params, optFns, addOperationDescribeVpcClassicLinkDnsSupportMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeVpcClassicLinkDnsSupport", params, optFns, c.addOperationDescribeVpcClassicLinkDnsSupportMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -39,13 +39,15 @@ type DescribeVpcClassicLinkDnsSupportInput struct {
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
 
 	// One or more VPC IDs.
 	VpcIds []string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeVpcClassicLinkDnsSupportOutput struct {
@@ -59,9 +61,11 @@ type DescribeVpcClassicLinkDnsSupportOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeVpcClassicLinkDnsSupportMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeVpcClassicLinkDnsSupportMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeVpcClassicLinkDnsSupport{}, middleware.After)
 	if err != nil {
 		return err
@@ -159,8 +163,8 @@ func NewDescribeVpcClassicLinkDnsSupportPaginator(client DescribeVpcClassicLinkD
 	}
 
 	options := DescribeVpcClassicLinkDnsSupportPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -189,7 +193,11 @@ func (p *DescribeVpcClassicLinkDnsSupportPaginator) NextPage(ctx context.Context
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeVpcClassicLinkDnsSupport(ctx, &params, optFns...)
 	if err != nil {

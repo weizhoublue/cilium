@@ -17,11 +17,13 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
-# import sys
+import sys
 import re
 import subprocess
 import semver
-# sys.path.insert(0, os.path.abspath('.'))
+
+sys.path.insert(0, os.path.abspath('_exts'))
+import cilium_spellfilters
 
 
 # -- General configuration ------------------------------------------------
@@ -148,8 +150,14 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
+# The default language to highlight source code in.
+highlight_language = 'none'
+
 # If true, `todo` and `todoList` produce output, else they produce nothing.
 todo_include_todos = False
+
+# Add custom filters for spell checks.
+spelling_filters = [cilium_spellfilters.WireGuardFilter]
 
 
 # -- Options for HTML output ----------------------------------------------
@@ -248,3 +256,4 @@ def setup(app):
     app.add_stylesheet('editbutton.css')
     app.add_javascript('clipboardjs.min.js')
     app.add_javascript("copybutton.js")
+    app.add_stylesheet('helm-reference.css')

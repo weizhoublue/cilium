@@ -1908,6 +1908,12 @@ func init() {
         "addressing": {
           "$ref": "#/definitions/NodeAddressing"
         },
+        "daemonConfigurationMap": {
+          "description": "Config map which contains all the active daemon configurations",
+          "additionalProperties": {
+            "type": "object"
+          }
+        },
         "datapathMode": {
           "$ref": "#/definitions/DatapathMode"
         },
@@ -2193,6 +2199,10 @@ func init() {
       "description": "Datapath configuration to be used for the endpoint",
       "type": "object",
       "properties": {
+        "disable-sip-verification": {
+          "description": "Disable source IP verification for the endpoint.\n",
+          "type": "boolean"
+        },
         "external-ipam": {
           "description": "Indicates that IPAM is done external to Cilium. This will prevent the IP from being released and re-allocation of the IP address is skipped on restore.\n",
           "type": "boolean"
@@ -2555,6 +2565,25 @@ func init() {
         },
         "frontend-address": {
           "$ref": "#/definitions/FrontendAddress"
+        }
+      }
+    },
+    "HostFirewall": {
+      "description": "Status of the host firewall\n\n+k8s:deepcopy-gen=true",
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Disabled",
+            "Enabled"
+          ]
         }
       }
     },
@@ -3368,6 +3397,8 @@ func init() {
           "enum": [
             "TCP",
             "UDP",
+            "ICMP",
+            "ICMPV6",
             "ANY"
           ]
         }
@@ -3854,6 +3885,10 @@ func init() {
         "encryption": {
           "description": "Status of transparent encryption",
           "$ref": "#/definitions/EncryptionStatus"
+        },
+        "host-firewall": {
+          "description": "Status of the host firewall",
+          "$ref": "#/definitions/HostFirewall"
         },
         "host-routing": {
           "description": "Status of host routing",
@@ -6285,6 +6320,12 @@ func init() {
         "addressing": {
           "$ref": "#/definitions/NodeAddressing"
         },
+        "daemonConfigurationMap": {
+          "description": "Config map which contains all the active daemon configurations",
+          "additionalProperties": {
+            "type": "object"
+          }
+        },
         "datapathMode": {
           "$ref": "#/definitions/DatapathMode"
         },
@@ -6593,6 +6634,10 @@ func init() {
       "description": "Datapath configuration to be used for the endpoint",
       "type": "object",
       "properties": {
+        "disable-sip-verification": {
+          "description": "Disable source IP verification for the endpoint.\n",
+          "type": "boolean"
+        },
         "external-ipam": {
           "description": "Indicates that IPAM is done external to Cilium. This will prevent the IP from being released and re-allocation of the IP address is skipped on restore.\n",
           "type": "boolean"
@@ -6955,6 +7000,25 @@ func init() {
         },
         "frontend-address": {
           "$ref": "#/definitions/FrontendAddress"
+        }
+      }
+    },
+    "HostFirewall": {
+      "description": "Status of the host firewall\n\n+k8s:deepcopy-gen=true",
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "Disabled",
+            "Enabled"
+          ]
         }
       }
     },
@@ -7996,6 +8060,8 @@ func init() {
           "enum": [
             "TCP",
             "UDP",
+            "ICMP",
+            "ICMPV6",
             "ANY"
           ]
         }
@@ -8521,6 +8587,10 @@ func init() {
         "encryption": {
           "description": "Status of transparent encryption",
           "$ref": "#/definitions/EncryptionStatus"
+        },
+        "host-firewall": {
+          "description": "Status of the host firewall",
+          "$ref": "#/definitions/HostFirewall"
         },
         "host-routing": {
           "description": "Status of host routing",

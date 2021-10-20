@@ -19,7 +19,7 @@ func (c *Client) DescribeTransitGatewayRouteTables(ctx context.Context, params *
 		params = &DescribeTransitGatewayRouteTablesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayRouteTables", params, optFns, addOperationDescribeTransitGatewayRouteTablesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayRouteTables", params, optFns, c.addOperationDescribeTransitGatewayRouteTablesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ type DescribeTransitGatewayRouteTablesInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters. The possible values are:
 	//
@@ -58,13 +58,15 @@ type DescribeTransitGatewayRouteTablesInput struct {
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
 
 	// The IDs of the transit gateway route tables.
 	TransitGatewayRouteTableIds []string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeTransitGatewayRouteTablesOutput struct {
@@ -78,9 +80,11 @@ type DescribeTransitGatewayRouteTablesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeTransitGatewayRouteTablesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeTransitGatewayRouteTablesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeTransitGatewayRouteTables{}, middleware.After)
 	if err != nil {
 		return err
@@ -178,8 +182,8 @@ func NewDescribeTransitGatewayRouteTablesPaginator(client DescribeTransitGateway
 	}
 
 	options := DescribeTransitGatewayRouteTablesPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -208,7 +212,11 @@ func (p *DescribeTransitGatewayRouteTablesPaginator) NextPage(ctx context.Contex
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeTransitGatewayRouteTables(ctx, &params, optFns...)
 	if err != nil {

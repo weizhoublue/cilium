@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
@@ -31,6 +21,7 @@ import (
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/testutils/allocator"
 
+	"github.com/sirupsen/logrus"
 	. "gopkg.in/check.v1"
 )
 
@@ -197,14 +188,19 @@ func (d DummyOwner) GetID() uint64 {
 	return 1234
 }
 
+func (d DummyOwner) PolicyDebug(fields logrus.Fields, msg string) {
+	log.WithFields(fields).Info(msg)
+}
+
 func bootstrapRepo(ruleGenFunc func(int) api.Rules, numRules int, c *C) *Repository {
 	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
 	testRepo := NewPolicyRepository(mgr.GetIdentityCache(), nil)
 
-	var wg sync.WaitGroup
 	SetPolicyEnabled(option.DefaultEnforcement)
 	GenerateNumIdentities(3000)
-	testSelectorCache.UpdateIdentities(identityCache, nil)
+	wg := &sync.WaitGroup{}
+	testSelectorCache.UpdateIdentities(identityCache, nil, wg)
+	wg.Wait()
 	testRepo.selectorCache = testSelectorCache
 	rulez, _ := testRepo.AddList(ruleGenFunc(numRules))
 
@@ -216,7 +212,8 @@ func bootstrapRepo(ruleGenFunc func(int) api.Rules, numRules int, c *C) *Reposit
 	})
 
 	epsToRegen := NewEndpointSet(nil)
-	rulez.UpdateRulesEndpointsCaches(epSet, epsToRegen, &wg)
+	wg = &sync.WaitGroup{}
+	rulez.UpdateRulesEndpointsCaches(epSet, epsToRegen, wg)
 	wg.Wait()
 
 	c.Assert(epSet.Len(), Equals, 0)
@@ -518,7 +515,9 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressWildcard(c *C) {
 	added1 := cache.IdentityCache{
 		identity.NumericIdentity(192): labels.ParseSelectLabelArray("id=resolve_test_1"),
 	}
-	testSelectorCache.UpdateIdentities(added1, nil)
+	wg := &sync.WaitGroup{}
+	testSelectorCache.UpdateIdentities(added1, nil, wg)
+	wg.Wait()
 	c.Assert(policy.policyMapChanges.changes, HasLen, 0)
 
 	// Have to remove circular reference before testing to avoid an infinite loop
@@ -595,15 +594,19 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 		identity.NumericIdentity(193): labels.ParseSelectLabelArray("id=resolve_test_1", "num=2"),
 		identity.NumericIdentity(194): labels.ParseSelectLabelArray("id=resolve_test_1", "num=3"),
 	}
-	testSelectorCache.UpdateIdentities(added1, nil)
+	wg := &sync.WaitGroup{}
+	testSelectorCache.UpdateIdentities(added1, nil, wg)
 	// Cleanup the identities from the testSelectorCache
-	defer testSelectorCache.UpdateIdentities(nil, added1)
+	defer testSelectorCache.UpdateIdentities(nil, added1, wg)
+	wg.Wait()
 	c.Assert(policy.policyMapChanges.changes, HasLen, 3)
 
 	deleted1 := cache.IdentityCache{
 		identity.NumericIdentity(193): labels.ParseSelectLabelArray("id=resolve_test_1", "num=2"),
 	}
-	testSelectorCache.UpdateIdentities(nil, deleted1)
+	wg = &sync.WaitGroup{}
+	testSelectorCache.UpdateIdentities(nil, deleted1, wg)
+	wg.Wait()
 	c.Assert(policy.policyMapChanges.changes, HasLen, 4)
 
 	cachedSelectorWorld := testSelectorCache.FindCachedIdentitySelector(api.ReservedEndpointSelectors[labels.IDNameWorld])
@@ -644,7 +647,7 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 		PolicyOwner: DummyOwner{},
 		PolicyMapState: MapState{
 			{TrafficDirection: trafficdirection.Egress.Uint8()}:                          allowEgressMapStateEntry,
-			{Identity: uint32(identity.ReservedIdentityWorld), DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithSelectors(cachedSelectorWorld),
+			{Identity: uint32(identity.ReservedIdentityWorld), DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithOwners(cachedSelectorWorld),
 			{Identity: 192, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry,
 			{Identity: 194, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry,
 		},
@@ -662,11 +665,11 @@ func (ds *PolicyTestSuite) TestMapStateWithIngress(c *C) {
 	c.Assert(policy.policyMapChanges.changes, IsNil)
 
 	c.Assert(adds, checker.Equals, MapState{
-		{Identity: 192, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry,
-		{Identity: 194, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry,
+		{Identity: 192, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutOwners(),
+		{Identity: 194, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutOwners(),
 	})
 	c.Assert(deletes, checker.Equals, MapState{
-		{Identity: 193, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutSelectors(),
+		{Identity: 193, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutOwners(),
 	})
 
 	// Assign an empty mutex so that checker.Equal does not complain about the

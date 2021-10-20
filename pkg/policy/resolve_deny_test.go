@@ -1,22 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
 
 import (
+	"sync"
+
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
@@ -355,7 +347,9 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressDenyWildcard(c *C) {
 	added1 := cache.IdentityCache{
 		identity.NumericIdentity(192): labels.ParseSelectLabelArray("id=resolve_test_1"),
 	}
-	testSelectorCache.UpdateIdentities(added1, nil)
+	wg := &sync.WaitGroup{}
+	testSelectorCache.UpdateIdentities(added1, nil, wg)
+	wg.Wait()
 	c.Assert(policy.policyMapChanges.changes, HasLen, 0)
 
 	// Have to remove circular reference before testing to avoid an infinite loop
@@ -430,15 +424,19 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressDeny(c *C) {
 		identity.NumericIdentity(193): labels.ParseSelectLabelArray("id=resolve_test_1", "num=2"),
 		identity.NumericIdentity(194): labels.ParseSelectLabelArray("id=resolve_test_1", "num=3"),
 	}
-	testSelectorCache.UpdateIdentities(added1, nil)
+	wg := &sync.WaitGroup{}
+	testSelectorCache.UpdateIdentities(added1, nil, wg)
 	// Cleanup the identities from the testSelectorCache
-	defer testSelectorCache.UpdateIdentities(nil, added1)
+	defer testSelectorCache.UpdateIdentities(nil, added1, wg)
+	wg.Wait()
 	c.Assert(policy.policyMapChanges.changes, HasLen, 3)
 
 	deleted1 := cache.IdentityCache{
 		identity.NumericIdentity(193): labels.ParseSelectLabelArray("id=resolve_test_1", "num=2"),
 	}
-	testSelectorCache.UpdateIdentities(nil, deleted1)
+	wg = &sync.WaitGroup{}
+	testSelectorCache.UpdateIdentities(nil, deleted1, wg)
+	wg.Wait()
 	c.Assert(policy.policyMapChanges.changes, HasLen, 4)
 
 	cachedSelectorWorld := testSelectorCache.FindCachedIdentitySelector(api.ReservedEndpointSelectors[labels.IDNameWorld])
@@ -480,7 +478,7 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressDeny(c *C) {
 			// Although we have calculated deny policies, the overall policy
 			// will still allow egress to world.
 			{TrafficDirection: trafficdirection.Egress.Uint8()}:                          allowEgressMapStateEntry,
-			{Identity: uint32(identity.ReservedIdentityWorld), DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithSelectors(cachedSelectorWorld),
+			{Identity: uint32(identity.ReservedIdentityWorld), DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithOwners(cachedSelectorWorld),
 			{Identity: 192, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry,
 			{Identity: 194, DestPort: 80, Nexthdr: 6}:                                    rule1MapStateEntry,
 		},
@@ -490,11 +488,11 @@ func (ds *PolicyTestSuite) TestMapStateWithIngressDeny(c *C) {
 	// maps on the policy got cleared
 
 	c.Assert(adds, checker.Equals, MapState{
-		{Identity: 192, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry,
-		{Identity: 194, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry,
+		{Identity: 192, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutOwners(),
+		{Identity: 194, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutOwners(),
 	})
 	c.Assert(deletes, checker.Equals, MapState{
-		{Identity: 193, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutSelectors(),
+		{Identity: 193, DestPort: 80, Nexthdr: 6}: rule1MapStateEntry.WithoutOwners(),
 	})
 
 	// Have to remove circular reference before testing for Equality to avoid an infinite loop

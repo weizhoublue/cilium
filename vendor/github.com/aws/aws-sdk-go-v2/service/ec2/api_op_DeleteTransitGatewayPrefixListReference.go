@@ -18,7 +18,7 @@ func (c *Client) DeleteTransitGatewayPrefixListReference(ctx context.Context, pa
 		params = &DeleteTransitGatewayPrefixListReferenceInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DeleteTransitGatewayPrefixListReference", params, optFns, addOperationDeleteTransitGatewayPrefixListReferenceMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DeleteTransitGatewayPrefixListReference", params, optFns, c.addOperationDeleteTransitGatewayPrefixListReferenceMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,9 @@ type DeleteTransitGatewayPrefixListReferenceInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type DeleteTransitGatewayPrefixListReferenceOutput struct {
@@ -54,9 +56,11 @@ type DeleteTransitGatewayPrefixListReferenceOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDeleteTransitGatewayPrefixListReferenceMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDeleteTransitGatewayPrefixListReferenceMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDeleteTransitGatewayPrefixListReference{}, middleware.After)
 	if err != nil {
 		return err

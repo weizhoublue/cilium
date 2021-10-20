@@ -1,16 +1,5 @@
-// Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2017-2021 Authors of Cilium
 
 package cmd
 
@@ -158,14 +147,14 @@ func formatMap(w io.Writer, statsMap []policymap.PolicyEntryDump) {
 		trafficDirection := trafficdirection.TrafficDirection(stat.Key.TrafficDirection)
 		trafficDirectionString := trafficDirection.String()
 		port := models.PortProtocolANY
-		if stat.Key.DestPort != 0 {
-			dport := byteorder.NetworkToHost(stat.Key.DestPort).(uint16)
+		if stat.Key.DestPort != 0 || stat.Key.Nexthdr == uint8(u8proto.ICMP) || stat.Key.Nexthdr == uint8(u8proto.ICMPv6) {
+			dport := byteorder.NetworkToHost16(stat.Key.DestPort)
 			proto := u8proto.U8proto(stat.Key.Nexthdr)
 			port = fmt.Sprintf("%d/%s", dport, proto.String())
 		}
 		proxyPort := "NONE"
 		if stat.ProxyPort != 0 {
-			proxyPort = strconv.FormatUint(uint64(byteorder.NetworkToHost(stat.ProxyPort).(uint16)), 10)
+			proxyPort = strconv.FormatUint(uint64(byteorder.NetworkToHost16(stat.ProxyPort)), 10)
 		}
 		var policyStr string
 		if policymap.PolicyEntryFlags(stat.Flags).IsDeny() {

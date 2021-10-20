@@ -14,14 +14,15 @@ import (
 // Requests a transit gateway peering attachment between the specified transit
 // gateway (requester) and a peer transit gateway (accepter). The transit gateways
 // must be in different Regions. The peer transit gateway can be in your account or
-// a different AWS account. After you create the peering attachment, the owner of
-// the accepter transit gateway must accept the attachment request.
+// a different Amazon Web Services account. After you create the peering
+// attachment, the owner of the accepter transit gateway must accept the attachment
+// request.
 func (c *Client) CreateTransitGatewayPeeringAttachment(ctx context.Context, params *CreateTransitGatewayPeeringAttachmentInput, optFns ...func(*Options)) (*CreateTransitGatewayPeeringAttachmentOutput, error) {
 	if params == nil {
 		params = &CreateTransitGatewayPeeringAttachmentInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayPeeringAttachment", params, optFns, addOperationCreateTransitGatewayPeeringAttachmentMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CreateTransitGatewayPeeringAttachment", params, optFns, c.addOperationCreateTransitGatewayPeeringAttachmentMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +34,7 @@ func (c *Client) CreateTransitGatewayPeeringAttachment(ctx context.Context, para
 
 type CreateTransitGatewayPeeringAttachmentInput struct {
 
-	// The AWS account ID of the owner of the peer transit gateway.
+	// The ID of the Amazon Web Services account that owns the peer transit gateway.
 	//
 	// This member is required.
 	PeerAccountId *string
@@ -57,10 +58,12 @@ type CreateTransitGatewayPeeringAttachmentInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// The tags to apply to the transit gateway peering attachment.
 	TagSpecifications []types.TagSpecification
+
+	noSmithyDocumentSerde
 }
 
 type CreateTransitGatewayPeeringAttachmentOutput struct {
@@ -70,9 +73,11 @@ type CreateTransitGatewayPeeringAttachmentOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCreateTransitGatewayPeeringAttachmentMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCreateTransitGatewayPeeringAttachmentMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCreateTransitGatewayPeeringAttachment{}, middleware.After)
 	if err != nil {
 		return err

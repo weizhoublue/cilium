@@ -45,6 +45,7 @@ cilium-agent [flags]
       --bpf-lb-mode string                                   BPF load balancing mode ("snat", "dsr", "hybrid") (default "snat")
       --bpf-lb-rss-ipv4-src-cidr string                      BPF load balancing RSS outer source IPv4 CIDR prefix for IPIP
       --bpf-lb-rss-ipv6-src-cidr string                      BPF load balancing RSS outer source IPv6 CIDR prefix for IPIP
+      --bpf-lb-sock-hostns-only                              Skip socket LB for services when inside a pod namespace, in favor of service LB at the pod interface. Socket LB is still used when in the host namespace. Required by service mesh (e.g., Istio, Linkerd).
       --bpf-map-dynamic-size-ratio float                     Ratio (0.0-1.0) of total system memory to use for dynamic sizing of CT, NAT and policy BPF maps. Set to 0.0 to disable dynamic BPF map sizing (default: 0.0)
       --bpf-nat-global-max int                               Maximum number of entries for the global BPF NAT table (default 524288)
       --bpf-neigh-global-max int                             Maximum number of entries for the global BPF neighbor table (default 524288)
@@ -53,6 +54,7 @@ cilium-agent [flags]
       --bpf-sock-rev-map-max int                             Maximum number of entries for the SockRevNAT BPF map (default 262144)
       --certificates-directory string                        Root directory to find certificates specified in L7 TLS policy enforcement (default "/var/run/cilium/certs")
       --cgroup-root string                                   Path to Cgroup2 filesystem
+      --cluster-health-port int                              TCP port for cluster-wide network connectivity health API (default 4240)
       --cluster-id int                                       Unique identifier of the cluster
       --cluster-name string                                  Name of the cluster (default "default")
       --clustermesh-config string                            Path to the ClusterMesh configuration directory
@@ -64,7 +66,7 @@ cilium-agent [flags]
   -D, --debug                                                Enable debugging mode
       --debug-verbose strings                                List of enabled verbose debug groups
       --devices strings                                      List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'
-      --direct-routing-device string                         Device name used to connect nodes in direct routing mode (required only by BPF NodePort; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)
+      --direct-routing-device string                         Device name used to connect nodes in direct routing mode (used by BPF NodePort, BPF fast redirect; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)
       --disable-cnp-status-updates                           Do not send CNP NodeStatus updates to the Kubernetes api-server (recommended to run with "cnp-node-status-gc-interval=0" in cilium-operator)
       --disable-conntrack                                    Disable connection tracking
       --disable-endpoint-crd                                 Disable use of CiliumEndpoint CRD
@@ -102,6 +104,7 @@ cilium-agent [flags]
       --enable-k8s-api-discovery                             Enable discovery of Kubernetes API groups and resources with the discovery API
       --enable-k8s-endpoint-slice                            Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it (default true)
       --enable-k8s-event-handover                            Enable k8s event handover to kvstore for improved scalability
+      --enable-l2-neigh-discovery                            Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec (default true)
       --enable-l7-proxy                                      Enable L7 proxy for L7 policy enforcement (default true)
       --enable-local-node-route                              Enable installation of the route which points the allocation prefix of the local node (default true)
       --enable-local-redirect-policy                         Enable Local Redirect Policy
@@ -160,6 +163,7 @@ cilium-agent [flags]
       --ipsec-key-file string                                Path to IPSec key file
       --iptables-lock-timeout duration                       Time to pass to each iptables invocation to wait for xtables lock acquisition (default 5s)
       --iptables-random-fully                                Set iptables flag random-fully on masquerading rules
+      --ipv4-native-routing-cidr string                      Allows to explicitly specify the IPv4 CIDR for native routing. This value corresponds to the configured cluster-cidr.
       --ipv4-node string                                     IPv4 address of node (default "auto")
       --ipv4-pod-subnets strings                             List of IPv4 pod subnets to preconfigure for encryption
       --ipv4-range string                                    Per-node IPv4 endpoint prefix, e.g. 10.16.0.0/16 (default "auto")
@@ -186,6 +190,7 @@ cilium-agent [flags]
       --kube-proxy-replacement-healthz-bind-address string   The IP address with port for kube-proxy replacement health check server to serve on (set to '0.0.0.0:10256' for all IPv4 interfaces and '[::]:10256' for all IPv6 interfaces). Set empty to disable.
       --kvstore string                                       Key-value store type
       --kvstore-connectivity-timeout duration                Time after which an incomplete kvstore operation  is considered failed (default 2m0s)
+      --kvstore-max-consecutive-quorum-errors int            Max acceptable kvstore consecutive quorum errors before the agent assumes permanent failure (default 2)
       --kvstore-opt map                                      Key-value store options (default map[])
       --kvstore-periodic-sync duration                       Periodic KVstore synchronization interval (default 5m0s)
       --label-prefix-file string                             Valid label prefixes file path
@@ -203,7 +208,6 @@ cilium-agent [flags]
       --monitor-queue-size int                               Size of the event queue when reading monitor events
       --mtu int                                              Overwrite auto-detected MTU of underlying network
       --nat46-range string                                   IPv6 prefix to map IPv4 addresses to (default "0:0:0:0:0:FFFF::/96")
-      --native-routing-cidr string                           Allows to explicitly specify the CIDR for native routing. This value corresponds to the configured cluster-cidr.
       --node-port-bind-protection                            Reject application bind(2) requests to service ports in the NodePort range (default true)
       --node-port-range strings                              Set the min/max NodePort port range (default [30000,32767])
       --policy-audit-mode                                    Enable policy audit (non-drop) mode
@@ -221,7 +225,6 @@ cilium-agent [flags]
       --restore                                              Restores state, if possible, from previous daemon (default true)
       --sidecar-istio-proxy-image string                     Regular expression matching compatible Istio sidecar istio-proxy container image names (default "cilium/istio_proxy")
       --single-cluster-route                                 Use a single cluster route instead of per node routes
-      --skip-crd-creation                                    Skip Kubernetes Custom Resource Definitions creations
       --socket-path string                                   Sets daemon's socket path to listen for connections (default "/var/run/cilium/cilium.sock")
       --sockops-enable                                       Enable sockops when kernel supported
       --state-dir string                                     Directory path to store runtime state (default "/var/run/cilium")
@@ -236,7 +239,9 @@ cilium-agent [flags]
       --tofqdns-proxy-response-max-delay duration            The maximum time the DNS proxy holds an allowed DNS response before sending it along. Responses are sent as soon as the datapath is updated with the new IP information. (default 100ms)
       --trace-payloadlen int                                 Length of payload to capture when tracing (default 128)
   -t, --tunnel string                                        Tunnel mode {vxlan, geneve, disabled} (default "vxlan" for the "veth" datapath mode)
+      --tunnel-port int                                      Tunnel port (default 8472 for "vxlan" and 6081 for "geneve")
       --version                                              Print version information
+      --vlan-bpf-bypass ints                                 List of explicitly allowed VLAN IDs, '0' id will allow all VLAN IDs
       --write-cni-conf-when-ready string                     Write the CNI configuration as specified via --read-cni-conf to path when agent is ready
 ```
 

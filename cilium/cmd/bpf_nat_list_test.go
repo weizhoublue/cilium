@@ -1,17 +1,7 @@
-// Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2020-2021 Authors of Cilium
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package cmd
@@ -39,8 +29,8 @@ var (
 			TupleKey4: tuple.TupleKey4{
 				DestAddr:   types.IPv4{10, 10, 10, 1},
 				SourceAddr: types.IPv4{10, 10, 10, 2},
-				DestPort:   byteorder.HostToNetwork(uint16(80)).(uint16),
-				SourcePort: byteorder.HostToNetwork(uint16(13579)).(uint16),
+				DestPort:   byteorder.HostToNetwork16(80),
+				SourcePort: byteorder.HostToNetwork16(13579),
 				NextHeader: 6,
 				Flags:      123,
 			},
@@ -51,8 +41,8 @@ var (
 			TupleKey6: tuple.TupleKey6{
 				DestAddr:   types.IPv6{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 				SourceAddr: types.IPv6{1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 121, 98, 219, 61},
-				DestPort:   byteorder.HostToNetwork(uint16(443)).(uint16),
-				SourcePort: byteorder.HostToNetwork(uint16(7878)).(uint16),
+				DestPort:   byteorder.HostToNetwork16(443),
+				SourcePort: byteorder.HostToNetwork16(7878),
 				NextHeader: 17,
 				Flags:      31,
 			},
@@ -62,13 +52,13 @@ var (
 		Created:   12345,
 		HostLocal: 6789,
 		Addr:      types.IPv4{10, 10, 10, 3},
-		Port:      byteorder.HostToNetwork(uint16(53)).(uint16),
+		Port:      byteorder.HostToNetwork16(53),
 	}
 	natValue6 = nat.NatEntry6{
 		Created:   12345,
 		HostLocal: 6789,
 		Addr:      types.IPv6{2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53},
-		Port:      byteorder.HostToNetwork(uint16(53)).(uint16),
+		Port:      byteorder.HostToNetwork16(53),
 	}
 )
 

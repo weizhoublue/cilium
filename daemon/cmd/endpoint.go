@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
@@ -306,19 +295,24 @@ func (m *endpointCreationManager) DebugStatus() (output string) {
 // createEndpoint attempts to create the endpoint corresponding to the change
 // request that was specified.
 func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, epTemplate *models.EndpointChangeRequest) (*endpoint.Endpoint, int, error) {
-	if epTemplate.DatapathConfiguration == nil {
-		dpConfig := endpoint.NewDatapathConfiguration()
-		epTemplate.DatapathConfiguration = &dpConfig
-	}
 	if option.Config.EnableEndpointRoutes {
+		if epTemplate.DatapathConfiguration == nil {
+			epTemplate.DatapathConfiguration = &models.EndpointDatapathConfiguration{}
+		}
+
+		// Indicate to insert a per endpoint route instead of routing
+		// via cilium_host interface
 		epTemplate.DatapathConfiguration.InstallEndpointRoute = true
+
+		// Since routing occurs via endpoint interface directly, BPF
+		// program is needed on that device at egress as BPF program on
+		// cilium_host interface is bypassed
 		epTemplate.DatapathConfiguration.RequireEgressProg = true
+
+		// Delegate routing to the Linux stack rather than tail-calling
+		// between BPF programs.
 		disabled := false
 		epTemplate.DatapathConfiguration.RequireRouting = &disabled
-	} else {
-		epTemplate.DatapathConfiguration.InstallEndpointRoute = false
-		epTemplate.DatapathConfiguration.RequireEgressProg = false
-		epTemplate.DatapathConfiguration.RequireRouting = nil
 	}
 
 	log.WithFields(logrus.Fields{
@@ -1076,17 +1070,22 @@ func (d *Daemon) QueueEndpointBuild(ctx context.Context, epID uint64) (func(), e
 }
 
 func (d *Daemon) GetDNSRules(epID uint16) restore.DNSRules {
-	// Many unit tests do not initialize the DNS proxy
 	if proxy.DefaultDNSProxy == nil {
 		return nil
 	}
-	return proxy.DefaultDNSProxy.GetRules(epID)
+
+	rules, err := proxy.DefaultDNSProxy.GetRules(epID)
+	if err != nil {
+		log.WithField(logfields.EndpointID, epID).WithError(err).Error("Could not get DNS rules")
+		return nil
+	}
+	return rules
 }
 
 func (d *Daemon) RemoveRestoredDNSRules(epID uint16) {
-	// Many unit tests do not initialize the DNS proxy
 	if proxy.DefaultDNSProxy == nil {
 		return
 	}
+
 	proxy.DefaultDNSProxy.RemoveRestoredRules(epID)
 }

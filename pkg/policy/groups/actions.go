@@ -1,23 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package groups
 
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/k8s"
@@ -27,13 +15,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-const (
-	// maxNumberOfAttempts Number of times that try to retrieve a information from a cloud provider.
-	maxNumberOfAttempts = 5
-	// SleepDuration time that sleep in case that can't retrieve information from a cloud provider.
-	sleepDuration = 5 * time.Second
 )
 
 var (
@@ -97,7 +78,7 @@ func UpdateDerivativeCNPIfNeeded(newCNP *cilium_v2.CiliumNetworkPolicy, oldCNP *
 		controllerManager.UpdateController(fmt.Sprintf("delete-derivative-cnp-%s", oldCNP.ObjectMeta.Name),
 			controller.ControllerParams{
 				DoFunc: func(ctx context.Context) error {
-					return DeleteDerivativeCNP(oldCNP)
+					return DeleteDerivativeCNP(ctx, oldCNP)
 				},
 			})
 		return false
@@ -131,7 +112,7 @@ func UpdateDerivativeCCNPIfNeeded(newCCNP *cilium_v2.CiliumNetworkPolicy, oldCCN
 		controllerManager.UpdateController(fmt.Sprintf("delete-derivative-ccnp-%s", oldCCNP.ObjectMeta.Name),
 			controller.ControllerParams{
 				DoFunc: func(ctx context.Context) error {
-					return DeleteDerivativeCCNP(oldCCNP)
+					return DeleteDerivativeCCNP(ctx, oldCCNP)
 				},
 			})
 		return false
@@ -158,7 +139,7 @@ func DeleteDerivativeFromCache(cnp *cilium_v2.CiliumNetworkPolicy) {
 
 // DeleteDerivativeCNP if the given policy has a derivative constraint,the
 // given CNP will be deleted from store and the cache.
-func DeleteDerivativeCNP(cnp *cilium_v2.CiliumNetworkPolicy) error {
+func DeleteDerivativeCNP(ctx context.Context, cnp *cilium_v2.CiliumNetworkPolicy) error {
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.CiliumNetworkPolicyName: cnp.ObjectMeta.Name,
 		logfields.K8sNamespace:            cnp.ObjectMeta.Namespace,
@@ -170,7 +151,7 @@ func DeleteDerivativeCNP(cnp *cilium_v2.CiliumNetworkPolicy) error {
 	}
 
 	err := k8s.CiliumClient().CiliumV2().CiliumNetworkPolicies(cnp.ObjectMeta.Namespace).DeleteCollection(
-		context.TODO(),
+		ctx,
 		v1.DeleteOptions{},
 		v1.ListOptions{LabelSelector: fmt.Sprintf("%s=%s", parentCNP, cnp.ObjectMeta.UID)})
 
@@ -184,7 +165,7 @@ func DeleteDerivativeCNP(cnp *cilium_v2.CiliumNetworkPolicy) error {
 
 // DeleteDerivativeCCNP if the given policy has a derivative constraint, the
 // given CCNP will be deleted from store and the cache.
-func DeleteDerivativeCCNP(ccnp *cilium_v2.CiliumNetworkPolicy) error {
+func DeleteDerivativeCCNP(ctx context.Context, ccnp *cilium_v2.CiliumNetworkPolicy) error {
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.CiliumClusterwideNetworkPolicyName: ccnp.ObjectMeta.Name,
 	})
@@ -195,7 +176,7 @@ func DeleteDerivativeCCNP(ccnp *cilium_v2.CiliumNetworkPolicy) error {
 	}
 
 	err := k8s.CiliumClient().CiliumV2().CiliumClusterwideNetworkPolicies().DeleteCollection(
-		context.TODO(),
+		ctx,
 		v1.DeleteOptions{},
 		v1.ListOptions{LabelSelector: fmt.Sprintf("%s=%s", parentCNP, ccnp.ObjectMeta.UID)})
 	if err != nil {
@@ -225,33 +206,25 @@ func addDerivativePolicy(ctx context.Context, cnp *cilium_v2.CiliumNetworkPolicy
 		})
 	}
 
-	// The maxNumberOfAttempts is to not hit the limits of cloud providers API.
-	// Also, the derivativeErr is never returned, if not the controller will
-	// hit this function and the cloud providers limit will be raised. This
-	// will cause a disaster, due all other policies will hit the limit as
-	// well.
 	// If the createDerivativeCNP() fails, a new all block rule will be inserted and
 	// the derivative status in the parent policy  will be updated with the
 	// error.
-	for numAttempts := 0; numAttempts <= maxNumberOfAttempts; numAttempts++ {
-		if clusterScoped {
-			derivativeCCNP, derivativeErr = createDerivativeCCNP(ctx, cnp)
-			derivativePolicy = derivativeCCNP
-		} else {
-			derivativeCNP, derivativeErr = createDerivativeCNP(ctx, cnp)
-			derivativePolicy = derivativeCNP
-		}
+	if clusterScoped {
+		derivativeCCNP, derivativeErr = createDerivativeCCNP(ctx, cnp)
+		derivativePolicy = derivativeCCNP
+	} else {
+		derivativeCNP, derivativeErr = createDerivativeCNP(ctx, cnp)
+		derivativePolicy = derivativeCNP
+	}
 
-		if derivativeErr == nil {
-			break
-		}
+	if derivativeErr != nil {
 		metrics.PolicyImportErrorsTotal.Inc()
 		scopedLog.WithError(derivativeErr).Error("Cannot create derivative rule. Installing deny-all rule.")
 		statusErr := updateDerivativeStatus(cnp, derivativePolicy.GetName(), derivativeErr, clusterScoped)
 		if statusErr != nil {
 			scopedLog.WithError(statusErr).Error("Cannot update status for derivative policy")
 		}
-		time.Sleep(sleepDuration)
+		return derivativeErr
 	}
 
 	groupsCNPCache.UpdateCNP(cnp)

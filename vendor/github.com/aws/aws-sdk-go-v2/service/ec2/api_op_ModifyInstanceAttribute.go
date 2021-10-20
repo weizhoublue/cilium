@@ -26,7 +26,7 @@ func (c *Client) ModifyInstanceAttribute(ctx context.Context, params *ModifyInst
 		params = &ModifyInstanceAttributeInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ModifyInstanceAttribute", params, optFns, addOperationModifyInstanceAttributeMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ModifyInstanceAttribute", params, optFns, c.addOperationModifyInstanceAttributeMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ type ModifyInstanceAttributeInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// Specifies whether the instance is optimized for Amazon EBS I/O. This
 	// optimization provides dedicated throughput to Amazon EBS and an optimized
@@ -121,22 +121,27 @@ type ModifyInstanceAttributeInput struct {
 	// instance can make it unreachable.
 	SriovNetSupport *types.AttributeValue
 
-	// Changes the instance's user data to the specified value. If you are using an AWS
-	// SDK or command line tool, base64-encoding is performed for you, and you can load
-	// the text from a file. Otherwise, you must provide base64-encoded text.
+	// Changes the instance's user data to the specified value. If you are using an
+	// Amazon Web Services SDK or command line tool, base64-encoding is performed for
+	// you, and you can load the text from a file. Otherwise, you must provide
+	// base64-encoded text.
 	UserData *types.BlobAttributeValue
 
 	// A new value for the attribute. Use only with the kernel, ramdisk, userData,
 	// disableApiTermination, or instanceInitiatedShutdownBehavior attribute.
 	Value *string
+
+	noSmithyDocumentSerde
 }
 
 type ModifyInstanceAttributeOutput struct {
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationModifyInstanceAttributeMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationModifyInstanceAttributeMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpModifyInstanceAttribute{}, middleware.After)
 	if err != nil {
 		return err

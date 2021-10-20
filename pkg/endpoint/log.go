@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package endpoint
 
@@ -57,8 +46,8 @@ func (e *Endpoint) getPolicyLogger() *logrus.Entry {
 	return (*logrus.Entry)(v)
 }
 
-// policyDebug logs the 'msg' with 'fields' if policy debug logging is enabled.
-func (e *Endpoint) policyDebug(fields logrus.Fields, msg string) {
+// PolicyDebug logs the 'msg' with 'fields' if policy debug logging is enabled.
+func (e *Endpoint) PolicyDebug(fields logrus.Fields, msg string) {
 	if dbgLog := e.getPolicyLogger(); dbgLog != nil {
 		dbgLog.WithFields(fields).Debug(msg)
 	}
@@ -118,9 +107,7 @@ func (e *Endpoint) UpdateLogger(fields map[string]interface{}) {
 	} else {
 		// Debug mode takes priority; if not in debug, check what log level user
 		// has set and set the endpoint's log to log at that level.
-		if lvl, ok := logging.GetLogLevelFromConfig(); ok {
-			baseLogger.SetLevel(lvl)
-		}
+		baseLogger.SetLevel(logging.DefaultLogger.Level)
 	}
 
 	// When adding new fields, make sure they are abstracted by a setter

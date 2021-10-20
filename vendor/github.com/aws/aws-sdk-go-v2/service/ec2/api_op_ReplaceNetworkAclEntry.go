@@ -19,7 +19,7 @@ func (c *Client) ReplaceNetworkAclEntry(ctx context.Context, params *ReplaceNetw
 		params = &ReplaceNetworkAclEntryInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "ReplaceNetworkAclEntry", params, optFns, addOperationReplaceNetworkAclEntryMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "ReplaceNetworkAclEntry", params, optFns, c.addOperationReplaceNetworkAclEntryMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ type ReplaceNetworkAclEntryInput struct {
 	// we replace the ingress rule.
 	//
 	// This member is required.
-	Egress bool
+	Egress *bool
 
 	// The ID of the ACL.
 	//
@@ -61,7 +61,7 @@ type ReplaceNetworkAclEntryInput struct {
 	// The rule number of the entry to replace.
 	//
 	// This member is required.
-	RuleNumber int32
+	RuleNumber *int32
 
 	// The IPv4 network range to allow or deny, in CIDR notation (for example
 	// 172.16.0.0/24).
@@ -71,7 +71,7 @@ type ReplaceNetworkAclEntryInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// ICMP protocol: The ICMP or ICMPv6 type and code. Required if specifying protocol
 	// 1 (ICMP) or protocol 58 (ICMPv6) with an IPv6 CIDR block.
@@ -84,14 +84,18 @@ type ReplaceNetworkAclEntryInput struct {
 	// TCP or UDP protocols: The range of ports the rule applies to. Required if
 	// specifying protocol 6 (TCP) or 17 (UDP).
 	PortRange *types.PortRange
+
+	noSmithyDocumentSerde
 }
 
 type ReplaceNetworkAclEntryOutput struct {
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationReplaceNetworkAclEntryMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationReplaceNetworkAclEntryMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpReplaceNetworkAclEntry{}, middleware.After)
 	if err != nil {
 		return err

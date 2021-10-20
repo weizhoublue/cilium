@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package server
 
@@ -22,7 +11,6 @@ import (
 
 	"github.com/cilium/cilium/api/v1/health/models"
 	ciliumModels "github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/pkg/health/defaults"
 	"github.com/cilium/cilium/pkg/health/probe"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
@@ -215,15 +203,17 @@ func (p *prober) setNodes(added nodeMap, removed nodeMap) {
 	}
 }
 
-func (p *prober) httpProbe(node string, ip string, port int) *models.ConnectivityStatus {
+const httpPathDescription = "Via L3"
+
+func (p *prober) httpProbe(node string, ip string) *models.ConnectivityStatus {
 	result := &models.ConnectivityStatus{}
 
-	host := "http://" + net.JoinHostPort(ip, strconv.Itoa(port))
+	host := "http://" + net.JoinHostPort(ip, strconv.Itoa(p.server.Config.HTTPPathPort))
 	scopedLog := log.WithFields(logrus.Fields{
 		logfields.NodeName: node,
 		logfields.IPAddr:   ip,
 		"host":             host,
-		"path":             PortToPaths[port],
+		"path":             httpPathDescription,
 	})
 
 	scopedLog.Debug("Greeting host")
@@ -279,23 +269,17 @@ func (p *prober) runHTTPProbe() {
 				logfields.IPAddr:   ip.String(),
 			})
 
-			status := &models.PathStatus{}
-			ports := map[int]**models.ConnectivityStatus{
-				defaults.HTTPPathPort: &status.HTTP,
-			}
-			for port, result := range ports {
-				*result = p.httpProbe(name, ip.String(), port)
-				if status.HTTP.Status != "" {
-					scopedLog.WithFields(logrus.Fields{
-						logfields.Port: port,
-					}).Debugf("Failed to probe: %s", status.HTTP.Status)
-				}
+			resp := p.httpProbe(name, ip.String())
+			if resp.Status != "" {
+				scopedLog.WithFields(logrus.Fields{
+					logfields.Port: p.server.Config.HTTPPathPort,
+				}).Debugf("Failed to probe: %s", resp.Status)
 			}
 
 			peer := ipString(ip.String())
 			p.Lock()
 			if _, ok := p.results[peer]; ok {
-				p.results[peer].HTTP = status.HTTP
+				p.results[peer].HTTP = resp
 			} else {
 				// While we weren't holding the lock, the
 				// pinger's OnIdle() callback fired and updated

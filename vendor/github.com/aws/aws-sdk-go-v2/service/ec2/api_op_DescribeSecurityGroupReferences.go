@@ -18,7 +18,7 @@ func (c *Client) DescribeSecurityGroupReferences(ctx context.Context, params *De
 		params = &DescribeSecurityGroupReferencesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeSecurityGroupReferences", params, optFns, addOperationDescribeSecurityGroupReferencesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeSecurityGroupReferences", params, optFns, c.addOperationDescribeSecurityGroupReferencesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,9 @@ type DescribeSecurityGroupReferencesInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type DescribeSecurityGroupReferencesOutput struct {
@@ -49,9 +51,11 @@ type DescribeSecurityGroupReferencesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeSecurityGroupReferencesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeSecurityGroupReferencesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeSecurityGroupReferences{}, middleware.After)
 	if err != nil {
 		return err

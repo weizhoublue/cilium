@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package RuntimeTest
 
@@ -21,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
@@ -149,8 +139,9 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 	)
 
 	var (
-		vm          *helpers.SSHMeta
-		monitorStop = func() error { return nil }
+		vm            *helpers.SSHMeta
+		testStartTime time.Time
+		monitorStop   = func() error { return nil }
 
 		ciliumTestImages = map[string]string{
 			WorldHttpd1: constants.HttpdImage,
@@ -264,10 +255,11 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 
 	JustBeforeEach(func() {
 		_, monitorStop = vm.MonitorStart()
+		testStartTime = time.Now()
 	})
 
 	JustAfterEach(func() {
-		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		vm.ValidateNoErrorsInLogs(time.Since(testStartTime))
 		ExpectDockerContainersMatchCiliumEndpoints(vm)
 		monitorStop()
 	})
@@ -740,7 +732,7 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 		}
 	})
 
-	It(`Implements matchPattern: "*"`, func() {
+	It(`Implements matchPattern: *`, func() {
 		By(`Importing policy with matchPattern: "*" rule`)
 		fqdnPolicy := `
 [
@@ -789,8 +781,25 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 		}
 	})
 
-	It("Validates DNSSEC responses", func() {
-		policy := `
+	Context("With verbose policy logs", func() {
+		BeforeAll(func() {
+			vm.SetUpCiliumWithOptions("--debug-verbose=policy")
+
+			ExpectCiliumReady(vm)
+			Expect(vm.WaitEndpointsReady()).Should(BeTrue(), "Endpoints are not ready after timeout")
+		})
+
+		BeforeEach(func() {
+			By("Clearing fqdn cache: %s", vm.Exec("cilium fqdn cache clean -f").CombineOutput().String())
+		})
+
+		AfterAll(func() {
+			vm.SetUpCilium()
+			_ = vm.WaitEndpointsReady() // Don't assert because don't want to block all AfterAll.
+		})
+
+		It("Validates DNSSEC responses", func() {
+			policy := `
 [
 	{
 		"labels": [{
@@ -820,30 +829,31 @@ var _ = Describe("RuntimeFQDNPolicies", func() {
 		]
 	}
 ]`
-		_, err := vm.PolicyRenderAndImport(policy)
-		Expect(err).To(BeNil(), "Policy cannot be imported")
+			_, err := vm.PolicyRenderAndImport(policy)
+			Expect(err).To(BeNil(), "Policy cannot be imported")
 
-		// Selector cache is populated when a policy is applied on an endpoint.
-		// DNSSEC container is not running yet, so we can't expect the FQDNs to be applied yet.
-		// expectFQDNSareApplied("dnssec.test", 0)
+			// Selector cache is populated when a policy is applied on an endpoint.
+			// DNSSEC container is not running yet, so we can't expect the FQDNs to be applied yet.
+			// expectFQDNSareApplied("dnssec.test", 0)
 
-		By("Validate that allow target is working correctly")
-		res := vm.ContainerRun(
-			DNSSECContainerName,
-			constants.DNSSECContainerImage,
-			helpers.CiliumDockerNetwork,
-			fmt.Sprintf("-l id.%s --dns=%s --rm", DNSSECContainerName, DNSServerIP),
-			DNSSECWorld1Target)
-		res.ExpectSuccess("Cannot connect to %q when it should work", DNSSECContainerName)
+			By("Validate that allow target is working correctly")
+			res := vm.ContainerRun(
+				DNSSECContainerName,
+				constants.DNSSECContainerImage,
+				helpers.CiliumDockerNetwork,
+				fmt.Sprintf("-l id.%s --dns=%s --rm", DNSSECContainerName, DNSServerIP),
+				DNSSECWorld1Target)
+			res.ExpectSuccess("Cannot connect to %q when it should work", DNSSECContainerName)
 
-		By("Validate that disallow target is working correctly")
-		res = vm.ContainerRun(
-			DNSSECContainerName,
-			constants.DNSSECContainerImage,
-			helpers.CiliumDockerNetwork,
-			fmt.Sprintf("-l id.%s --dns=%s --rm", DNSSECContainerName, DNSServerIP),
-			DNSSECWorld2Target)
-		res.ExpectFail("Can connect to %q when it should not work", DNSSECContainerName)
+			By("Validate that disallow target is working correctly")
+			res = vm.ContainerRun(
+				DNSSECContainerName,
+				constants.DNSSECContainerImage,
+				helpers.CiliumDockerNetwork,
+				fmt.Sprintf("-l id.%s --dns=%s --rm", DNSSECContainerName, DNSServerIP),
+				DNSSECWorld2Target)
+			res.ExpectFail("Can connect to %q when it should not work", DNSSECContainerName)
+		})
 	})
 
 	Context("toFQDNs populates toCIDRSet (data from proxy)", func() {

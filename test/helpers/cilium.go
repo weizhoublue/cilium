@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2017-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package helpers
 
@@ -206,7 +195,7 @@ func (s *SSHMeta) WaitEndpointsReady() bool {
 	logger := s.logger.WithFields(logrus.Fields{"functionName": "WaitEndpointsReady"})
 	desiredState := string(models.EndpointStateReady)
 	body := func() bool {
-		filter := `{range [*]}{@.status.external-identifiers.container-name}{"="}{@.status.state},{@.status.identity.id}{"\n"}{end}`
+		filter := `{range [*]}{@.id}{"="}{@.status.state},{@.status.identity.id}{"\n"}{end}`
 		cmd := fmt.Sprintf(`cilium endpoint list -o jsonpath='%s'`, filter)
 
 		res := s.Exec(cmd)
@@ -732,7 +721,7 @@ func (s *SSHMeta) DumpCiliumCommandOutput() {
 	// No need to create file for bugtool because it creates an archive of files
 	// for us.
 	res := s.ExecWithSudo(
-		fmt.Sprintf("%s -t %s", CiliumBugtool, filepath.Join(s.basePath, testPath)),
+		fmt.Sprintf("%s -t %q", CiliumBugtool, filepath.Join(s.basePath, testPath)),
 		ExecOptions{SkipLog: true})
 	if !res.WasSuccessful() {
 		s.logger.Errorf("Error running bugtool: %s", res.CombineOutput())

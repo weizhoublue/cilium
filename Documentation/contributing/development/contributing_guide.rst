@@ -17,7 +17,7 @@ Clone and Provision Environment
 #. Fork the Cilium repository to your GitHub user or organization.
 #. Clone your ``${YOUR_GITHUB_USERNAME_OR_ORG}/cilium`` fork into your ``GOPATH``, and setup the base repository as ``upstream`` remote:
 
-   ::
+   .. code-block:: shell-session
 
       mkdir -p "${GOPATH}/src/github.com/cilium"
       cd "${GOPATH}/src/github.com/cilium"
@@ -212,8 +212,8 @@ Getting a pull request merged
 
 #. As you submit the pull request as described in the section :ref:`submit_pr`.
    One of the reviewers will start a CI run by replying with a comment
-   ``test-me-please`` as described in :ref:`trigger_phrases`. If you are a
-   core team member, you may trigger the CI run yourself.
+   ``/test`` as described in :ref:`trigger_phrases`. If you are a core team
+   member, you may trigger the CI run yourself.
 
    #. Hound: basic ``golang/lint`` static code analyzer. You need to make the
       puppy happy.
@@ -273,7 +273,7 @@ Pull requests review process for committers
 #. Every committer in the `committers team <https://github.com/orgs/cilium/teams/committers/members>`_
    belongs to `one or more other teams in the Cilium organization <https://github.com/orgs/cilium/teams/team/teams>`_
    if you would like to be added or removed from any team, please contact any
-   of the `maintainers <https://github.com/orgs/cilium/teams/maintainers/members>`_.
+   of the `maintainers <https://github.com/orgs/cilium/teams/cilium-maintainers/members>`_.
 
 #. Once a PR is open, GitHub will automatically pick which `teams <https://github.com/orgs/cilium/teams/team/teams>`_
    should review the PR using the ``CODEOWNERS`` file. Each committer can see
@@ -333,7 +333,7 @@ Pull request review process for Janitors team
 Dedicated expectation time for each member of Janitors team: Follow the next
 steps 1 to 2 times per day. Works best if done first thing in the working day.
 
-#. Review all PRs requesting for review in `for you <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+review-requested%3A%40me+sort%3Aupdated-asc>`_;
+#. Review all PRs requesting for review in `for you <https://github.com/cilium/cilium/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+team-review-requested%3Acilium%2Fjanitors+sort%3Aupdated-asc>`_;
 
 #. If this PR was opened by a non-committer (e.g. external contributor) please
    assign yourself to that PR and make sure to keep track the PR gets reviewed
@@ -416,7 +416,7 @@ steps 1 to 2 times per day. Works best if done first thing in the working day.
 
 #. If the PR is a backport PR, update the labels of cherry-picked PRs with the command included at the end of the original post. For example:
 
-   .. code-block:: bash
+   .. code-block:: shell-session
    
        $ for pr in 12589 12568; do contrib/backporting/set-labels.py $pr done 1.8; done
 
@@ -474,6 +474,35 @@ original author of that PR directly so they can backport the PR themselves.
 Follow the :ref:`backport_process` guide to know how to perform this task.
 
 .. _dev_coo:
+
+Coordination
+++++++++++++
+
+In general, coordinating in the #launchpad Slack channel with the other hat
+owner for the week is encouraged. It can reduce your workload and it will avoid
+backporting conflicts such as opening a PR with the same backports. Such
+discussions will typically revolve around which branches to tackle and which
+day of the week.
+
+An example interaction in #launchpad:
+
+::
+
+    Starting backport round for v1.7 and v1.8 now
+    cc @other-hat-wearer
+
+The other hat owner can then handle v1.9 and v1.10 backports the next day, for
+example.
+
+If there are many backports to be done, then splitting up the rounds can be
+beneficial. Typically, backporters opt to start a round in the beginning of the
+week and then another near the end of the week.
+
+By the start / end of the week, if there are other backport PRs that haven't
+been merged, then please coordinate with the previous / next backporter to
+check what the status is and establish who will work on getting the backports
+into the tree (for instance by investigating CI failures and addressing review
+feedback). There's leeway to negotiate depending on who has time available.
 
 Developer's Certificate of Origin
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

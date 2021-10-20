@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018-2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package store
 
@@ -404,36 +393,6 @@ func (s *SharedStore) DeleteLocalKey(ctx context.Context, key NamedKey) {
 
 		s.onDelete(key)
 	}
-}
-
-// getLocalKeys returns all local keys
-func (s *SharedStore) getLocalKeys() []Key {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	keys := make([]Key, len(s.localKeys))
-	idx := 0
-	for _, key := range s.localKeys {
-		keys[idx] = key
-		idx++
-	}
-
-	return keys
-}
-
-// getSharedKeys returns all shared keys
-func (s *SharedStore) getSharedKeys() []Key {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	keys := make([]Key, len(s.sharedKeys))
-	idx := 0
-	for _, key := range s.sharedKeys {
-		keys[idx] = key
-		idx++
-	}
-
-	return keys
 }
 
 func (s *SharedStore) getLogger() *logrus.Entry {

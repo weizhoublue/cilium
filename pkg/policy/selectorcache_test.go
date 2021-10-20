@@ -1,27 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package policy
 
 import (
+	"sync"
+
 	"github.com/cilium/cilium/pkg/checker"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/testutils"
 
@@ -38,22 +31,33 @@ func (d *DummySelectorCacheUser) IdentitySelectionUpdated(selector CachedSelecto
 }
 
 type cachedSelectionUser struct {
-	c             *C
-	sc            *SelectorCache
-	name          string
+	c    *C
+	sc   *SelectorCache
+	name string
+
+	updateMutex   lock.Mutex
+	updateCond    *sync.Cond
 	selections    map[CachedSelector][]identity.NumericIdentity
 	notifications int
 	adds          int
 	deletes       int
 }
 
+func (sc *SelectorCache) haveUserNotifications() bool {
+	sc.userMutex.Lock()
+	defer sc.userMutex.Unlock()
+	return len(sc.userNotes) > 0
+}
+
 func newUser(c *C, name string, sc *SelectorCache) *cachedSelectionUser {
-	return &cachedSelectionUser{
+	csu := &cachedSelectionUser{
 		c:          c,
 		sc:         sc,
 		name:       name,
 		selections: make(map[CachedSelector][]identity.NumericIdentity),
 	}
+	csu.updateCond = sync.NewCond(&csu.updateMutex)
+	return csu
 }
 
 func haveNid(nid identity.NumericIdentity, selections []identity.NumericIdentity) bool {
@@ -66,7 +70,9 @@ func haveNid(nid identity.NumericIdentity, selections []identity.NumericIdentity
 }
 
 func (csu *cachedSelectionUser) AddIdentitySelector(sel api.EndpointSelector) CachedSelector {
-	notifications := csu.notifications
+	csu.updateMutex.Lock()
+	defer csu.updateMutex.Unlock()
+
 	cached, added := csu.sc.AddIdentitySelector(csu, sel)
 	csu.c.Assert(cached, Not(Equals), nil)
 
@@ -76,13 +82,15 @@ func (csu *cachedSelectionUser) AddIdentitySelector(sel api.EndpointSelector) Ca
 	csu.selections[cached] = cached.GetSelections()
 
 	// Pre-existing selections are not notified as updates
-	csu.c.Assert(csu.notifications, Equals, notifications)
+	csu.c.Assert(csu.sc.haveUserNotifications(), Equals, false)
 
 	return cached
 }
 
 func (csu *cachedSelectionUser) AddFQDNSelector(sel api.FQDNSelector) CachedSelector {
-	notifications := csu.notifications
+	csu.updateMutex.Lock()
+	defer csu.updateMutex.Unlock()
+
 	cached, added := csu.sc.AddFQDNSelector(csu, sel)
 	csu.c.Assert(cached, Not(Equals), nil)
 
@@ -92,21 +100,41 @@ func (csu *cachedSelectionUser) AddFQDNSelector(sel api.FQDNSelector) CachedSele
 	csu.selections[cached] = cached.GetSelections()
 
 	// Pre-existing selections are not notified as updates
-	csu.c.Assert(csu.notifications, Equals, notifications)
+	csu.c.Assert(csu.sc.haveUserNotifications(), Equals, false)
 
 	return cached
 }
 
 func (csu *cachedSelectionUser) RemoveSelector(sel CachedSelector) {
-	notifications := csu.notifications
+	csu.updateMutex.Lock()
+	defer csu.updateMutex.Unlock()
+
 	csu.sc.RemoveSelector(sel, csu)
 	delete(csu.selections, sel)
 
 	// No notifications for a removed selector
-	csu.c.Assert(csu.notifications, Equals, notifications)
+	csu.c.Assert(csu.sc.haveUserNotifications(), Equals, false)
+}
+
+func (csu *cachedSelectionUser) Reset() {
+	csu.updateMutex.Lock()
+	defer csu.updateMutex.Unlock()
+	csu.notifications = 0
+}
+
+func (csu *cachedSelectionUser) WaitForUpdate() (adds, deletes int) {
+	csu.updateMutex.Lock()
+	defer csu.updateMutex.Unlock()
+	for csu.notifications == 0 {
+		csu.updateCond.Wait()
+	}
+	return csu.adds, csu.deletes
 }
 
 func (csu *cachedSelectionUser) IdentitySelectionUpdated(selector CachedSelector, added, deleted []identity.NumericIdentity) {
+	csu.updateMutex.Lock()
+	defer csu.updateMutex.Unlock()
+
 	csu.notifications++
 	csu.adds += len(added)
 	csu.deletes += len(deleted)
@@ -123,6 +151,8 @@ func (csu *cachedSelectionUser) IdentitySelectionUpdated(selector CachedSelector
 
 	// update selections
 	csu.selections[selector] = selections
+
+	csu.updateCond.Signal()
 }
 
 // Mock CachedSelector for unit testing.
@@ -212,11 +242,13 @@ func (ds *SelectorCacheTestSuite) TestAddRemoveSelector(c *C) {
 	sc := testNewSelectorCache(cache.IdentityCache{})
 
 	// Add some identities to the identity cache
+	wg := &sync.WaitGroup{}
 	sc.UpdateIdentities(cache.IdentityCache{
 		1234: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s),
 			k8sConst.PodNamespaceLabel: labels.NewLabel(k8sConst.PodNamespaceLabel, "default", labels.LabelSourceK8s)}.LabelArray(),
 		2345: labels.Labels{"app": labels.NewLabel("app", "test2", labels.LabelSourceK8s)}.LabelArray(),
-	}, nil)
+	}, nil, wg)
+	wg.Wait()
 
 	testSelector := api.NewESFromLabels(labels.NewLabel("app", "test", labels.LabelSourceK8s),
 		labels.NewLabel(k8sConst.PodNamespaceLabel, "default", labels.LabelSourceK8s))
@@ -262,10 +294,12 @@ func (ds *SelectorCacheTestSuite) TestMultipleIdentitySelectors(c *C) {
 	sc := testNewSelectorCache(cache.IdentityCache{})
 
 	// Add some identities to the identity cache
+	wg := &sync.WaitGroup{}
 	sc.UpdateIdentities(cache.IdentityCache{
 		1234: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
 		2345: labels.Labels{"app": labels.NewLabel("app", "test2", labels.LabelSourceK8s)}.LabelArray(),
-	}, nil)
+	}, nil, wg)
+	wg.Wait()
 
 	testSelector := api.NewESFromLabels(labels.NewLabel("app", "test", labels.LabelSourceK8s))
 	test2Selector := api.NewESFromLabels(labels.NewLabel("app", "test2", labels.LabelSourceK8s))
@@ -298,10 +332,12 @@ func (ds *SelectorCacheTestSuite) TestIdentityUpdates(c *C) {
 	sc := testNewSelectorCache(cache.IdentityCache{})
 
 	// Add some identities to the identity cache
+	wg := &sync.WaitGroup{}
 	sc.UpdateIdentities(cache.IdentityCache{
 		1234: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
 		2345: labels.Labels{"app": labels.NewLabel("app", "test2", labels.LabelSourceK8s)}.LabelArray(),
-	}, nil)
+	}, nil, wg)
+	wg.Wait()
 
 	testSelector := api.NewESFromLabels(labels.NewLabel("app", "test", labels.LabelSourceK8s))
 	test2Selector := api.NewESFromLabels(labels.NewLabel("app", "test2", labels.LabelSourceK8s))
@@ -323,12 +359,17 @@ func (ds *SelectorCacheTestSuite) TestIdentityUpdates(c *C) {
 	c.Assert(len(selections2), Equals, 1)
 	c.Assert(selections2[0], Equals, identity.NumericIdentity(2345))
 
+	user1.Reset()
 	// Add some identities to the identity cache
+	wg = &sync.WaitGroup{}
 	sc.UpdateIdentities(cache.IdentityCache{
 		12345: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
-	}, nil)
-	c.Assert(user1.adds, Equals, 1)
-	c.Assert(user1.deletes, Equals, 0)
+	}, nil, wg)
+	wg.Wait()
+
+	adds, deletes := user1.WaitForUpdate()
+	c.Assert(adds, Equals, 1)
+	c.Assert(deletes, Equals, 0)
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections = cached.GetSelections()
@@ -336,12 +377,17 @@ func (ds *SelectorCacheTestSuite) TestIdentityUpdates(c *C) {
 	c.Assert(selections[0], Equals, identity.NumericIdentity(1234))
 	c.Assert(selections[1], Equals, identity.NumericIdentity(12345))
 
+	user1.Reset()
 	// Remove some identities from the identity cache
+	wg = &sync.WaitGroup{}
 	sc.UpdateIdentities(nil, cache.IdentityCache{
 		12345: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
-	})
-	c.Assert(user1.adds, Equals, 1)
-	c.Assert(user1.deletes, Equals, 1)
+	}, wg)
+	wg.Wait()
+
+	adds, deletes = user1.WaitForUpdate()
+	c.Assert(adds, Equals, 1)
+	c.Assert(deletes, Equals, 1)
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections = cached.GetSelections()
@@ -365,8 +411,10 @@ func (ds *SelectorCacheTestSuite) TestFQDNSelectorUpdates(c *C) {
 	googleIdentities := []identity.NumericIdentity{321, 456, 987}
 	ciliumIdentities := []identity.NumericIdentity{123, 456, 789}
 
-	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities)
-	sc.UpdateFQDNSelector(googleSel, googleIdentities)
+	wg := &sync.WaitGroup{}
+	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities, wg)
+	sc.UpdateFQDNSelector(googleSel, googleIdentities, wg)
+	wg.Wait()
 
 	_, exists := sc.selectors[ciliumSel.String()]
 	c.Assert(exists, Equals, true)
@@ -392,19 +440,35 @@ func (ds *SelectorCacheTestSuite) TestFQDNSelectorUpdates(c *C) {
 	}
 
 	// Add some identities to the identity cache
+	user1.Reset()
 	ciliumIdentities = append(ciliumIdentities, identity.NumericIdentity(123456))
-	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities)
-	c.Assert(user1.adds, Equals, 1)
-	c.Assert(user1.deletes, Equals, 0)
+	wg = &sync.WaitGroup{}
+	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities, wg)
+	wg.Wait()
 
+	adds, deletes := user1.WaitForUpdate()
+	c.Assert(adds, Equals, 1)
+	c.Assert(deletes, Equals, 0)
+
+	user1.Reset()
 	ciliumIdentities = ciliumIdentities[:1]
-	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities)
-	c.Assert(user1.adds, Equals, 1)
-	c.Assert(user1.deletes, Equals, 3)
+	wg = &sync.WaitGroup{}
+	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities, wg)
+	wg.Wait()
 
+	adds, deletes = user1.WaitForUpdate()
+	c.Assert(adds, Equals, 1)
+	c.Assert(deletes, Equals, 3)
+
+	user1.Reset()
 	ciliumIdentities = []identity.NumericIdentity{}
-	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities)
-	c.Assert(user1.deletes, Equals, 4)
+	wg = &sync.WaitGroup{}
+	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities, wg)
+	wg.Wait()
+
+	adds, deletes = user1.WaitForUpdate()
+	c.Assert(adds, Equals, 1)
+	c.Assert(deletes, Equals, 4)
 
 	user1.RemoveSelector(cached)
 	user1.RemoveSelector(cached2)
@@ -427,8 +491,10 @@ func (ds *SelectorCacheTestSuite) TestRemoveIdentitiesFQDNSelectors(c *C) {
 	googleIdentities := []identity.NumericIdentity{321, 456, 987}
 	ciliumIdentities := []identity.NumericIdentity{123, 456, 789}
 
-	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities)
-	sc.UpdateFQDNSelector(googleSel, googleIdentities)
+	wg := &sync.WaitGroup{}
+	sc.UpdateFQDNSelector(ciliumSel, ciliumIdentities, wg)
+	sc.UpdateFQDNSelector(googleSel, googleIdentities, wg)
+	wg.Wait()
 
 	_, exists := sc.selectors[ciliumSel.String()]
 	c.Assert(exists, Equals, true)
@@ -453,10 +519,12 @@ func (ds *SelectorCacheTestSuite) TestRemoveIdentitiesFQDNSelectors(c *C) {
 		c.Assert(selection, Equals, googleIdentities[i])
 	}
 
+	wg = &sync.WaitGroup{}
 	sc.RemoveIdentitiesFQDNSelectors([]api.FQDNSelector{
 		googleSel,
 		ciliumSel,
-	})
+	}, wg)
+	wg.Wait()
 
 	selections = cached.GetSelections()
 	c.Assert(len(selections), Equals, 0)
@@ -469,10 +537,12 @@ func (ds *SelectorCacheTestSuite) TestIdentityUpdatesMultipleUsers(c *C) {
 	sc := testNewSelectorCache(cache.IdentityCache{})
 
 	// Add some identities to the identity cache
+	wg := &sync.WaitGroup{}
 	sc.UpdateIdentities(cache.IdentityCache{
 		1234: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
 		2345: labels.Labels{"app": labels.NewLabel("app", "test2", labels.LabelSourceK8s)}.LabelArray(),
-	}, nil)
+	}, nil, wg)
+	wg.Wait()
 
 	testSelector := api.NewESFromLabels(labels.NewLabel("app", "test", labels.LabelSourceK8s))
 
@@ -484,16 +554,23 @@ func (ds *SelectorCacheTestSuite) TestIdentityUpdatesMultipleUsers(c *C) {
 	cached2 := user2.AddIdentitySelector(testSelector)
 	c.Assert(cached2, Equals, cached)
 
+	user1.Reset()
+	user2.Reset()
 	// Add some identities to the identity cache
+	wg = &sync.WaitGroup{}
 	sc.UpdateIdentities(cache.IdentityCache{
 		123: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
 		234: labels.Labels{"app": labels.NewLabel("app", "test2", labels.LabelSourceK8s)}.LabelArray(),
 		345: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
-	}, nil)
-	c.Assert(user1.adds, Equals, 2)
-	c.Assert(user1.deletes, Equals, 0)
-	c.Assert(user2.adds, Equals, 2)
-	c.Assert(user2.deletes, Equals, 0)
+	}, nil, wg)
+	wg.Wait()
+
+	adds, deletes := user1.WaitForUpdate()
+	c.Assert(adds, Equals, 2)
+	c.Assert(deletes, Equals, 0)
+	adds, deletes = user2.WaitForUpdate()
+	c.Assert(adds, Equals, 2)
+	c.Assert(deletes, Equals, 0)
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections := cached.GetSelections()
@@ -504,15 +581,22 @@ func (ds *SelectorCacheTestSuite) TestIdentityUpdatesMultipleUsers(c *C) {
 
 	c.Assert(cached.GetSelections(), checker.DeepEquals, cached2.GetSelections())
 
+	user1.Reset()
+	user2.Reset()
 	// Remove some identities from the identity cache
+	wg = &sync.WaitGroup{}
 	sc.UpdateIdentities(nil, cache.IdentityCache{
 		123: labels.Labels{"app": labels.NewLabel("app", "test", labels.LabelSourceK8s)}.LabelArray(),
 		234: labels.Labels{"app": labels.NewLabel("app", "test2", labels.LabelSourceK8s)}.LabelArray(),
-	})
-	c.Assert(user1.adds, Equals, 2)
-	c.Assert(user1.deletes, Equals, 1)
-	c.Assert(user2.adds, Equals, 2)
-	c.Assert(user2.deletes, Equals, 1)
+	}, wg)
+	wg.Wait()
+
+	adds, deletes = user1.WaitForUpdate()
+	c.Assert(adds, Equals, 2)
+	c.Assert(deletes, Equals, 1)
+	adds, deletes = user2.WaitForUpdate()
+	c.Assert(adds, Equals, 2)
+	c.Assert(deletes, Equals, 1)
 
 	// Current selections contain the numeric identities of existing identities that match
 	selections = cached.GetSelections()
@@ -566,10 +650,12 @@ func (ds *SelectorCacheTestSuite) TestIdentityNotifier(c *C) {
 	selections2 := cached2.GetSelections()
 	c.Assert(len(selections2), Equals, 0)
 
+	wg := &sync.WaitGroup{}
 	sc.RemoveIdentitiesFQDNSelectors([]api.FQDNSelector{
 		googleSel,
 		ciliumSel,
-	})
+	}, wg)
+	wg.Wait()
 
 	selections = cached.GetSelections()
 	c.Assert(len(selections), Equals, 0)

@@ -1,22 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package loader
 
 import (
 	"fmt"
-	"reflect"
+	"net"
 
 	"github.com/cilium/cilium/pkg/addressing"
 	"github.com/cilium/cilium/pkg/bpf"
@@ -197,7 +186,7 @@ func sliceToU16(input []byte) uint16 {
 
 // sliceToBe16 converts the input slice of two bytes to a big-endian uint16.
 func sliceToBe16(input []byte) uint16 {
-	return byteorder.HostToNetwork(sliceToU16(input)).(uint16)
+	return byteorder.HostToNetwork16(sliceToU16(input))
 }
 
 // sliceToU32 converts the input slice of four bytes to a uint32.
@@ -211,7 +200,7 @@ func sliceToU32(input []byte) uint32 {
 
 // sliceToBe32 converts the input slice of four bytes to a big-endian uint32.
 func sliceToBe32(input []byte) uint32 {
-	return byteorder.HostToNetwork(sliceToU32(input)).(uint32)
+	return byteorder.HostToNetwork32(sliceToU32(input))
 }
 
 // elfVariableSubstitutions returns the set of data substitutions that must
@@ -228,7 +217,7 @@ func elfVariableSubstitutions(ep datapath.Endpoint) map[string]uint32 {
 		result["LXC_IP_4"] = sliceToBe32(ipv6[12:16])
 	}
 	if ipv4 := ep.IPv4Address(); ipv4 != nil {
-		result["LXC_IPV4"] = byteorder.HostSliceToNetwork(ipv4, reflect.Uint32).(uint32)
+		result["LXC_IPV4"] = byteorder.NetIPv4ToHost32(net.IP(ipv4))
 	}
 
 	mac := ep.GetNodeMAC()
@@ -251,7 +240,7 @@ func elfVariableSubstitutions(ep datapath.Endpoint) map[string]uint32 {
 
 	identity := ep.GetIdentity().Uint32()
 	result["SECLABEL"] = identity
-	result["SECLABEL_NB"] = byteorder.HostToNetwork(identity).(uint32)
+	result["SECLABEL_NB"] = byteorder.HostToNetwork32(identity)
 	result["POLICY_VERDICT_LOG_FILTER"] = ep.GetPolicyVerdictLogFilter()
 	return result
 

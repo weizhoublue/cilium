@@ -36,16 +36,16 @@ Quick-Start
 Initialize the control-plane node via ``kubeadm init`` and skip the
 installation of the ``kube-proxy`` add-on:
 
-.. code:: bash
+.. code-block:: shell-session
 
-      kubeadm init --skip-phases=addon/kube-proxy
+    $ kubeadm init --skip-phases=addon/kube-proxy
 
 Afterwards, join worker nodes by specifying the control-plane node IP address and
 the token returned by ``kubeadm init``:
 
-.. code:: bash
+.. code-block:: shell-session
 
-   kubeadm join <..>
+    $ kubeadm join <..>
 
 .. note::
 
@@ -62,13 +62,13 @@ by using the following commands below. **Careful:** Be aware that this will brea
 existing service connections. It will also stop service related traffic until the
 Cilium replacement has been installed:
 
-.. code:: bash
+.. code-block:: shell-session
 
-      kubectl -n kube-system delete ds kube-proxy
-      # Delete the configmap as well to avoid kube-proxy being reinstalled during a kubeadm upgrade (works only for K8s 1.19 and newer)
-      kubectl -n kube-system delete cm kube-proxy
-      # Run on each node:
-      iptables-restore <(iptables-save | grep -v KUBE)
+    $ kubectl -n kube-system delete ds kube-proxy
+    $ # Delete the configmap as well to avoid kube-proxy being reinstalled during a kubeadm upgrade (works only for K8s 1.19 and newer)
+    $ kubectl -n kube-system delete cm kube-proxy
+    $ # Run on each node with root permissions:
+    $ iptables-save | grep -v KUBE | iptables-restore
 
 .. include:: k8s-install-download-release.rst
 
@@ -92,6 +92,21 @@ configuration.
         --set k8sServiceHost=REPLACE_WITH_API_SERVER_IP \\
         --set k8sServicePort=REPLACE_WITH_API_SERVER_PORT
 
+.. note::
+
+    Cilium will automatically mount cgroup v2 filesystem required to attach BPF
+    cgroup programs by default at the path ``/run/cilium/cgroupv2``. In order to
+    do that, it needs to mount the host ``/proc`` inside an init container
+    launched by the daemonset temporarily. If you need to disable the auto-mount,
+    specify ``--set cgroup.autoMount.enabled=false``, and set the host mount point
+    where cgroup v2 filesystem is already mounted by using ``--set cgroup.hostRoot``.
+    For example, if not already mounted, you can mount cgroup v2 filesystem by
+    running the below command on the host, and specify ``--set cgroup.hostRoot=/sys/fs/cgroup``.
+
+    .. code:: shell-session
+
+        mount -t cgroup2 none /sys/fs/cgroup
+
 This will install Cilium as a CNI plugin with the eBPF kube-proxy replacement to
 implement handling of Kubernetes services of type ClusterIP, NodePort, LoadBalancer
 and services with externalIPs. On top of that the eBPF kube-proxy replacement also
@@ -100,9 +115,9 @@ supports hostPort for containers such that using portmap is not necessary anymor
 Finally, as a last step, verify that Cilium has come up correctly on all nodes and
 is ready to operate:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl -n kube-system get pods -l k8s-app=cilium
+    $ kubectl -n kube-system get pods -l k8s-app=cilium
     NAME                READY     STATUS    RESTARTS   AGE
     cilium-fmh8d        1/1       Running   0          10m
     cilium-mkcmb        1/1       Running   0          10m
@@ -128,16 +143,16 @@ Validate the Setup
 After deploying Cilium with above Quick-Start guide, we can first validate that
 the Cilium agent is running in the desired mode:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec -it -n kube-system cilium-fmh8d -- cilium status | grep KubeProxyReplacement
+    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium status | grep KubeProxyReplacement
     KubeProxyReplacement:   Strict	[eth0 (Direct Routing), eth1]
 
 Use ``--verbose`` for full details:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec -it -n kube-system cilium-fmh8d -- cilium status --verbose
+    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium status --verbose
     [...]
     KubeProxyReplacement Details:
       Status:              Strict
@@ -160,7 +175,7 @@ validate that Cilium installed the service correctly.
 
 The following yaml is used for the backend pods:
 
-.. parsed-literal::
+.. code-block:: yaml
 
     apiVersion: apps/v1
     kind: Deployment
@@ -184,25 +199,25 @@ The following yaml is used for the backend pods:
 
 Verify that the nginx pods are up and running:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl get pods -l run=my-nginx -o wide
+    $ kubectl get pods -l run=my-nginx -o wide
     NAME                        READY   STATUS    RESTARTS   AGE   IP             NODE   NOMINATED NODE   READINESS GATES
     my-nginx-756fb87568-gmp8c   1/1     Running   0          62m   10.217.0.149   apoc   <none>           <none>
     my-nginx-756fb87568-n5scv   1/1     Running   0          62m   10.217.0.107   apoc   <none>           <none>
 
 In the next step, we create a NodePort service for the two instances:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl expose deployment my-nginx --type=NodePort --port=80
+    $ kubectl expose deployment my-nginx --type=NodePort --port=80
     service/my-nginx exposed
 
 Verify that the NodePort service has been created:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl get svc my-nginx
+    $ kubectl get svc my-nginx
     NAME       TYPE       CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
     my-nginx   NodePort   10.104.239.135   <none>        80:31940/TCP   24m
 
@@ -210,61 +225,61 @@ With the help of the ``cilium service list`` command, we can validate that
 Cilium's eBPF kube-proxy replacement created the new NodePort services under
 port ``31940`` (one for each of devices ``eth0`` and ``eth1``):
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec -it -n kube-system cilium-fmh8d -- cilium service list
-    ID   Frontend               Service Type   Backend                    
+    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium service list
+    ID   Frontend               Service Type   Backend
     [...]
-    4    10.104.239.135:80      ClusterIP      1 => 10.217.0.107:80       
-                                               2 => 10.217.0.149:80       
-    5    0.0.0.0:31940          NodePort       1 => 10.217.0.107:80       
-                                               2 => 10.217.0.149:80       
-    6    192.168.178.29:31940   NodePort       1 => 10.217.0.107:80       
-                                               2 => 10.217.0.149:80       
-    7    172.16.0.29:31940      NodePort       1 => 10.217.0.107:80       
-                                               2 => 10.217.0.149:80       
+    4    10.104.239.135:80      ClusterIP      1 => 10.217.0.107:80
+                                               2 => 10.217.0.149:80
+    5    0.0.0.0:31940          NodePort       1 => 10.217.0.107:80
+                                               2 => 10.217.0.149:80
+    6    192.168.178.29:31940   NodePort       1 => 10.217.0.107:80
+                                               2 => 10.217.0.149:80
+    7    172.16.0.29:31940      NodePort       1 => 10.217.0.107:80
+                                               2 => 10.217.0.149:80
 
 At the same time we can verify, using ``iptables`` in the host namespace,
 that no ``iptables`` rule for the service is present:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    iptables-save | grep KUBE-SVC
+    $ iptables-save | grep KUBE-SVC
     [ empty line ]
 
 Last but not least, a simple ``curl`` test shows connectivity for the exposed
 NodePort port ``31940`` as well as for the ClusterIP:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl 127.0.0.1:31940
+    $ curl 127.0.0.1:31940
     <!DOCTYPE html>
     <html>
     <head>
     <title>Welcome to nginx!</title>
     [....]
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl 192.168.178.29:31940
+    $ curl 192.168.178.29:31940
     <!doctype html>
     <html>
     <head>
     <title>welcome to nginx!</title>
     [....]
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl 172.16.0.29:31940
+    $ curl 172.16.0.29:31940
     <!doctype html>
     <html>
     <head>
     <title>welcome to nginx!</title>
     [....]
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl 10.104.239.135:80
+    $ curl 10.104.239.135:80
     <!DOCTYPE html>
     <html>
     <head>
@@ -367,7 +382,7 @@ per service. If a higher number of backends are provisioned under this setting, 
 difference in reassignments on backend changes will increase.
 
 The ``maglev.hashSeed`` option is recommended to be set in order for Cilium to not rely on the
-fixed built-in seed. The seed is a base64-encoded 16 byte-random number, and can be
+fixed built-in seed. The seed is a base64-encoded 12 byte-random number, and can be
 generated once through ``head -c12 /dev/urandom | base64 -w0``, for example. Every Cilium agent
 in the cluster must use the same hash seed in order for Maglev to work.
 
@@ -377,7 +392,7 @@ given service (with the property of at most 1% difference on backend reassignmen
 
 .. parsed-literal::
 
-    SEED=$(head -c16 /dev/urandom | base64 -w0)
+    SEED=$(head -c12 /dev/urandom | base64 -w0)
     helm install cilium |CHART_RELEASE| \\
         --namespace kube-system \\
         --set kubeProxyReplacement=strict \\
@@ -478,6 +493,30 @@ mode would look as follows:
         --set k8sServiceHost=REPLACE_WITH_API_SERVER_IP \\
         --set k8sServicePort=REPLACE_WITH_API_SERVER_PORT
 
+Socket LoadBalancer Bypass in Pod Namespace
+*******************************************
+
+Cilium has built-in support for bypassing the socket-level loadbalancer and falling back
+to the tc loadbalancer at the veth interface when a custom redirection/operation relies
+on the original ClusterIP within pod namespace (e.g., Istio side-car).
+
+Setting ``hostServices.hostNamespaceOnly=true`` enables this bypassing mode. When enabled,
+this circumvents socket rewrite in the ``connect()`` and ``sendmsg()`` syscall bpf hook and
+will pass the original packet to next stage of operation (e.g., stack in
+``per-endpoint-routing`` mode) and re-enables service lookup in the tc bpf program.
+
+A Helm example configuration in a kube-proxy-free environment with socket LB bypass
+looks as follows:
+
+.. parsed-literal::
+
+    helm install cilium |CHART_RELEASE| \\
+        --namespace kube-system \\
+        --set tunnel=disabled \\
+        --set autoDirectNodeRoutes=true \\
+        --set kubeProxyReplacement=strict \\
+        --set hostServices.hostNamespaceOnly=true
+
 .. _XDP acceleration:
 
 LoadBalancer & NodePort XDP Acceleration
@@ -529,7 +568,7 @@ driver for ``eth0`` must have native XDP support on all Cilium managed nodes.
 A list of drivers supporting native XDP can be found in the table below. The
 corresponding network driver name of an interface can be determined as follows:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
     # ethtool -i eth0
     driver: nfp
@@ -581,9 +620,9 @@ The current Cilium kube-proxy XDP acceleration mode can also be introspected thr
 the ``cilium status`` CLI command. If it has been enabled successfully, ``Native``
 is shown:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec -it -n kube-system cilium-xxxxx -- cilium status --verbose | grep XDP
+    $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status --verbose | grep XDP
       XDP Acceleration:    Native
 
 In the example above, the NodePort XDP acceleration is enabled on the ``eth0`` device
@@ -606,7 +645,7 @@ we need few additional setup steps as well as create a larger instance type whic
 the `Elastic Network Adapter <https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/enhanced-networking-ena.html>`__ (ena).
 As an instance example, ``m5n.xlarge`` is used in the config ``nodegroup-config.yaml``:
 
-.. parsed-literal::
+.. code-block:: yaml
 
   apiVersion: eksctl.io/v1alpha5
   kind: ClusterConfig
@@ -621,22 +660,28 @@ As an instance example, ``m5n.xlarge`` is used in the config ``nodegroup-config.
       desiredCapacity: 2
       ssh:
         allow: true
+      # taint nodes so that application pods are
+      # not scheduled until Cilium is deployed.
+      taints:
+        - key: "node.cilium.io/agent-not-ready"
+          value: "true"
+          effect: "NoSchedule"
 
 The nodegroup is created with:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-  eksctl create nodegroup -f nodegroup-config.yaml
+  $ eksctl create nodegroup -f nodegroup-config.yaml
 
 Each of the nodes need the ``kernel-ng`` and ``ethtool`` package installed. The former is
 needed in order to run a sufficiently recent kernel for eBPF in general and native XDP
 support on the ena driver. The latter is needed to configure channel parameters for the NIC.
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-  IPS=$(kubectl get no -o jsonpath='{$.items[*].status.addresses[?(@.type=="ExternalIP")].address }{"\\n"}' | tr ' ' '\\n')
+  $ IPS=$(kubectl get no -o jsonpath='{$.items[*].status.addresses[?(@.type=="ExternalIP")].address }{"\\n"}' | tr ' ' '\\n')
 
-  for ip in $IPS ; do ssh ec2-user@$ip "sudo amazon-linux-extras install -y kernel-ng && sudo yum install -y ethtool && sudo reboot"; done
+  $ for ip in $IPS ; do ssh ec2-user@$ip "sudo amazon-linux-extras install -y kernel-ng && sudo yum install -y ethtool && sudo reboot"; done
 
 Once the nodes come back up their kernel version should say ``5.4.58-27.104.amzn2.x86_64`` or
 similar through ``uname -r``. In order to run XDP on ena, make sure the driver version is at
@@ -654,9 +699,7 @@ operate on a single page. A driver typically reserves some headroom for XDP as w
 be 3818.
 
 In terms of ena channels, the settings can be gathered via ``ethtool -l eth0``. For the
-``m5n.xlarge`` instance, the default output should look like:
-
-.. parsed-literal::
+``m5n.xlarge`` instance, the default output should look like::
 
   Channel parameters for eth0:
   Pre-set maximums:
@@ -673,17 +716,17 @@ In terms of ena channels, the settings can be gathered via ``ethtool -l eth0``. 
 In order to use XDP the channels must be set to at most 1/2 of the value from
 ``Combined`` above. Both, MTU and channel changes are applied as follows:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-  for ip in $IPS ; do ssh ec2-user@$ip "sudo ip link set dev eth0 mtu 3818"; done
-  for ip in $IPS ; do ssh ec2-user@$ip "sudo ethtool -L eth0 combined 2"; done
+  $ for ip in $IPS ; do ssh ec2-user@$ip "sudo ip link set dev eth0 mtu 3818"; done
+  $ for ip in $IPS ; do ssh ec2-user@$ip "sudo ethtool -L eth0 combined 2"; done
 
 In order to deploy Cilium, the Kubernetes API server IP and port is needed:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-  export API_SERVER_IP=$(kubectl get ep kubernetes -o jsonpath='{$.subsets[0].addresses[0].ip}')
-  export API_SERVER_PORT=443
+  $ export API_SERVER_IP=$(kubectl get ep kubernetes -o jsonpath='{$.subsets[0].addresses[0].ip}')
+  $ export API_SERVER_PORT=443
 
 Finally, the deployment can be upgraded and later rolled-out with the
 ``loadBalancer.acceleration=native`` setting to enable XDP in Cilium:
@@ -725,7 +768,7 @@ for more details.
 When *Accelerated Networking* is enabled, ``lspci`` will show a
 Mellanox ConnectX-3 or ConnectX-4 Lx NIC:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
     $ lspci | grep Ethernet
     2846:00:02.0 Ethernet controller: Mellanox Technologies MT27710 Family [ConnectX-4 Lx Virtual Function] (rev 80)
@@ -733,9 +776,9 @@ Mellanox ConnectX-3 or ConnectX-4 Lx NIC:
 In order to run XDP, large receive offload (LRO) needs to be disabled on the
 ``hv_netvsc`` device. If not the case already, this can be achieved by:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-  ethtool -K eth0 lro off
+   $ ethtool -K eth0 lro off
 
 NodePort XDP requires Cilium to run in direct routing mode (``tunnel=disabled``).
 It is recommended to use Azure IPAM for the pod IP address allocation, which
@@ -909,9 +952,9 @@ as in the earlier getting started deployment:
 Also, ensure that each node IP is known via ``INTERNAL-IP`` or ``EXTERNAL-IP``,
 for example:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl get nodes -o wide
+    $ kubectl get nodes -o wide
     NAME   STATUS   ROLES    AGE     VERSION   INTERNAL-IP      EXTERNAL-IP   [...]
     apoc   Ready    master   6h15m   v1.17.3   192.168.178.29   <none>        [...]
     tank   Ready    <none>   6h13m   v1.17.3   192.168.178.28   <none>        [...]
@@ -920,9 +963,9 @@ If this is not the case, then ``kubelet`` needs to be made aware of it through
 specifying ``--node-ip`` through ``KUBELET_EXTRA_ARGS``. Assuming ``eth0`` is
 the public facing interface, this can be achieved by:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    echo KUBELET_EXTRA_ARGS=\"--node-ip=$(ip -4 -o a show eth0 | awk '{print $4}' | cut -d/ -f1)\" | tee -a /etc/default/kubelet
+    $ echo KUBELET_EXTRA_ARGS=\"--node-ip=$(ip -4 -o a show eth0 | awk '{print $4}' | cut -d/ -f1)\" | tee -a /etc/default/kubelet
 
 After updating ``/etc/default/kubelet``, kubelet needs to be restarted.
 
@@ -931,15 +974,15 @@ In order to verify whether the HostPort feature has been enabled in Cilium, the
 info line. If it has been enabled successfully, ``HostPort`` is shown as ``Enabled``,
 for example:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec -it -n kube-system cilium-xxxxx -- cilium status --verbose | grep HostPort
+    $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status --verbose | grep HostPort
       - HostPort:       Enabled
 
 The following modified example yaml from the setup validation with an additional
 ``hostPort: 8080`` parameter can be used to verify the mapping:
 
-.. parsed-literal::
+.. code-block:: yaml
 
     apiVersion: apps/v1
     kind: Deployment
@@ -965,9 +1008,9 @@ The following modified example yaml from the setup validation with an additional
 After deployment, we can validate that Cilium's eBPF kube-proxy replacement
 exposed the container as HostPort under the specified port ``8080``:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec -it -n kube-system cilium-fmh8d -- cilium service list
+    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium service list
     ID   Frontend               Service Type   Backend
     [...]
     5    192.168.178.29:8080    HostPort       1 => 10.29.207.199:80
@@ -975,17 +1018,17 @@ exposed the container as HostPort under the specified port ``8080``:
 Similarly, we can inspect through ``iptables`` in the host namespace that
 no ``iptables`` rule for the HostPort service is present:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    iptables-save | grep HOSTPORT
+    $ iptables-save | grep HOSTPORT
     [ empty line ]
 
 Last but not least, a simple ``curl`` test shows connectivity for the
 exposed HostPort container under the node's IP:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    curl 192.168.178.29:8080
+    $ curl 192.168.178.29:8080
     <!DOCTYPE html>
     <html>
     <head>
@@ -995,9 +1038,9 @@ exposed HostPort container under the node's IP:
 Removing the deployment also removes the corresponding HostPort from
 the ``cilium service list`` dump:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl delete deployment my-nginx
+    $ kubectl delete deployment my-nginx
 
 kube-proxy Hybrid Modes
 ***********************
@@ -1111,14 +1154,12 @@ This section elaborates on the various ``kubeProxyReplacement`` options:
 In Cilium's Helm chart, the default mode is ``kubeProxyReplacement=probe`` for
 new deployments.
 
-For existing Cilium deployments in version v1.6 or prior, please consult the :ref:`1.7_upgrade_notes`.
-
 The current Cilium kube-proxy replacement mode can also be introspected through the
 ``cilium status`` CLI command:
 
-.. parsed-literal::
+.. code-block:: shell-session
 
-    kubectl exec -it -n kube-system cilium-xxxxx -- cilium status | grep KubeProxyReplacement
+    $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status | grep KubeProxyReplacement
     KubeProxyReplacement:   Strict	[eth0 (DR)]
 
 .. _session-affinity:
@@ -1147,6 +1188,13 @@ namespace cookies, a fallback in-cluster mode is implemented, which is based on
 a fixed cookie value as a trade-off. This makes all applications on the host to
 select the same service endpoint for a given service with session affinity configured.
 To disable the feature, set ``config.sessionAffinity=false``.
+
+When the fixed cookie value is not used, a service affinity of a service with
+multiple ports is per service IP and port. Meaning that all requests for a
+given service sent from the same source and to the service same port will be routed
+to the same service endpoints; but two requests for the same service, sent from
+the same source but to different service ports may be routed to distinct service
+endpoints.
 
 kube-proxy Replacement Health Check server
 ******************************************
@@ -1190,13 +1238,27 @@ only manage services not having ``service.kubernetes.io/service-proxy-name`` lab
 
 For more details on the usage of ``service.kubernetes.io/service-proxy-name`` label and its
 working, take a look at `this KEP
-<https://github.com/kubernetes/enhancements/blob/master/keps/sig-network/0031-20181017-kube-proxy-services-optional.md>`__.
+<https://github.com/kubernetes/enhancements/blob/3ad891202dab1fd5211946f10f31b48003bf8113/keps/sig-network/2447-Make-kube-proxy-service-abstraction-optional/README.md>`__.
 
 .. note::
 
     If Cilium with a non-empty service proxy name is meant to manage all services in kube-proxy
     free mode, make sure that default Kubernetes services like ``kube-dns`` and ``kubernetes``
     have the required label value.
+
+Neighbor Discovery
+******************
+
+When kube-proxy replacement is enabled Cilium does L2 neighbor discovery of nodes in the cluster.
+In some rare cases Cilium may leave stale entries behind in the neighbor table causing packets
+between some nodes to be dropped. To prevent Cilium from performing the neighbor discovery and
+instead rely on the Linux kernel to discover hosts on the same L2 network you can pass the
+``--enable-l2-neigh-discovery=false`` flag to the cilium-agent. However note that relying on the
+Linux Kernel might also cause some packets to be dropped, e.g., a NodePort request can be dropped on
+an intermediate node (i.e., the one which received and is going to forward to a destination node
+which runs the selected service endpoint) if there is no L2 neigh entry in the kernel (due to the
+entry being garbage collected or that ARP resolution has not been done by the kernel). This is
+because Cilium does not drive the ARP resolution from the BPF programs.
 
 External Access To ClusterIP Services
 *************************************
@@ -1205,14 +1267,51 @@ As per `k8s Service <https://kubernetes.io/docs/concepts/services-networking/ser
 Cilium's eBPF kube-proxy replacement by default disallows access to a ClusterIP service from outside the cluster.
 This can be allowed by setting ``bpf.lbExternalClusterIP=true``.
 
+
+Troubleshooting
+***************
+
+Validate BPF cgroup programs attachment
+=======================================
+
+Cilium attaches BPF ``cgroup`` programs to enable socket-based load-balancing (aka
+``host-reachable`` services). If you see connectivity issues for ``clusterIP`` services,
+check if the programs are attached to the host ``cgroup root``. The default ``cgroup``
+root is set to ``/run/cilium/cgroupv2``.
+Run the following commands from a Cilium agent pod as well as the underlying
+kubernetes node where the pod is running. If the container runtime in your cluster
+is running in the cgroup namespace mode, Cilium agent pod can attach BPF ``cgroup``
+programs to the ``virtualized cgroup root``. In such cases, Cilium kube-proxy replacement
+based load-balancing may not be effective leading to connectivity issues.
+For more information, ensure that you have the fix `Pull Request <https://github.com/cilium/cilium/pull/16259>`__.
+
+.. code-block:: shell-session
+
+    $ mount | grep cgroup2
+    none on /run/cilium/cgroupv2 type cgroup2 (rw,relatime)
+
+    $ bpftool cgroup tree /run/cilium/cgroupv2/
+    CgroupPath
+    ID       AttachType      AttachFlags     Name
+    /run/cilium/cgroupv2
+    10613    device          multi
+    48497    connect4
+    48493    connect6
+    48499    sendmsg4
+    48495    sendmsg6
+    48500    recvmsg4
+    48496    recvmsg6
+    48498    getpeername4
+    48494    getpeername6
+
 Limitations
 ###########
 
     * Cilium's eBPF kube-proxy replacement currently cannot be used with :ref:`gsg_encryption`.
     * Cilium's eBPF kube-proxy replacement relies upon the :ref:`host-services` feature
-      which uses eBPF cgroup hooks to implement the service translation. The getpeername(2)
-      hook address translation in eBPF is only available for v5.8 kernels. It is known to
-      currently not work with libceph deployments.
+      which uses eBPF cgroup hooks to implement the service translation. Using it with libceph
+      deployments currently requires support for the getpeername(2) hook address translation in
+      eBPF, which is only available for kernels v5.8 and higher.
     * Cilium's eBPF kube-proxy acceleration in XDP can only be used in a single device setup
       as a "one-legged" / hairpin load balancer scenario. In case of a multi-device environment,
       where auto-detection selects more than a single device to expose NodePort, the option
@@ -1235,6 +1334,9 @@ Limitations
       release introduces ``EndpointSliceMirroring`` controller that mirrors custom ``Endpoints``
       resources to corresponding ``EndpointSlices`` and thus allowing backing ``Endpoints``
       to work. For a more detailed discussion see :gh-issue:`12438`.
+    * When deployed on kernels older than 5.7, Cilium is unable to distinguish between host and
+      pod namespaces due to the lack of kernel support for network namespace cookies. As a result,
+      Kubernetes services are reachable from all pods via the loopback address.
 
 Further Readings
 ################
@@ -1245,6 +1347,9 @@ in great details:
     * "Liberating Kubernetes from kube-proxy and iptables" (KubeCon North America 2019, `slides
       <https://docs.google.com/presentation/d/1cZJ-pcwB9WG88wzhDm2jxQY4Sh8adYg0-N3qWQ8593I/edit>`__,
       `video <https://www.youtube.com/watch?v=bIRwSIwNHC0>`__)
+    * "Kubernetes service load-balancing at scale with BPF & XDP" (Linux Plumbers 2020, `slides
+      <https://linuxplumbersconf.org/event/7/contributions/674/attachments/568/1002/plumbers_2020_cilium_load_balancer.pdf>`__,
+      `video <https://www.youtube.com/watch?v=UkvxPyIJAko&t=21s>`__)
     * "eBPF as a revolutionary technology for the container landscape" (Fosdem 2020, `slides
       <https://docs.google.com/presentation/d/1VOUcoIxgM_c6M_zAV1dLlRCjyYCMdR3tJv6CEdfLMh8/edit>`__,
       `video <https://fosdem.org/2020/schedule/event/containers_bpf/>`__)

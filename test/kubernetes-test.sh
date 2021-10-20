@@ -12,9 +12,11 @@ helm template --validate install/kubernetes/cilium \
   --namespace=kube-system \
   --set image.tag=$1 \
   --set image.repository=quay.io/cilium/cilium-ci \
+  --set image.useDigest=false \
   --set operator.image.repository=quay.io/cilium/operator \
   --set operator.image.tag=$1 \
   --set operator.image.suffix=-ci \
+  --set operator.image.useDigest=false \
   --set debug.enabled=true \
   --set k8s.requireIPv4PodCIDR=true \
   --set pprof.enabled=true \
@@ -24,20 +26,26 @@ helm template --validate install/kubernetes/cilium \
   --set ipv4.enabled=true \
   --set ipv6.enabled=true \
   --set identityChangeGracePeriod="0s" \
+  --set kubeProxyReplacement=probe \
+  --set cni.chainingMode=portmap \
   > cilium.yaml
 
 kubectl apply -f cilium.yaml
 
-while true; do
-    result=$(kubectl -n kube-system get pods -l k8s-app=cilium | grep "Running" -c)
-    echo "Running pods ${result}"
-    if [ "${result}" == "2" ]; then
+runningPods="0"
 
-        echo "result match, continue with kubernetes"
-        break
-    fi
+pollCiliumPods () {
+  until [ "${runningPods}" == "2" ]; do
+    runningPods=$(kubectl -n kube-system get pods -l k8s-app=cilium | grep "Running" -c)
+    echo "Running Pods ${runningPods}"
     sleep 1
-done
+  done
+  echo "result match, continue with kubernetes"
+}
+
+export -f pollCiliumPods
+timeout ${POLL_TIMEOUT_SECONDS} bash -c pollCiliumPods
+unset pollCiliumPods
 
 set -e
 
@@ -62,7 +70,7 @@ test -d kubernetes && rm -rfv kubernetes
 git clone https://github.com/kubernetes/kubernetes.git -b ${KUBERNETES_VERSION} --depth 1
 cd kubernetes
 
-GO_VERSION="1.16.4"
+GO_VERSION="1.17.2"
 sudo rm -fr /usr/local/go
 curl -LO https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz
 sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
@@ -75,6 +83,8 @@ export KUBE_MASTER_IP=192.168.36.11
 export KUBE_MASTER_URL="https://192.168.36.11:6443"
 
 echo "Running upstream services conformance tests"
+${HOME}/go/bin/kubetest --provider=local --test \
+  --test_args="--ginkgo.focus=HostPort.*\[Conformance\].* --e2e-verify-service-account=false --host ${KUBE_MASTER_URL}"
 ${HOME}/go/bin/kubetest --provider=local --test \
   --test_args="--ginkgo.focus=Services.*\[Conformance\].* --e2e-verify-service-account=false --host ${KUBE_MASTER_URL}"
 

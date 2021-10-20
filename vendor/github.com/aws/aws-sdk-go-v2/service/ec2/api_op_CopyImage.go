@@ -41,7 +41,7 @@ func (c *Client) CopyImage(ctx context.Context, params *CopyImageInput, optFns .
 		params = &CopyImageInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CopyImage", params, optFns, addOperationCopyImageMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CopyImage", params, optFns, c.addOperationCopyImageMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ type CopyImageInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// Specifies whether the destination snapshots of the copied image should be
 	// encrypted. You can encrypt a copy of an unencrypted snapshot, but you cannot
@@ -101,7 +101,7 @@ type CopyImageInput struct {
 	// using KmsKeyId. For more information, see Amazon EBS Encryption
 	// (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSEncryption.html) in the
 	// Amazon Elastic Compute Cloud User Guide.
-	Encrypted bool
+	Encrypted *bool
 
 	// The identifier of the symmetric AWS Key Management Service (AWS KMS) customer
 	// master key (CMK) to use when creating encrypted volumes. If this parameter is
@@ -126,6 +126,8 @@ type CopyImageInput struct {
 	// the action can appear to complete, but eventually fails. The specified CMK must
 	// exist in the destination Region. Amazon EBS does not support asymmetric CMKs.
 	KmsKeyId *string
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of CopyImage.
@@ -136,9 +138,11 @@ type CopyImageOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCopyImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCopyImageMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCopyImage{}, middleware.After)
 	if err != nil {
 		return err

@@ -26,7 +26,7 @@ func (c *Client) DescribeConversionTasks(ctx context.Context, params *DescribeCo
 		params = &DescribeConversionTasksInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeConversionTasks", params, optFns, addOperationDescribeConversionTasksMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeConversionTasks", params, optFns, c.addOperationDescribeConversionTasksMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,9 @@ type DescribeConversionTasksInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
+
+	noSmithyDocumentSerde
 }
 
 type DescribeConversionTasksOutput struct {
@@ -55,9 +57,11 @@ type DescribeConversionTasksOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeConversionTasksMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeConversionTasksMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeConversionTasks{}, middleware.After)
 	if err != nil {
 		return err

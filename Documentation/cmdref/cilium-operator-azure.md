@@ -11,7 +11,6 @@ cilium-operator-azure [flags]
 ### Options
 
 ```
-      --azure-cloud-name string                   Name of the Azure cloud being used (default "AzurePublicCloud")
       --azure-resource-group string               Resource group to use for Azure IPAM
       --azure-subscription-id string              Subscription ID to access Azure API
       --azure-use-primary-address                 Use Azure IP address from interface's primary IPConfigurations (default true)
@@ -67,6 +66,7 @@ cilium-operator-azure [flags]
       --parallel-alloc-workers int                Maximum number of parallel IPAM workers (default 50)
       --pprof                                     Enable pprof debugging endpoint
       --pprof-port int                            Port that the pprof listens on (default 6061)
+      --skip-crd-creation                         When true, Kubernetes Custom Resource Definitions will not be created
       --subnet-ids-filter strings                 Subnets IDs (separated by commas)
       --subnet-tags-filter stringToString         Subnets tags in the form of k1=v1,k2=v2 (multiple k/v pairs can also be passed by repeating the CLI flag (default [])
       --synchronize-k8s-nodes                     Synchronize Kubernetes nodes to kvstore and perform CNP GC (default true)
@@ -77,5 +77,6 @@ cilium-operator-azure [flags]
 
 ### SEE ALSO
 
+* [cilium-operator-azure completion](cilium-operator-azure_completion.html)	 - generate the autocompletion script for the specified shell
 * [cilium-operator-azure metrics](cilium-operator-azure_metrics.html)	 - Access metric status of the operator
 

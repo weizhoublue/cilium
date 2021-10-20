@@ -31,14 +31,9 @@ spec:
         command:
         - sleep
         image: docker.io/cilium/log-gatherer:v1.1
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         name: log-gatherer
         securityContext:
-          capabilities:
-            add:
-            - NET_ADMIN
-            - SYS_MODULE
-            - SYS_ADMIN
           privileged: true
         volumeMounts:
         - mountPath: /sys/fs/bpf

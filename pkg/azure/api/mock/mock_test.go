@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+//go:build !privileged_tests
 // +build !privileged_tests
 
 package mock
@@ -55,8 +45,10 @@ func (e *MockSuite) TestMock(c *check.C) {
 
 	ifaceID := "/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Compute/virtualMachineScaleSets/vmss11/virtualMachines/vm1/networkInterfaces/vmss11"
 	instances = ipamTypes.NewInstanceMap()
+	resource := &types.AzureInterface{Name: "eth0"}
+	resource.SetID(ifaceID)
 	instances.Update("vm1", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{ID: ifaceID, Name: "eth0"},
+		Resource: resource.DeepCopy(),
 	})
 	api.UpdateInstances(instances)
 	instances, err = api.GetInstances(context.Background(), ipamTypes.SubnetMap{})
@@ -85,8 +77,10 @@ func (e *MockSuite) TestMock(c *check.C) {
 
 	vmIfaceID := "/subscriptions/xxx/resourceGroups/g1/providers/Microsoft.Network/networkInterfaces/vm22-if"
 	vmInstances := ipamTypes.NewInstanceMap()
+	resource = &types.AzureInterface{Name: "eth0"}
+	resource.SetID(vmIfaceID)
 	vmInstances.Update("vm2", ipamTypes.InterfaceRevision{
-		Resource: &types.AzureInterface{ID: vmIfaceID, Name: "eth0"},
+		Resource: resource.DeepCopy(),
 	})
 	c.Assert(err, check.IsNil)
 	c.Assert(vmInstances.NumInstances(), check.Equals, 1)

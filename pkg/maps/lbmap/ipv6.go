@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2016-2021 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package lbmap
 
@@ -40,6 +29,8 @@ const (
 	Service6MapV2Name = "cilium_lb6_services_v2"
 	// Backend6MapName is the name of the IPv6 LB backends BPF map.
 	Backend6MapName = "cilium_lb6_backends"
+	// Backend6MapV2Name is the name of the IPv6 LB backends v2 BPF map.
+	Backend6MapV2Name = "cilium_lb6_backends_v2"
 	// RevNat6MapName is the name of the IPv6 LB reverse NAT BPF map.
 	RevNat6MapName = "cilium_lb6_reverse_nat"
 )
@@ -55,6 +46,8 @@ var (
 	Service6MapV2 *bpf.Map
 	// Backend6Map is the IPv6 LB backends BPF map.
 	Backend6Map *bpf.Map
+	// Backend6MapV2 is the IPv6 LB backends v2 BPF map.
+	Backend6MapV2 *bpf.Map
 	// RevNat6Map is the IPv6 LB reverse NAT BPF map.
 	RevNat6Map *bpf.Map
 )
@@ -87,14 +80,14 @@ func (v *RevNat6Key) GetKey() uint16            { return v.Key }
 // ToNetwork converts RevNat6Key to network byte order.
 func (v *RevNat6Key) ToNetwork() RevNatKey {
 	n := *v
-	n.Key = byteorder.HostToNetwork(n.Key).(uint16)
+	n.Key = byteorder.HostToNetwork16(n.Key)
 	return &n
 }
 
 // ToNetwork converts RevNat6Key to host byte order.
 func (v *RevNat6Key) ToHost() RevNatKey {
 	h := *v
-	h.Key = byteorder.NetworkToHost(h.Key).(uint16)
+	h.Key = byteorder.NetworkToHost16(h.Key)
 	return &h
 }
 
@@ -115,18 +108,18 @@ func (v *RevNat6Value) String() string {
 // ToNetwork converts RevNat6Value to network byte order.
 func (v *RevNat6Value) ToNetwork() RevNatValue {
 	n := *v
-	n.Port = byteorder.HostToNetwork(n.Port).(uint16)
+	n.Port = byteorder.HostToNetwork16(n.Port)
 	return &n
 }
 
 // ToNetwork converts RevNat6Value to Host byte order.
 func (v *RevNat6Value) ToHost() RevNatValue {
 	h := *v
-	h.Port = byteorder.NetworkToHost(h.Port).(uint16)
+	h.Port = byteorder.NetworkToHost16(h.Port)
 	return &h
 }
 
-// Service6Key must match 'struct lb6_key_v2' in "bpf/lib/common.h".
+// Service6Key must match 'struct lb6_key' in "bpf/lib/common.h".
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
 type Service6Key struct {
@@ -182,14 +175,14 @@ func (k *Service6Key) RevNatValue() RevNatValue {
 
 func (k *Service6Key) ToNetwork() ServiceKey {
 	n := *k
-	n.Port = byteorder.HostToNetwork(n.Port).(uint16)
+	n.Port = byteorder.HostToNetwork16(n.Port)
 	return &n
 }
 
 // ToHost converts Service6Key to host byte order.
 func (k *Service6Key) ToHost() ServiceKey {
 	h := *k
-	h.Port = byteorder.NetworkToHost(h.Port).(uint16)
+	h.Port = byteorder.NetworkToHost16(h.Port)
 	return &h
 }
 
@@ -240,33 +233,46 @@ func (s *Service6Value) GetBackendID() loadbalancer.BackendID {
 
 func (s *Service6Value) ToNetwork() ServiceValue {
 	n := *s
-	n.RevNat = byteorder.HostToNetwork(n.RevNat).(uint16)
+	n.RevNat = byteorder.HostToNetwork16(n.RevNat)
 	return &n
 }
 
 // ToHost converts Service6Value to host byte order.
 func (s *Service6Value) ToHost() ServiceValue {
 	h := *s
-	h.RevNat = byteorder.NetworkToHost(h.RevNat).(uint16)
+	h.RevNat = byteorder.NetworkToHost16(h.RevNat)
 	return &h
 }
 
 // +k8s:deepcopy-gen=true
 // +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
-type Backend6Key struct {
+type Backend6KeyV2 struct {
 	ID loadbalancer.BackendID
 }
 
-func NewBackend6Key(id loadbalancer.BackendID) *Backend6Key {
-	return &Backend6Key{ID: id}
+func NewBackend6KeyV2(id loadbalancer.BackendID) *Backend6KeyV2 {
+	return &Backend6KeyV2{ID: id}
+}
+
+func (k *Backend6KeyV2) String() string                  { return fmt.Sprintf("%d", k.ID) }
+func (k *Backend6KeyV2) GetKeyPtr() unsafe.Pointer       { return unsafe.Pointer(k) }
+func (k *Backend6KeyV2) NewValue() bpf.MapValue          { return &Backend6Value{} }
+func (k *Backend6KeyV2) Map() *bpf.Map                   { return Backend6MapV2 }
+func (k *Backend6KeyV2) SetID(id loadbalancer.BackendID) { k.ID = id }
+func (k *Backend6KeyV2) GetID() loadbalancer.BackendID   { return k.ID }
+
+// +k8s:deepcopy-gen=true
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
+type Backend6Key struct {
+	ID uint16
 }
 
 func (k *Backend6Key) String() string                  { return fmt.Sprintf("%d", k.ID) }
 func (k *Backend6Key) GetKeyPtr() unsafe.Pointer       { return unsafe.Pointer(k) }
 func (k *Backend6Key) NewValue() bpf.MapValue          { return &Backend6Value{} }
 func (k *Backend6Key) Map() *bpf.Map                   { return Backend6Map }
-func (k *Backend6Key) SetID(id loadbalancer.BackendID) { k.ID = id }
-func (k *Backend6Key) GetID() loadbalancer.BackendID   { return k.ID }
+func (k *Backend6Key) SetID(id loadbalancer.BackendID) { k.ID = uint16(id) }
+func (k *Backend6Key) GetID() loadbalancer.BackendID   { return loadbalancer.BackendID(k.ID) }
 
 // Backend6Value must match 'struct lb6_backend' in "bpf/lib/common.h".
 // +k8s:deepcopy-gen=true
@@ -305,32 +311,41 @@ func (b *Backend6Value) GetPort() uint16    { return b.Port }
 
 func (v *Backend6Value) ToNetwork() BackendValue {
 	n := *v
-	n.Port = byteorder.HostToNetwork(n.Port).(uint16)
+	n.Port = byteorder.HostToNetwork16(n.Port)
 	return &n
 }
 
 // ToHost converts Backend6Value to host byte order.
 func (v *Backend6Value) ToHost() BackendValue {
 	h := *v
-	h.Port = byteorder.NetworkToHost(h.Port).(uint16)
+	h.Port = byteorder.NetworkToHost16(h.Port)
 	return &h
 }
 
-type Backend6 struct {
-	Key   *Backend6Key
+type Backend6V2 struct {
+	Key   *Backend6KeyV2
 	Value *Backend6Value
 }
 
-func NewBackend6(id loadbalancer.BackendID, ip net.IP, port uint16, proto u8proto.U8proto) (*Backend6, error) {
+func NewBackend6V2(id loadbalancer.BackendID, ip net.IP, port uint16, proto u8proto.U8proto) (*Backend6V2, error) {
 	val, err := NewBackend6Value(ip, port, proto)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Backend6{
-		Key:   NewBackend6Key(id),
+	return &Backend6V2{
+		Key:   NewBackend6KeyV2(id),
 		Value: val,
 	}, nil
+}
+
+func (b *Backend6V2) Map() *bpf.Map          { return Backend6MapV2 }
+func (b *Backend6V2) GetKey() BackendKey     { return b.Key }
+func (b *Backend6V2) GetValue() BackendValue { return b.Value }
+
+type Backend6 struct {
+	Key   *Backend6Key
+	Value *Backend6Value
 }
 
 func (b *Backend6) Map() *bpf.Map          { return Backend6Map }

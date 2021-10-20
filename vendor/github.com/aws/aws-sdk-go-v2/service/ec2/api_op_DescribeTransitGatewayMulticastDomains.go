@@ -18,7 +18,7 @@ func (c *Client) DescribeTransitGatewayMulticastDomains(ctx context.Context, par
 		params = &DescribeTransitGatewayMulticastDomainsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayMulticastDomains", params, optFns, addOperationDescribeTransitGatewayMulticastDomainsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeTransitGatewayMulticastDomains", params, optFns, c.addOperationDescribeTransitGatewayMulticastDomainsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ type DescribeTransitGatewayMulticastDomainsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters. The possible values are:
 	//
@@ -51,13 +51,15 @@ type DescribeTransitGatewayMulticastDomainsInput struct {
 
 	// The maximum number of results to return with a single call. To retrieve the
 	// remaining results, make another call with the returned nextToken value.
-	MaxResults int32
+	MaxResults *int32
 
 	// The token for the next page of results.
 	NextToken *string
 
 	// The ID of the transit gateway multicast domain.
 	TransitGatewayMulticastDomainIds []string
+
+	noSmithyDocumentSerde
 }
 
 type DescribeTransitGatewayMulticastDomainsOutput struct {
@@ -71,9 +73,11 @@ type DescribeTransitGatewayMulticastDomainsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeTransitGatewayMulticastDomainsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeTransitGatewayMulticastDomainsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeTransitGatewayMulticastDomains{}, middleware.After)
 	if err != nil {
 		return err
@@ -171,8 +175,8 @@ func NewDescribeTransitGatewayMulticastDomainsPaginator(client DescribeTransitGa
 	}
 
 	options := DescribeTransitGatewayMulticastDomainsPaginatorOptions{}
-	if params.MaxResults != 0 {
-		options.Limit = params.MaxResults
+	if params.MaxResults != nil {
+		options.Limit = *params.MaxResults
 	}
 
 	for _, fn := range optFns {
@@ -201,7 +205,11 @@ func (p *DescribeTransitGatewayMulticastDomainsPaginator) NextPage(ctx context.C
 	params := *p.params
 	params.NextToken = p.nextToken
 
-	params.MaxResults = p.options.Limit
+	var limit *int32
+	if p.options.Limit > 0 {
+		limit = &p.options.Limit
+	}
+	params.MaxResults = limit
 
 	result, err := p.client.DescribeTransitGatewayMulticastDomains(ctx, &params, optFns...)
 	if err != nil {

@@ -24,7 +24,17 @@ and provide encryption.
 
    Please ensure that you are running version `1.7.9 <https://github.com/aws/amazon-vpc-cni-k8s/releases/tag/v1.7.9>`_
    or newer of the AWS VPC CNI plugin to guarantee compatibility with Cilium.
-   The official upgrade instructions can be found `here <https://docs.aws.amazon.com/eks/latest/userguide/cni-upgrades.html>`_.
+
+   .. code-block:: shell-session
+
+      $ kubectl -n kube-system get ds/aws-node -o json | jq -r '.spec.template.spec.containers[0].image'
+      602401143452.dkr.ecr.us-west-2.amazonaws.com/amazon-k8s-cni:v1.7.5-eksbuild.1
+
+   If you are running an older version, as in the above example, you can upgrade it with:
+
+   .. code-block:: shell-session
+
+      $ kubectl apply -f https://raw.githubusercontent.com/aws/amazon-vpc-cni-k8s/v1.7.9/config/v1.7/aws-k8s-cni.yaml
 
 .. image:: aws-cni-architecture.png
 
@@ -51,8 +61,7 @@ Deploy Cilium via Helm:
      --set cni.chainingMode=aws-cni \\
      --set enableIPv4Masquerade=false \\
      --set tunnel=disabled \\
-     --set nodeinit.enabled=true \\
-     --set endpointRoutes.enabled=true
+     --set nodeinit.enabled=true
 
 This will enable chaining with the AWS VPC CNI plugin. It will also disable
 tunneling, as it's not required since ENI IP addresses can be directly routed

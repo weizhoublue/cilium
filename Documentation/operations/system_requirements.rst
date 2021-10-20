@@ -94,7 +94,7 @@ RancherOS_                 >= 1.5.5
           (see :gh-issue:`10645` for details). To avoid that, configure
           ``rp_filter`` in systemd using the following commands:
 
-          .. code:: bash
+          .. code-block:: shell-session
 
               echo 'net.ipv4.conf.lxc*.rp_filter = 0' > /etc/sysctl.d/99-override_cilium_rp_filter.conf
               systemctl restart systemd-sysctl
@@ -115,7 +115,7 @@ configuration options must be enabled. This is typically the case  with
 distribution kernels. When an option can be built as a module or statically
 linked, either choice is valid.
 
-.. code:: bash
+::
 
         CONFIG_BPF=y
         CONFIG_BPF_SYSCALL=y
@@ -137,7 +137,7 @@ L7 proxy redirection currently uses ``TPROXY`` iptables actions as well
 as ``socket`` matches. For L7 redirection to work as intended kernel
 configuration must include the following modules:
 
-.. code:: bash
+::
 
         CONFIG_NETFILTER_XT_TARGET_TPROXY=m
         CONFIG_NETFILTER_XT_MATCH_MARK=m
@@ -185,6 +185,7 @@ Cilium Feature                              Minimum Kernel Version
 Full support for :ref:`session-affinity`    >= 5.7
 BPF-based proxy redirection                 >= 5.7
 BPF-based host routing                      >= 5.10
+Socket-level LB bypass in pod netns         >= 5.7
 =========================================== ===============================
 
 .. _req_kvstore:
@@ -329,7 +330,7 @@ Port Range / Protocol    Description
 9891/tcp                 operator gops server (listening on 127.0.0.1)
 9892/tcp                 clustermesh-apiserver gops server (listening on 127.0.0.1)
 9893/tcp                 Hubble Relay gops server (listening on 127.0.0.1)
-51871/udp                Wireguard encryption tunnel endpoint
+51871/udp                WireGuard encryption tunnel endpoint
 ======================== ===========================================================
 
 .. _admin_mount_bpffs:
@@ -344,33 +345,30 @@ Mounted eBPF filesystem
 
         .. code-block:: shell-session
 
-                  mount | grep /sys/fs/bpf
-                  # if present should output, e.g. "none on /sys/fs/bpf type bpf"...
+            # mount | grep /sys/fs/bpf
+            $ # if present should output, e.g. "none on /sys/fs/bpf type bpf"...
 
-This step is **required for production** environments but optional for testing
-and development. It allows the ``cilium-agent`` to pin eBPF resources to a
-persistent filesystem and make them persistent across restarts of the agent.
 If the eBPF filesystem is not mounted in the host filesystem, Cilium will
-automatically mount the filesystem but it will be unmounted and re-mounted when
-the Cilium pod is restarted. This in turn will cause eBPF resources to be
-re-created which will cause network connectivity to be disrupted while Cilium
-is not running. Mounting the eBPF filesystem in the host mount namespace will
-ensure that the agent can be restarted without affecting connectivity of any
-pods.
+automatically mount the filesystem.
 
-In order to mount the eBPF filesystem, the following command must be run in the
-host mount namespace. The command must only be run once during the boot process
-of the machine.
+Mounting this BPF filesystem allows the ``cilium-agent`` to persist eBPF
+resources across restarts of the agent so that the datapath can continue to
+operate while the agent is subsequently restarted or upgraded.
 
-.. code:: bash
+Optionally it is also possible to mount the eBPF filesystem before Cilium is
+deployed in the cluster, the following command must be run in the host mount
+namespace. The command must only be run once during the boot process of the
+machine.
 
-	mount bpffs /sys/fs/bpf -t bpf
+   .. code-block:: shell-session
+
+	# mount bpffs /sys/fs/bpf -t bpf
 
 A portable way to achieve this with persistence is to add the following line to
 ``/etc/fstab`` and then run ``mount /sys/fs/bpf``. This will cause the
 filesystem to be automatically mounted when the node boots.
 
-.. code:: bash
+::
 
      bpffs			/sys/fs/bpf		bpf	defaults 0 0
 

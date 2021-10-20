@@ -24,7 +24,7 @@ func (c *Client) DescribeVpnConnections(ctx context.Context, params *DescribeVpn
 		params = &DescribeVpnConnectionsInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "DescribeVpnConnections", params, optFns, addOperationDescribeVpnConnectionsMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "DescribeVpnConnections", params, optFns, c.addOperationDescribeVpnConnectionsMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ type DescribeVpnConnectionsInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// One or more filters.
 	//
@@ -90,6 +90,8 @@ type DescribeVpnConnectionsInput struct {
 
 	// One or more VPN connection IDs. Default: Describes your VPN connections.
 	VpnConnectionIds []string
+
+	noSmithyDocumentSerde
 }
 
 // Contains the output of DescribeVpnConnections.
@@ -100,9 +102,11 @@ type DescribeVpnConnectionsOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationDescribeVpnConnectionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationDescribeVpnConnectionsMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpDescribeVpnConnections{}, middleware.After)
 	if err != nil {
 		return err

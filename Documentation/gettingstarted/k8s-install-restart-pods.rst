@@ -1,16 +1,17 @@
 Restart unmanaged Pods
 ======================
 
-If you did not use the ``nodeinit.restartPods=true`` in the Helm options when
-deploying Cilium, then unmanaged pods need to be restarted manually.  Restart
-all already running pods which are not running in host-networking mode to
-ensure that Cilium starts managing them. This is required to ensure that all
-pods which have been running before Cilium was deployed have network
-connectivity provided by Cilium and NetworkPolicy applies to them:
+If you did not create a cluster with the nodes tainted with the taint
+``node.cilium.io/agent-not-ready``, then unmanaged pods need to be restarted
+manually. Restart all already running pods which are not running in
+host-networking mode to ensure that Cilium starts managing them. This is
+required to ensure that all pods which have been running before Cilium was
+deployed have network connectivity provided by Cilium and NetworkPolicy applies
+to them:
 
-::
+.. code-block:: shell-session
 
-    kubectl get pods --all-namespaces -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,HOSTNETWORK:.spec.hostNetwork --no-headers=true | grep '<none>' | awk '{print "-n "$1" "$2}' | xargs -L 1 -r kubectl delete pod
+    $ kubectl get pods --all-namespaces -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,HOSTNETWORK:.spec.hostNetwork --no-headers=true | grep '<none>' | awk '{print "-n "$1" "$2}' | xargs -L 1 -r kubectl delete pod
     pod "event-exporter-v0.2.3-f9c896d75-cbvcz" deleted
     pod "fluentd-gcp-scaler-69d79984cb-nfwwk" deleted
     pod "heapster-v1.6.0-beta.1-56d5d5d87f-qw8pv" deleted

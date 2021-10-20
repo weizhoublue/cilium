@@ -29,7 +29,7 @@ func (c *Client) GetConsoleOutput(ctx context.Context, params *GetConsoleOutputI
 		params = &GetConsoleOutputInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "GetConsoleOutput", params, optFns, addOperationGetConsoleOutputMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "GetConsoleOutput", params, optFns, c.addOperationGetConsoleOutputMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -50,11 +50,13 @@ type GetConsoleOutputInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// When enabled, retrieves the latest console output for the instance. Default:
 	// disabled (false)
-	Latest bool
+	Latest *bool
+
+	noSmithyDocumentSerde
 }
 
 type GetConsoleOutputOutput struct {
@@ -71,9 +73,11 @@ type GetConsoleOutputOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationGetConsoleOutputMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationGetConsoleOutputMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpGetConsoleOutput{}, middleware.After)
 	if err != nil {
 		return err

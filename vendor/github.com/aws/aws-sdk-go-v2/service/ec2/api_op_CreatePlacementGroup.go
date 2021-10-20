@@ -26,7 +26,7 @@ func (c *Client) CreatePlacementGroup(ctx context.Context, params *CreatePlaceme
 		params = &CreatePlacementGroupInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "CreatePlacementGroup", params, optFns, addOperationCreatePlacementGroupMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "CreatePlacementGroup", params, optFns, c.addOperationCreatePlacementGroupMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -42,20 +42,22 @@ type CreatePlacementGroupInput struct {
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
 	// UnauthorizedOperation.
-	DryRun bool
+	DryRun *bool
 
 	// A name for the placement group. Must be unique within the scope of your account
 	// for the Region. Constraints: Up to 255 ASCII characters
 	GroupName *string
 
 	// The number of partitions. Valid only when Strategy is set to partition.
-	PartitionCount int32
+	PartitionCount *int32
 
 	// The placement strategy.
 	Strategy types.PlacementStrategy
 
 	// The tags to apply to the new placement group.
 	TagSpecifications []types.TagSpecification
+
+	noSmithyDocumentSerde
 }
 
 type CreatePlacementGroupOutput struct {
@@ -65,9 +67,11 @@ type CreatePlacementGroupOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationCreatePlacementGroupMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationCreatePlacementGroupMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpCreatePlacementGroup{}, middleware.After)
 	if err != nil {
 		return err

@@ -1,22 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019-2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package cmd
 
 import (
 	"fmt"
 	"os"
+	"reflect"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/command"
@@ -33,7 +23,7 @@ var bpfNatListCmd = &cobra.Command{
 	Short:   "List all NAT mapping entries",
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium bpf nat list")
-		ipv4, ipv6 := nat.GlobalMaps(true, true, true)
+		ipv4, ipv6 := nat.GlobalMaps(true, getIpv6EnableStatus(), true)
 		globalMaps := make([]interface{}, 2)
 		globalMaps[0] = ipv4
 		globalMaps[1] = ipv6
@@ -50,7 +40,7 @@ func dumpNat(maps []interface{}, args ...interface{}) {
 	entries := make([]nat.NatMapRecord, 0)
 
 	for _, m := range maps {
-		if m == nil {
+		if m == nil || reflect.ValueOf(m).IsNil() {
 			continue
 		}
 		path, err := m.(nat.NatMap).Path()

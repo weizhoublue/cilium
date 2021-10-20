@@ -1,17 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Hubble
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package testutils
 
@@ -29,6 +18,7 @@ import (
 	poolTypes "github.com/cilium/cilium/pkg/hubble/relay/pool/types"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy"
 
@@ -370,11 +360,11 @@ var NoopIPGetter = FakeIPGetter{
 
 // FakeServiceGetter is used for unit tests that need ServiceGetter.
 type FakeServiceGetter struct {
-	OnGetServiceByAddr func(ip net.IP, port uint16) (service flowpb.Service, ok bool)
+	OnGetServiceByAddr func(ip net.IP, port uint16) *flowpb.Service
 }
 
 // GetServiceByAddr implements FakeServiceGetter.GetServiceByAddr.
-func (f *FakeServiceGetter) GetServiceByAddr(ip net.IP, port uint16) (service flowpb.Service, ok bool) {
+func (f *FakeServiceGetter) GetServiceByAddr(ip net.IP, port uint16) *flowpb.Service {
 	if f.OnGetServiceByAddr != nil {
 		return f.OnGetServiceByAddr(ip, port)
 	}
@@ -383,8 +373,8 @@ func (f *FakeServiceGetter) GetServiceByAddr(ip net.IP, port uint16) (service fl
 
 // NoopServiceGetter always returns an empty response.
 var NoopServiceGetter = FakeServiceGetter{
-	OnGetServiceByAddr: func(ip net.IP, port uint16) (service flowpb.Service, ok bool) {
-		return flowpb.Service{}, false
+	OnGetServiceByAddr: func(ip net.IP, port uint16) *flowpb.Service {
+		return nil
 	},
 }
 
@@ -419,6 +409,7 @@ type FakeEndpointInfo struct {
 	PodName      string
 	PodNamespace string
 	Labels       []string
+	Pod          *slim_corev1.Pod
 
 	PolicyMap      map[policy.Key]labels.LabelArrayList
 	PolicyRevision uint64
@@ -447,6 +438,11 @@ func (e *FakeEndpointInfo) GetK8sNamespace() string {
 // GetLabels returns the labels of the endpoint.
 func (e *FakeEndpointInfo) GetLabels() []string {
 	return e.Labels
+}
+
+// GetPod return the pod object of the endpoint.
+func (e *FakeEndpointInfo) GetPod() *slim_corev1.Pod {
+	return e.Pod
 }
 
 func (e *FakeEndpointInfo) GetRealizedPolicyRuleLabelsForKey(key policy.Key) (

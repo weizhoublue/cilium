@@ -1,20 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2020 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package main
 
-import "os/exec"
+import (
+	"go/build"
+	"os"
+	"os/exec"
+)
 
 // sudo returns cmd run with sudo. cmd is modified in place.
 func sudo(cmd *exec.Cmd) (*exec.Cmd, error) {
@@ -25,4 +18,12 @@ func sudo(cmd *exec.Cmd) (*exec.Cmd, error) {
 	cmd.Args = append([]string{cmd.Path}, cmd.Args...)
 	cmd.Path = sudoPath
 	return cmd, nil
+}
+
+// goPath returns the environment $GOPATH, or the default when empty or unset.
+func goPath() string {
+	if gp := os.Getenv("GOPATH"); gp != "" {
+		return gp
+	}
+	return build.Default.GOPATH
 }

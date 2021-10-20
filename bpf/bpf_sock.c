@@ -18,6 +18,10 @@
 #define SYS_REJECT	0
 #define SYS_PROCEED	1
 
+#ifndef HOST_NETNS_COOKIE
+# define HOST_NETNS_COOKIE   get_netns_cookie(NULL)
+#endif
+
 static __always_inline __maybe_unused bool is_v4_loopback(__be32 daddr)
 {
 	/* Check for 127.0.0.0/8 range, RFC3330. */
@@ -79,6 +83,16 @@ void ctx_set_port(struct bpf_sock_addr *ctx, __be16 dport)
 	ctx->user_port = (__u32)dport;
 }
 
+static __always_inline __maybe_unused bool task_in_extended_hostns(void)
+{
+#ifdef ENABLE_MKE
+	/* Extension for non-Cilium managed containers on MKE. */
+	return get_cgroup_classid() == MKE_HOST;
+#else
+	return false;
+#endif
+}
+
 static __always_inline __maybe_unused bool
 ctx_in_hostns(void *ctx __maybe_unused, __net_cookie *cookie)
 {
@@ -87,7 +101,8 @@ ctx_in_hostns(void *ctx __maybe_unused, __net_cookie *cookie)
 
 	if (cookie)
 		*cookie = own_cookie;
-	return own_cookie == get_netns_cookie(NULL);
+	return own_cookie == HOST_NETNS_COOKIE ||
+	       task_in_extended_hostns();
 #else
 	if (cookie)
 		*cookie = 0;
@@ -341,6 +356,9 @@ static __always_inline int __sock4_xlate_fwd(struct bpf_sock_addr *ctx,
 	bool backend_from_affinity = false;
 	__u32 backend_id = 0;
 
+	if (is_defined(ENABLE_SOCKET_LB_HOST_ONLY) && !in_hostns)
+		return -ENXIO;
+
 	if (!udp_only && !sock_proto_enabled(ctx->protocol))
 		return -ENOTSUP;
 
@@ -443,7 +461,7 @@ __sock4_health_fwd(struct bpf_sock_addr *ctx __maybe_unused)
 	return ret;
 }
 
-__section("connect4")
+__section("cgroup/connect4")
 int sock4_connect(struct bpf_sock_addr *ctx)
 {
 	if (sock_is_health_check(ctx))
@@ -453,7 +471,7 @@ int sock4_connect(struct bpf_sock_addr *ctx)
 	return SYS_PROCEED;
 }
 
-#if defined(ENABLE_NODEPORT) || defined(ENABLE_EXTERNAL_IP)
+#ifdef ENABLE_NODEPORT
 static __always_inline int __sock4_post_bind(struct bpf_sock *ctx,
 					     struct bpf_sock *ctx_full)
 {
@@ -487,7 +505,7 @@ static __always_inline int __sock4_post_bind(struct bpf_sock *ctx,
 	return 0;
 }
 
-__section("post_bind4")
+__section("cgroup/post_bind4")
 int sock4_post_bind(struct bpf_sock *ctx)
 {
 	if (__sock4_post_bind(ctx, ctx) < 0)
@@ -495,7 +513,7 @@ int sock4_post_bind(struct bpf_sock *ctx)
 
 	return SYS_PROCEED;
 }
-#endif /* ENABLE_NODEPORT || ENABLE_EXTERNAL_IP */
+#endif /* ENABLE_NODEPORT */
 
 #ifdef ENABLE_HEALTH_CHECK
 static __always_inline void sock4_auto_bind(struct bpf_sock_addr *ctx)
@@ -526,7 +544,7 @@ static __always_inline int __sock4_pre_bind(struct bpf_sock_addr *ctx,
 	return ret;
 }
 
-__section("bind4")
+__section("cgroup/bind4")
 int sock4_pre_bind(struct bpf_sock_addr *ctx)
 {
 	int ret = SYS_PROCEED;
@@ -578,21 +596,21 @@ static __always_inline int __sock4_xlate_rev(struct bpf_sock_addr *ctx,
 	return -ENXIO;
 }
 
-__section("sendmsg4")
+__section("cgroup/sendmsg4")
 int sock4_sendmsg(struct bpf_sock_addr *ctx)
 {
 	__sock4_xlate_fwd(ctx, ctx, true);
 	return SYS_PROCEED;
 }
 
-__section("recvmsg4")
+__section("cgroup/recvmsg4")
 int sock4_recvmsg(struct bpf_sock_addr *ctx)
 {
 	__sock4_xlate_rev(ctx, ctx);
 	return SYS_PROCEED;
 }
 
-__section("getpeername4")
+__section("cgroup/getpeername4")
 int sock4_getpeername(struct bpf_sock_addr *ctx)
 {
 	__sock4_xlate_rev(ctx, ctx);
@@ -789,7 +807,7 @@ int sock6_xlate_v4_in_v6(struct bpf_sock_addr *ctx __maybe_unused,
 	return -ENXIO;
 }
 
-#if defined(ENABLE_NODEPORT) || defined(ENABLE_EXTERNAL_IP)
+#ifdef ENABLE_NODEPORT
 static __always_inline int
 sock6_post_bind_v4_in_v6(struct bpf_sock *ctx __maybe_unused)
 {
@@ -839,7 +857,7 @@ static __always_inline int __sock6_post_bind(struct bpf_sock *ctx)
 	return 0;
 }
 
-__section("post_bind6")
+__section("cgroup/post_bind6")
 int sock6_post_bind(struct bpf_sock *ctx)
 {
 	if (__sock6_post_bind(ctx) < 0)
@@ -847,7 +865,7 @@ int sock6_post_bind(struct bpf_sock *ctx)
 
 	return SYS_PROCEED;
 }
-#endif /* ENABLE_NODEPORT || ENABLE_EXTERNAL_IP */
+#endif /* ENABLE_NODEPORT */
 
 #ifdef ENABLE_HEALTH_CHECK
 static __always_inline int
@@ -909,7 +927,7 @@ static __always_inline int __sock6_pre_bind(struct bpf_sock_addr *ctx)
 	return ret;
 }
 
-__section("bind6")
+__section("cgroup/bind6")
 int sock6_pre_bind(struct bpf_sock_addr *ctx)
 {
 	int ret = SYS_PROCEED;
@@ -938,6 +956,9 @@ static __always_inline int __sock6_xlate_fwd(struct bpf_sock_addr *ctx,
 	struct lb6_service *backend_slot;
 	bool backend_from_affinity = false;
 	__u32 backend_id = 0;
+
+	if (is_defined(ENABLE_SOCKET_LB_HOST_ONLY) && !in_hostns)
+		return -ENXIO;
 
 	if (!udp_only && !sock_proto_enabled(ctx->protocol))
 		return -ENOTSUP;
@@ -1029,7 +1050,7 @@ __sock6_health_fwd(struct bpf_sock_addr *ctx __maybe_unused)
 	return ret;
 }
 
-__section("connect6")
+__section("cgroup/connect6")
 int sock6_connect(struct bpf_sock_addr *ctx)
 {
 	if (sock_is_health_check(ctx))
@@ -1107,21 +1128,21 @@ static __always_inline int __sock6_xlate_rev(struct bpf_sock_addr *ctx)
 	return sock6_xlate_rev_v4_in_v6(ctx);
 }
 
-__section("sendmsg6")
+__section("cgroup/sendmsg6")
 int sock6_sendmsg(struct bpf_sock_addr *ctx)
 {
 	__sock6_xlate_fwd(ctx, true);
 	return SYS_PROCEED;
 }
 
-__section("recvmsg6")
+__section("cgroup/recvmsg6")
 int sock6_recvmsg(struct bpf_sock_addr *ctx)
 {
 	__sock6_xlate_rev(ctx);
 	return SYS_PROCEED;
 }
 
-__section("getpeername6")
+__section("cgroup/getpeername6")
 int sock6_getpeername(struct bpf_sock_addr *ctx)
 {
 	__sock6_xlate_rev(ctx);

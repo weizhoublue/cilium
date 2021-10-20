@@ -1,16 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2018 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package sockops
 
@@ -306,13 +295,11 @@ func bpfLoadMapProg(object string, load string) error {
 func SkmsgEnable() error {
 	err := bpfCompileProg(cIPC, oIPC)
 	if err != nil {
-		log.Error(err)
 		return err
 	}
 
 	err = bpfLoadMapProg(oIPC, eIPC)
 	if err != nil {
-		log.Error(err)
 		return err
 	}
 	log.Info("Sockmsg Enabled, bpf_redir loaded")
@@ -360,12 +347,10 @@ func bpfLoadAttachProg(object string, load string, mapName string) (int, int, er
 func SockmapEnable() error {
 	err := bpfCompileProg(cSockops, oSockops)
 	if err != nil {
-		log.Error(err)
 		return err
 	}
 	progID, mapID, err := bpfLoadAttachProg(oSockops, eSockops, sockMap)
 	if err != nil {
-		log.Error(err)
 		return err
 	}
 	log.Infof("Sockmap Enabled: bpf_sockops prog_id %d and map_id %d loaded", progID, mapID)

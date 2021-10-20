@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2019 Authors of Cilium
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+
+//go:build linux
 // +build linux
 
 package ipsec
@@ -486,9 +476,7 @@ func LoadIPSecKeysFile(path string) (int, uint8, error) {
 func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 	var spi uint8
 	var keyLen int
-	scopedLog := log.WithFields(logrus.Fields{
-		"spi": spi,
-	})
+	scopedLog := log
 
 	if err := encrypt.MapCreate(); err != nil {
 		return 0, 0, fmt.Errorf("Encrypt map create failed: %v", err)
@@ -520,10 +508,10 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 			offset = -1
 		}
 		if spiI > linux_defaults.IPsecMaxKeyVersion {
-			return 0, 0, fmt.Errorf("encryption Key space exhausted, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion, s[0])
+			return 0, 0, fmt.Errorf("encryption Key space exhausted, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, s[0])
 		}
 		if spiI == 0 {
-			return 0, 0, fmt.Errorf("zero is not a valid key to disable encryption use `--enable-ipsec=false`, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion, s[0])
+			return 0, 0, fmt.Errorf("zero is not a valid key to disable encryption use `--enable-ipsec=false`, id must be nonzero and less than %d. Attempted %q", linux_defaults.IPsecMaxKeyVersion+1, s[0])
 		}
 		spi = uint8(spiI)
 
@@ -580,6 +568,11 @@ func loadIPSecKeys(r io.Reader) (int, uint8, error) {
 			}
 			ipSecKeysGlobal[""] = ipSecKey
 		}
+
+		scopedLog := log.WithFields(logrus.Fields{
+			"oldSPI": oldSpi,
+			"SPI":    spi,
+		})
 
 		// Detect a version change and call cleanup routine to remove old
 		// keys after a timeout period. We also want to ensure on restart

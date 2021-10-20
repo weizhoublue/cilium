@@ -27,13 +27,18 @@ import (
 // asynchronous operation. When you move an IP address from one network interface
 // to another, check network/interfaces/macs/mac/local-ipv4s in the instance
 // metadata to confirm that the remapping is complete. You must specify either the
-// IP addresses or the IP address count in the request.
+// IP addresses or the IP address count in the request. You can optionally use
+// Prefix Delegation on the network interface. You must specify either the IPv4
+// Prefix Delegation prefixes, or the IPv4 Prefix Delegation count. For
+// information, see  Assigning prefixes to Amazon EC2 network interfaces
+// (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-prefix-eni.html) in the
+// Amazon Elastic Compute Cloud User Guide.
 func (c *Client) AssignPrivateIpAddresses(ctx context.Context, params *AssignPrivateIpAddressesInput, optFns ...func(*Options)) (*AssignPrivateIpAddressesOutput, error) {
 	if params == nil {
 		params = &AssignPrivateIpAddressesInput{}
 	}
 
-	result, metadata, err := c.invokeOperation(ctx, "AssignPrivateIpAddresses", params, optFns, addOperationAssignPrivateIpAddressesMiddlewares)
+	result, metadata, err := c.invokeOperation(ctx, "AssignPrivateIpAddresses", params, optFns, c.addOperationAssignPrivateIpAddressesMiddlewares)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +59,16 @@ type AssignPrivateIpAddressesInput struct {
 	// Indicates whether to allow an IP address that is already assigned to another
 	// network interface or instance to be reassigned to the specified network
 	// interface.
-	AllowReassignment bool
+	AllowReassignment *bool
+
+	// The number of IPv4 prefixes that Amazon Web Services automatically assigns to
+	// the network interface. You cannot use this option if you use the Ipv4 Prefixes
+	// option.
+	Ipv4PrefixCount *int32
+
+	// One or more IPv4 prefixes assigned to the network interface. You cannot use this
+	// option if you use the Ipv4PrefixCount option.
+	Ipv4Prefixes []string
 
 	// One or more IP addresses to be assigned as a secondary private IP address to the
 	// network interface. You can't specify this parameter when also specifying a
@@ -64,10 +78,15 @@ type AssignPrivateIpAddressesInput struct {
 
 	// The number of secondary IP addresses to assign to the network interface. You
 	// can't specify this parameter when also specifying private IP addresses.
-	SecondaryPrivateIpAddressCount int32
+	SecondaryPrivateIpAddressCount *int32
+
+	noSmithyDocumentSerde
 }
 
 type AssignPrivateIpAddressesOutput struct {
+
+	// The IPv4 prefixes that are assigned to the network interface.
+	AssignedIpv4Prefixes []types.Ipv4PrefixSpecification
 
 	// The private IP addresses assigned to the network interface.
 	AssignedPrivateIpAddresses []types.AssignedPrivateIpAddress
@@ -77,9 +96,11 @@ type AssignPrivateIpAddressesOutput struct {
 
 	// Metadata pertaining to the operation's result.
 	ResultMetadata middleware.Metadata
+
+	noSmithyDocumentSerde
 }
 
-func addOperationAssignPrivateIpAddressesMiddlewares(stack *middleware.Stack, options Options) (err error) {
+func (c *Client) addOperationAssignPrivateIpAddressesMiddlewares(stack *middleware.Stack, options Options) (err error) {
 	err = stack.Serialize.Add(&awsEc2query_serializeOpAssignPrivateIpAddresses{}, middleware.After)
 	if err != nil {
 		return err
