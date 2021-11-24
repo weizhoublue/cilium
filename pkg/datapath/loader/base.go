@@ -101,7 +101,7 @@ func writePreFilterHeader(preFilter *prefilter.PreFilter, dir string) error {
 	defer f.Close()
 	fw := bufio.NewWriter(f)
 	fmt.Fprint(fw, "/*\n")
-	fmt.Fprintf(fw, " * XDP device: %s\n", option.Config.DevicePreFilter)
+	fmt.Fprintf(fw, " * XDP devices: %s\n", strings.Join(option.Config.Devices, " "))
 	fmt.Fprintf(fw, " * XDP mode: %s\n", option.Config.ModePreFilter)
 	fmt.Fprint(fw, " */\n\n")
 	preFilter.WriteConfig(fw)
@@ -206,9 +206,12 @@ func (l *Loader) reinitializeIPSec(ctx context.Context) error {
 }
 
 func (l *Loader) reinitializeXDPLocked(ctx context.Context, extraCArgs []string) error {
-	maybeUnloadObsoleteXDPPrograms(option.Config.XDPDevice, option.Config.XDPMode)
-	if option.Config.XDPDevice != "undefined" {
-		if err := compileAndLoadXDPProg(ctx, option.Config.XDPDevice, option.Config.XDPMode, extraCArgs); err != nil {
+	maybeUnloadObsoleteXDPPrograms(option.Config.Devices, option.Config.XDPMode)
+	if option.Config.XDPMode == option.XDPModeDisabled {
+		return nil
+	}
+	for _, dev := range option.Config.Devices {
+		if err := compileAndLoadXDPProg(ctx, dev, option.Config.XDPMode, extraCArgs); err != nil {
 			return err
 		}
 	}
@@ -239,6 +242,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	sysSettings := []sysctl.Setting{
 		{Name: "net.core.bpf_jit_enable", Val: "1", IgnoreErr: true},
 		{Name: "net.ipv4.conf.all.rp_filter", Val: "0", IgnoreErr: false},
+		{Name: "net.ipv4.fib_multipath_use_neigh", Val: "1", IgnoreErr: true},
 		{Name: "kernel.unprivileged_bpf_disabled", Val: "1", IgnoreErr: true},
 		{Name: "kernel.timer_migration", Val: "0", IgnoreErr: true},
 	}
@@ -255,8 +259,8 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 		return err
 	}
 
-	if option.Config.DevicePreFilter != "undefined" {
-		scopedLog := log.WithField(logfields.XDPDevice, option.Config.XDPDevice)
+	if option.Config.EnableXDPPrefilter {
+		scopedLog := log.WithField(logfields.Devices, option.Config.Devices)
 
 		preFilter, err := prefilter.NewPreFilter()
 		if err != nil {
@@ -347,7 +351,7 @@ func (l *Loader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, 
 	}
 	args[initArgMode] = string(mode)
 
-	if option.Config.Tunnel == option.TunnelDisabled && option.Config.EnableEgressGateway {
+	if option.Config.Tunnel == option.TunnelDisabled && option.Config.EnableIPv4EgressGateway {
 		// Enable tunnel mode to vxlan if egress gateway is configured
 		// Tunnel is required for egress traffic under this config
 		args[initArgTunnelMode] = option.TunnelVXLAN

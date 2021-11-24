@@ -43,6 +43,9 @@ type ModifyCapacityReservationInput struct {
 	// Reserved. Capacity Reservations you have created are accepted by default.
 	Accept *bool
 
+	// Reserved for future use.
+	AdditionalInfo *string
+
 	// Checks whether you have the required permissions for the action, without
 	// actually making the request, and provides an error response. If you have the
 	// required permissions, the error response is DryRunOperation. Otherwise, it is
@@ -71,7 +74,8 @@ type ModifyCapacityReservationInput struct {
 	// EndDateType is limited.
 	EndDateType types.EndDateType
 
-	// The number of instances for which to reserve capacity. Valid range: 1 - 1000
+	// The number of instances for which to reserve capacity. The number of instances
+	// can't be increased or decreased by more than 1000 in a single request.
 	InstanceCount *int32
 
 	noSmithyDocumentSerde

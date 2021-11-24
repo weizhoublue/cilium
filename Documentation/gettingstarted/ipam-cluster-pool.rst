@@ -25,8 +25,8 @@ Enable Cluster-pool IPAM mode
 #. Depending if you are using IPv4 and / or IPv6, you might want to adjust
    the ``podCIDR`` allocated for your cluster's pods with the options:
 
-   * ``--set ipam.operator.clusterPoolIPv4PodCIDR=<IPv4CIDR>``
-   * ``--set ipam.operator.clusterPoolIPv6PodCIDR=<IPv6CIDR>``
+   * ``--set ipam.operator.clusterPoolIPv4PodCIDRList=<IPv4CIDR>``
+   * ``--set ipam.operator.clusterPoolIPv6PodCIDRList=<IPv6CIDR>``
 
 #. To adjust the CIDR size that should be allocated for each node you can use
    the following options:
@@ -45,7 +45,7 @@ Validate installation
    .. code-block:: shell-session
 
            $ cilium status --all-addresses
-           KVStore:                Ok   etcd: 1/1 connected, has-quorum=true: https://192.168.33.11:2379 - 3.3.12 (Leader)
+           KVStore:                Ok   etcd: 1/1 connected, has-quorum=true: https://192.168.60.11:2379 - 3.3.12 (Leader)
            [...]
            IPAM:                   IPv4: 2/256 allocated,
            Allocated addresses:

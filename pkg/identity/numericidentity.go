@@ -12,6 +12,7 @@ import (
 	api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 const (
@@ -27,14 +28,6 @@ const (
 	// used for reserved purposes.
 	MinimalNumericIdentity = NumericIdentity(256)
 
-	// MinimalAllocationIdentity is the minimum numeric identity handed out
-	// by the identity allocator.
-	MinimalAllocationIdentity = MinimalNumericIdentity
-
-	// MaximumAllocationIdentity is the maximum numeric identity handed out
-	// by the identity allocator
-	MaximumAllocationIdentity = NumericIdentity(^uint16(0))
-
 	// UserReservedNumericIdentity represents the minimal numeric identity that
 	// can be used by users for reserved purposes.
 	UserReservedNumericIdentity = NumericIdentity(128)
@@ -42,6 +35,16 @@ const (
 	// InvalidIdentity is the identity assigned if the identity is invalid
 	// or not determined yet
 	InvalidIdentity = NumericIdentity(0)
+)
+
+var (
+	// MinimalAllocationIdentity is the minimum numeric identity handed out
+	// by the identity allocator.
+	MinimalAllocationIdentity = MinimalNumericIdentity
+
+	// MaximumAllocationIdentity is the maximum numeric identity handed out
+	// by the identity allocator
+	MaximumAllocationIdentity = NumericIdentity((1<<ClusterIDShift)*(option.Config.ClusterID+1) - 1)
 )
 
 const (
@@ -67,6 +70,10 @@ const (
 	// ReservedIdentityRemoteNode is the identity given to all nodes in
 	// local and remote clusters except for the local node.
 	ReservedIdentityRemoteNode
+
+	// ReservedIdentityRemoteNode is the identity given to remote node(s) which
+	// have backend(s) serving the kube-apiserver running.
+	ReservedIdentityKubeAPIServer
 )
 
 // Special identities for well-known cluster components
@@ -138,7 +145,9 @@ func (w wellKnownIdentities) add(i NumericIdentity, lbls []string) {
 		labelArray: labelMap.LabelArray(),
 	}
 
-	ReservedIdentityCache[i] = identity
+	cacheMU.Lock()
+	reservedIdentityCache[i] = identity
+	cacheMU.Unlock()
 }
 
 func (w wellKnownIdentities) LookupByLabels(lbls labels.Labels) *Identity {
@@ -302,26 +311,46 @@ func InitWellKnownIdentities(c Configuration) int {
 	WellKnown.add(ReservedCiliumEtcdOperator2, append(ciliumEtcdOperatorLabels,
 		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceMetaNameLabel, c.CiliumNamespaceName())))
 
+	// For ClusterID > 0, the identity range just starts from cluster shift,
+	// no well known identities need to be reserved from that range.
+	if option.Config.ClusterID > 0 {
+		MinimalAllocationIdentity = NumericIdentity((1 << ClusterIDShift) * option.Config.ClusterID)
+	}
+
 	return len(WellKnown)
 }
 
 var (
 	reservedIdentities = map[string]NumericIdentity{
-		labels.IDNameHost:       ReservedIdentityHost,
-		labels.IDNameWorld:      ReservedIdentityWorld,
-		labels.IDNameUnmanaged:  ReservedIdentityUnmanaged,
-		labels.IDNameHealth:     ReservedIdentityHealth,
-		labels.IDNameInit:       ReservedIdentityInit,
-		labels.IDNameRemoteNode: ReservedIdentityRemoteNode,
+		labels.IDNameHost:          ReservedIdentityHost,
+		labels.IDNameWorld:         ReservedIdentityWorld,
+		labels.IDNameUnmanaged:     ReservedIdentityUnmanaged,
+		labels.IDNameHealth:        ReservedIdentityHealth,
+		labels.IDNameInit:          ReservedIdentityInit,
+		labels.IDNameRemoteNode:    ReservedIdentityRemoteNode,
+		labels.IDNameKubeAPIServer: ReservedIdentityKubeAPIServer,
 	}
 	reservedIdentityNames = map[NumericIdentity]string{
-		IdentityUnknown:            "unknown",
-		ReservedIdentityHost:       labels.IDNameHost,
-		ReservedIdentityWorld:      labels.IDNameWorld,
-		ReservedIdentityUnmanaged:  labels.IDNameUnmanaged,
-		ReservedIdentityHealth:     labels.IDNameHealth,
-		ReservedIdentityInit:       labels.IDNameInit,
-		ReservedIdentityRemoteNode: labels.IDNameRemoteNode,
+		IdentityUnknown:               "unknown",
+		ReservedIdentityHost:          labels.IDNameHost,
+		ReservedIdentityWorld:         labels.IDNameWorld,
+		ReservedIdentityUnmanaged:     labels.IDNameUnmanaged,
+		ReservedIdentityHealth:        labels.IDNameHealth,
+		ReservedIdentityInit:          labels.IDNameInit,
+		ReservedIdentityRemoteNode:    labels.IDNameRemoteNode,
+		ReservedIdentityKubeAPIServer: labels.IDNameKubeAPIServer,
+	}
+	reservedIdentityLabels = map[NumericIdentity]labels.Labels{
+		ReservedIdentityHost:       labels.LabelHost,
+		ReservedIdentityWorld:      labels.LabelWorld,
+		ReservedIdentityUnmanaged:  labels.NewLabelsFromModel([]string{"reserved:" + labels.IDNameUnmanaged}),
+		ReservedIdentityHealth:     labels.LabelHealth,
+		ReservedIdentityInit:       labels.NewLabelsFromModel([]string{"reserved:" + labels.IDNameInit}),
+		ReservedIdentityRemoteNode: labels.LabelRemoteNode,
+		ReservedIdentityKubeAPIServer: labels.Map2Labels(map[string]string{
+			labels.LabelKubeAPIServer.String(): "",
+			labels.LabelRemoteNode.String():    "",
+		}, ""),
 	}
 
 	// WellKnown identities stores global state of all well-known identities.
@@ -453,11 +482,12 @@ func GetAllReservedIdentities() []NumericIdentity {
 	return identities
 }
 
-// IterateReservedIdentities iterates over all reservedIdentities and executes
-// the given function for each key, value pair in reservedIdentities.
-func IterateReservedIdentities(f func(key string, value NumericIdentity)) {
-	for key, value := range reservedIdentities {
-		f(key, value)
+// iterateReservedIdentityLabels iterates over all reservedIdentityLabels and
+// executes the given function for each key, value pair in
+// reservedIdentityLabels.
+func iterateReservedIdentityLabels(f func(_ NumericIdentity, _ labels.Labels)) {
+	for ni, lbls := range reservedIdentityLabels {
+		f(ni, lbls)
 	}
 }
 

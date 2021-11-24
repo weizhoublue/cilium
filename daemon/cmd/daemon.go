@@ -22,23 +22,21 @@ import (
 	"github.com/cilium/cilium/pkg/clustermesh"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/counter"
-	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	"github.com/cilium/cilium/pkg/debug"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/egresspolicy"
+	"github.com/cilium/cilium/pkg/egressgateway"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/endpointmanager"
-	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn"
 	"github.com/cilium/cilium/pkg/hubble/observer"
 	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
 	"github.com/cilium/cilium/pkg/ipam"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
@@ -103,6 +101,7 @@ type Daemon struct {
 	svc              *service.Service
 	rec              *recorder.Recorder
 	policy           *policy.Repository
+	policyUpdater    *policy.Updater
 	preFilter        datapath.PreFilter
 
 	statusCollectMutex lock.RWMutex
@@ -128,8 +127,7 @@ type Daemon struct {
 
 	clustermesh *clustermesh.ClusterMesh
 
-	mtuConfig     mtu.Configuration
-	policyTrigger *trigger.Trigger
+	mtuConfig mtu.Configuration
 
 	datapathRegenTrigger *trigger.Trigger
 
@@ -147,7 +145,7 @@ type Daemon struct {
 
 	endpointManager *endpointmanager.EndpointManager
 
-	identityAllocator *cache.CachingIdentityAllocator
+	identityAllocator CachingIdentityAllocator
 
 	k8sWatcher *watchers.K8sWatcher
 
@@ -167,9 +165,9 @@ type Daemon struct {
 
 	redirectPolicyManager *redirectpolicy.Manager
 
-	bgpSpeaker *speaker.Speaker
+	bgpSpeaker *speaker.MetalLBSpeaker
 
-	egressPolicyManager *egresspolicy.Manager
+	egressGatewayManager *egressgateway.Manager
 
 	apiLimiterSet *rate.APILimiterSet
 
@@ -316,6 +314,10 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		return nil, nil, fmt.Errorf("unable to configure API rate limiting: %w", err)
 	}
 
+	// Check the kernel if we can make use of managed neighbor entries which
+	// simplifies and fully 'offloads' L2 resolution handling to the kernel.
+	probeManagedNeighborSupport()
+
 	// Do the partial kube-proxy replacement initialization before creating BPF
 	// maps. Otherwise, some maps might not be created (e.g. session affinity).
 	// finishKubeProxyReplacementInit(), which is called later after the device
@@ -364,12 +366,12 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		externalIP,
 	)
 
-	nodeMngr, err := nodemanager.NewManager("all", dp.Node(), ipcache.IPIdentityCache, option.Config)
+	nodeMngr, err := nodemanager.NewManager("all", dp.Node(), ipcache.IPIdentityCache, option.Config, nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	identity.IterateReservedIdentities(func(_ string, _ identity.NumericIdentity) {
+	identity.IterateReservedIdentities(func(_ identity.NumericIdentity, _ *identity.Identity) {
 		metrics.Identity.Inc()
 	})
 	if option.Config.EnableWellKnownIdentities {
@@ -409,10 +411,12 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		return nil, nil, fmt.Errorf("error while initializing BPF pcap recorder: %w", err)
 	}
 
-	d.identityAllocator = cache.NewCachingIdentityAllocator(&d)
-	d.policy = policy.NewPolicyRepository(d.identityAllocator.GetIdentityCache(),
-		certificatemanager.NewManager(option.Config.CertDirectory, k8s.Client()))
-	d.policy.SetEnvoyRulesFunc(envoy.GetEnvoyHTTPRules)
+	d.identityAllocator = NewCachingIdentityAllocator(&d)
+	if err := d.initPolicy(epMgr); err != nil {
+		return nil, nil, fmt.Errorf("error while initializing policy subsystem: %w", err)
+	}
+	nodeMngr = nodeMngr.WithSelectorCacheUpdater(d.policy.GetSelectorCache()) // must be after initPolicy
+	nodeMngr = nodeMngr.WithPolicyTriggerer(d.policyUpdater)                  // must be after initPolicy
 
 	// Propagate identity allocator down to packages which themselves do not
 	// have types to which we can add an allocator member.
@@ -426,11 +430,18 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 	d.endpointManager.InitMetrics()
 
 	d.redirectPolicyManager = redirectpolicy.NewRedirectPolicyManager(d.svc)
-	if option.Config.BGPAnnounceLBIP {
-		d.bgpSpeaker = speaker.New()
+	if option.Config.BGPAnnounceLBIP || option.Config.BGPAnnouncePodCIDR {
+		d.bgpSpeaker, err = speaker.New(ctx, speaker.Opts{
+			LoadBalancerIP: option.Config.BGPAnnounceLBIP,
+			PodCIDR:        option.Config.BGPAnnouncePodCIDR,
+		})
+		if err != nil {
+			log.WithError(err).Error("Error creating new BGP speaker")
+			return nil, nil, err
+		}
 	}
 
-	d.egressPolicyManager = egresspolicy.NewEgressPolicyManager()
+	d.egressGatewayManager = egressgateway.NewEgressGatewayManager()
 
 	d.k8sWatcher = watchers.NewK8sWatcher(
 		d.endpointManager,
@@ -441,10 +452,18 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		d.datapath,
 		d.redirectPolicyManager,
 		d.bgpSpeaker,
-		d.egressPolicyManager,
+		d.egressGatewayManager,
 		option.Config,
 	)
 	nd.RegisterK8sNodeGetter(d.k8sWatcher)
+	// GH-17849: The daemon does not have a reference to the ipcache,
+	// instead we rely on the global.
+	ipcache.IPIdentityCache.RegisterK8sSyncedChecker(&d)
+
+	d.k8sWatcher.NodeChain.Register(d.endpointManager)
+	if option.Config.BGPAnnounceLBIP || option.Config.BGPAnnouncePodCIDR {
+		d.k8sWatcher.NodeChain.Register(d.bgpSpeaker)
+	}
 
 	d.redirectPolicyManager.RegisterSvcCache(&d.k8sWatcher.K8sSvcCache)
 	d.redirectPolicyManager.RegisterGetStores(d.k8sWatcher)
@@ -494,31 +513,6 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		}
 		bootstrapStats.restore.End(true)
 	}
-
-	t, err := trigger.NewTrigger(trigger.Parameters{
-		Name:            "policy_update",
-		MetricsObserver: &policyTriggerMetrics{},
-		MinInterval:     option.Config.PolicyTriggerInterval,
-		TriggerFunc:     d.policyUpdateTrigger,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	d.policyTrigger = t
-
-	// Reuse policyTriggerMetrics and PolicyTriggerInterval here since
-	// this is only triggered by agent configuration changes for now
-	// and should be counted in policyTriggerMetrics.
-	regenerationTrigger, err := trigger.NewTrigger(trigger.Parameters{
-		Name:            "datapath-regeneration",
-		MetricsObserver: &policyTriggerMetrics{},
-		MinInterval:     option.Config.PolicyTriggerInterval,
-		TriggerFunc:     d.datapathRegen,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	d.datapathRegenTrigger = regenerationTrigger
 
 	debug.RegisterStatusObject("k8s-service-cache", &d.k8sWatcher.K8sSvcCache)
 	debug.RegisterStatusObject("ipam", d.ipam)
@@ -643,10 +637,6 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		case !option.Config.EnableRemoteNodeIdentity:
 			msg = fmt.Sprintf("BPF masquerade requires remote node identities (--%s=\"true\").",
 				option.EnableRemoteNodeIdentity)
-		// Remove the check after https://github.com/cilium/cilium/issues/12544 is fixed
-		case option.Config.TunnelingEnabled() && !hasFullHostReachableServices():
-			msg = fmt.Sprintf("BPF masquerade requires --%s to be fully enabled (TCP and UDP).",
-				option.EnableHostReachableServices)
 		case option.Config.EgressMasqueradeInterfaces != "":
 			msg = fmt.Sprintf("BPF masquerade does not allow to specify devices via --%s (use --%s instead).",
 				option.EgressMasqueradeInterfaces, option.Devices)
@@ -663,6 +653,18 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 				option.EnableHostLegacyRouting)
 		}
 	}
+	if option.Config.EnableIPv4EgressGateway {
+		if !probes.NewProbeManager().GetMisc().HaveLargeInsnLimit {
+			return nil, nil, fmt.Errorf("egress gateway needs kernel 5.2 or newer")
+		}
+
+		// datapath code depends on remote node identities to distinguish between cluser-local and
+		// cluster-egress traffic
+		if !option.Config.EnableRemoteNodeIdentity {
+			return nil, nil, fmt.Errorf("egress gateway requires remote node identities (--%s=\"true\").",
+				option.EnableRemoteNodeIdentity)
+		}
+	}
 	if option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade {
 		// TODO(brb) nodeport + ipvlan constraints will be lifted once the SNAT BPF code has been refactored
 		if option.Config.DatapathMode == datapathOption.DatapathModeIpvlan {
@@ -673,7 +675,7 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		}
 	} else if option.Config.EnableIPMasqAgent {
 		return nil, nil, fmt.Errorf("BPF ip-masq-agent requires --%s=\"true\" and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableBPFMasquerade)
-	} else if option.Config.EnableEgressGateway {
+	} else if option.Config.EnableIPv4EgressGateway {
 		return nil, nil, fmt.Errorf("egress gateway requires --%s=\"true\" and --%s=\"true\"", option.EnableIPv4Masquerade, option.EnableBPFMasquerade)
 	} else if !option.Config.EnableIPv4Masquerade && option.Config.EnableBPFMasquerade {
 		// There is not yet support for option.Config.EnableIPv6Masquerade
@@ -819,7 +821,8 @@ func NewDaemon(ctx context.Context, cancel context.CancelFunc, epMgr *endpointma
 		// well known identities have already been initialized above.
 		// Ignore the channel returned by this function, as we want the global
 		// identity allocator to run asynchronously.
-		d.identityAllocator.InitIdentityAllocator(k8s.CiliumClient(), nil)
+		realIdentityAllocator := d.identityAllocator
+		realIdentityAllocator.InitIdentityAllocator(k8s.CiliumClient(), nil)
 
 		d.bootstrapClusterMesh(nodeMngr)
 	}
@@ -927,8 +930,8 @@ func (d *Daemon) bootstrapClusterMesh(nodeMngr *nodemanager.Manager) {
 
 // Close shuts down a daemon
 func (d *Daemon) Close() {
-	if d.policyTrigger != nil {
-		d.policyTrigger.Shutdown()
+	if d.policyUpdater != nil {
+		d.policyUpdater.Shutdown()
 	}
 	if d.datapathRegenTrigger != nil {
 		d.datapathRegenTrigger.Shutdown()
@@ -1029,4 +1032,15 @@ func (d *Daemon) GetNodeSuffix() string {
 	}
 
 	return ip.String()
+}
+
+// K8sCacheIsSynced returns true if the agent has fully synced its k8s cache
+// with the API server
+func (d *Daemon) K8sCacheIsSynced() bool {
+	select {
+	case <-d.k8sCachesSynced:
+		return true
+	default:
+		return false
+	}
 }

@@ -234,6 +234,7 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 		ExternalIPs:           &models.KubeProxyReplacementFeaturesExternalIPs{},
 		HostReachableServices: &models.KubeProxyReplacementFeaturesHostReachableServices{},
 		SessionAffinity:       &models.KubeProxyReplacementFeaturesSessionAffinity{},
+		GracefulTermination:   &models.KubeProxyReplacementFeaturesGracefulTermination{},
 	}
 	if option.Config.EnableNodePort {
 		features.NodePort.Enabled = true
@@ -273,6 +274,9 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 	}
 	if option.Config.EnableSessionAffinity {
 		features.SessionAffinity.Enabled = true
+	}
+	if option.Config.EnableK8sTerminatingEndpoint {
+		features.GracefulTermination.Enabled = true
 	}
 
 	return &models.KubeProxyReplacement{
@@ -500,7 +504,7 @@ func (c *clusterNodesClient) NodeNeighborRefresh(ctx context.Context, node nodeT
 	return
 }
 
-func (c *clusterNodesClient) NodeCleanNeighbors() {
+func (c *clusterNodesClient) NodeCleanNeighbors(migrateOnly bool) {
 	// no-op
 	return
 }

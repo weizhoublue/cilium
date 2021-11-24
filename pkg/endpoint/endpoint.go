@@ -25,7 +25,6 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/controller"
-	"github.com/cilium/cilium/pkg/datapath/iptables"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
@@ -113,6 +112,9 @@ var _ notifications.RegenNotificationInfo = (*Endpoint)(nil)
 // purposes is the serializableEndpoint type in this package.
 type Endpoint struct {
 	owner regeneration.Owner
+
+	// policyGetter can get the policy.Repository object.
+	policyGetter policyRepoGetter
 
 	// ID of the endpoint, unique in the scope of the node
 	ID uint16
@@ -340,6 +342,10 @@ type Endpoint struct {
 	noTrackPort uint16
 }
 
+type policyRepoGetter interface {
+	GetPolicyRepository() *policy.Repository
+}
+
 // EndpointSyncControllerName returns the controller name to synchronize
 // endpoint in to kubernetes.
 func EndpointSyncControllerName(epID uint16) string {
@@ -429,8 +435,8 @@ func (e *Endpoint) waitForProxyCompletions(proxyWaitGroup *completion.WaitGroup)
 }
 
 // NewEndpointWithState creates a new endpoint useful for testing purposes
-func NewEndpointWithState(owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, state State) *Endpoint {
-	ep := createEndpoint(owner, proxy, allocator, ID, "")
+func NewEndpointWithState(owner regeneration.Owner, policyGetter policyRepoGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, state State) *Endpoint {
+	ep := createEndpoint(owner, policyGetter, proxy, allocator, ID, "")
 	ep.state = state
 	ep.eventQueue = eventqueue.NewEventQueueBuffered(fmt.Sprintf("endpoint-%d", ID), option.Config.EndpointQueueSize)
 
@@ -441,9 +447,10 @@ func NewEndpointWithState(owner regeneration.Owner, proxy EndpointProxy, allocat
 	return ep
 }
 
-func createEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, ifName string) *Endpoint {
+func createEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, proxy EndpointProxy, allocator cache.IdentityAllocator, ID uint16, ifName string) *Endpoint {
 	ep := &Endpoint{
 		owner:           owner,
+		policyGetter:    policyGetter,
 		ID:              ID,
 		createdAt:       time.Now(),
 		proxy:           proxy,
@@ -455,7 +462,7 @@ func createEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cac
 		state:           "",
 		status:          NewEndpointStatus(),
 		hasBPFProgram:   make(chan struct{}, 0),
-		desiredPolicy:   policy.NewEndpointPolicy(owner.GetPolicyRepository()),
+		desiredPolicy:   policy.NewEndpointPolicy(policyGetter.GetPolicyRepository()),
 		controllers:     controller.NewManager(),
 		regenFailedChan: make(chan struct{}, 1),
 		allocator:       allocator,
@@ -475,7 +482,7 @@ func createEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cac
 }
 
 // CreateHostEndpoint creates the endpoint corresponding to the host.
-func CreateHostEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator) (*Endpoint, error) {
+func CreateHostEndpoint(owner regeneration.Owner, policyGetter policyRepoGetter, proxy EndpointProxy, allocator cache.IdentityAllocator) (*Endpoint, error) {
 	ifName := option.Config.HostDevice
 
 	mac, err := link.GetHardwareAddr(ifName)
@@ -483,7 +490,7 @@ func CreateHostEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator
 		return nil, err
 	}
 
-	ep := createEndpoint(owner, proxy, allocator, 0, ifName)
+	ep := createEndpoint(owner, policyGetter, proxy, allocator, 0, ifName)
 	ep.isHost = true
 	ep.mac = mac
 	ep.nodeMAC = mac
@@ -790,7 +797,7 @@ func FilterEPDir(dirFiles []os.DirEntry) []string {
 // common.CiliumCHeaderPrefix + common.Version + ":" + endpointBase64
 // Note that the parse'd endpoint's identity is only partially restored. The
 // caller must call `SetIdentity()` to make the returned endpoint's identity useful.
-func parseEndpoint(ctx context.Context, owner regeneration.Owner, bEp []byte) (*Endpoint, error) {
+func parseEndpoint(ctx context.Context, owner regeneration.Owner, policyGetter policyRepoGetter, bEp []byte) (*Endpoint, error) {
 	// TODO: Provide a better mechanism to update from old version once we bump
 	// TODO: cilium version.
 	epSlice := bytes.Split(bEp, []byte{':'})
@@ -798,7 +805,8 @@ func parseEndpoint(ctx context.Context, owner regeneration.Owner, bEp []byte) (*
 		return nil, fmt.Errorf("invalid format %q. Should contain a single ':'", bEp)
 	}
 	ep := Endpoint{
-		owner: owner,
+		owner:        owner,
+		policyGetter: policyGetter,
 	}
 
 	if err := parseBase64ToEndpoint(epSlice[1], &ep); err != nil {
@@ -810,7 +818,7 @@ func parseEndpoint(ctx context.Context, owner regeneration.Owner, bEp []byte) (*
 
 	// Initialize fields to values which are non-nil that are not serialized.
 	ep.hasBPFProgram = make(chan struct{}, 0)
-	ep.desiredPolicy = policy.NewEndpointPolicy(owner.GetPolicyRepository())
+	ep.desiredPolicy = policy.NewEndpointPolicy(policyGetter.GetPolicyRepository())
 	ep.realizedPolicy = ep.desiredPolicy
 	ep.controllers = controller.NewManager()
 	ep.regenFailedChan = make(chan struct{}, 1)
@@ -1123,7 +1131,7 @@ func (e *Endpoint) leaveLocked(proxyWaitGroup *completion.WaitGroup, conf Delete
 		releaseCtx, cancel := context.WithTimeout(context.Background(), option.Config.KVstoreConnectivityTimeout)
 		defer cancel()
 
-		_, err := e.allocator.Release(releaseCtx, e.SecurityIdentity)
+		_, err := e.allocator.Release(releaseCtx, e.SecurityIdentity, false)
 		if err != nil {
 			errors = append(errors, fmt.Errorf("unable to release identity: %s", err))
 		}
@@ -1724,6 +1732,27 @@ func (e *Endpoint) UpdateLabels(ctx context.Context, identityLabels, infoLabels 
 	return false
 }
 
+// UpdateLabelsFrom is a convenience function to update an endpoint's identity
+// labels from any source.
+func (e *Endpoint) UpdateLabelsFrom(oldLbls, newLbls map[string]string, source string) error {
+	newLabels := labels.Map2Labels(newLbls, source)
+	newIdtyLabels, _ := labelsfilter.Filter(newLabels)
+	oldLabels := labels.Map2Labels(oldLbls, source)
+	oldIdtyLabels, _ := labelsfilter.Filter(oldLabels)
+
+	err := e.ModifyIdentityLabels(newIdtyLabels, oldIdtyLabels)
+	if err != nil {
+		log.WithError(err).Debugf("Error while updating endpoint with new labels")
+		return err
+	}
+
+	log.WithFields(logrus.Fields{
+		logfields.EndpointID: e.GetID(),
+		logfields.Labels:     logfields.Repr(newIdtyLabels),
+	}).Debug("Updated endpoint with new labels")
+	return nil
+}
+
 func (e *Endpoint) identityResolutionIsObsolete(myChangeRev int) bool {
 	// Check if the endpoint has since received a new identity revision, if
 	// so, abort as a new resolution routine will have been started.
@@ -1827,7 +1856,16 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (
 	allocateCtx, cancel := context.WithTimeout(ctx, option.Config.KVstoreConnectivityTimeout)
 	defer cancel()
 
-	allocatedIdentity, _, err := e.allocator.AllocateIdentity(allocateCtx, newLabels, true)
+	// Typically, SelectorCache notification happens from the identityWatcher,
+	// requiring a round-trip to the kvstore to start updating policies for
+	// other endpoints on the node.
+	//
+	// To get a jump start on plumbing the handling of the identity for
+	// this endpoint, trigger the early notification via this call. If the
+	// identity is new, then this will start updating the policy for other
+	// co-located endpoints without having to wait for that RTT.
+	notifySelectorCache := true
+	allocatedIdentity, _, err := e.allocator.AllocateIdentity(allocateCtx, newLabels, notifySelectorCache)
 	if err != nil {
 		err = fmt.Errorf("unable to resolve identity: %s", err)
 		e.LogStatus(Other, Warning, fmt.Sprintf("%s (will retry)", err.Error()))
@@ -1843,7 +1881,7 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (
 	defer cancel()
 
 	releaseNewlyAllocatedIdentity := func() {
-		_, err := e.allocator.Release(releaseCtx, allocatedIdentity)
+		_, err := e.allocator.Release(releaseCtx, allocatedIdentity, false)
 		if err != nil {
 			// non fatal error as keys will expire after lease expires but log it
 			elog.WithFields(logrus.Fields{logfields.Identity: allocatedIdentity.ID}).
@@ -1903,7 +1941,7 @@ func (e *Endpoint) identityLabelsChanged(ctx context.Context, myChangeRev int) (
 	e.SetIdentity(allocatedIdentity, false)
 
 	if oldIdentity != nil {
-		_, err := e.allocator.Release(releaseCtx, oldIdentity)
+		_, err := e.allocator.Release(releaseCtx, oldIdentity, false)
 		if err != nil {
 			elog.WithFields(logrus.Fields{logfields.Identity: oldIdentity.ID}).
 				WithError(err).Warn("Unable to release old endpoint identity")
@@ -2186,12 +2224,12 @@ func (e *Endpoint) Delete(conf DeleteConfig) []error {
 		}).Debug("Deleting endpoint NOTRACK rules")
 
 		if e.IPv4.IsSet() {
-			if err := iptables.RemoveNoTrackRules(e.IPv4.String(), e.noTrackPort, false); err != nil {
+			if err := e.owner.Datapath().RemoveNoTrackRules(e.IPv4.String(), e.noTrackPort, false); err != nil {
 				errs = append(errs, fmt.Errorf("unable to delete endpoint NOTRACK ipv4 rules: %s", err))
 			}
 		}
 		if e.IPv6.IsSet() {
-			if err := iptables.RemoveNoTrackRules(e.IPv6.String(), e.noTrackPort, true); err != nil {
+			if err := e.owner.Datapath().RemoveNoTrackRules(e.IPv6.String(), e.noTrackPort, true); err != nil {
 				errs = append(errs, fmt.Errorf("unable to delete endpoint NOTRACK ipv6 rules: %s", err))
 			}
 		}

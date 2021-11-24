@@ -36,9 +36,13 @@
    * - bgp
      - Configure BGP
      - object
-     - ``{"announce":{"loadbalancerIP":false},"enabled":false}``
+     - ``{"announce":{"loadbalancerIP":false,"podCIDR":false},"enabled":false}``
    * - bgp.announce.loadbalancerIP
      - Enable allocation and announcement of service LoadBalancer IPs
+     - bool
+     - ``false``
+   * - bgp.announce.podCIDR
+     - Enable announcement of node pod CIDR
      - bool
      - ``false``
    * - bgp.enabled
@@ -297,6 +301,10 @@
      - Enables egress gateway (beta) to redirect and SNAT the traffic that leaves the cluster.
      - object
      - ``{"enabled":false}``
+   * - enableCiliumEndpointSlice
+     - Enable CiliumEndpointSlice feature.
+     - bool
+     - ``false``
    * - enableCnpStatusUpdates
      - Whether to enable CNP status updates.
      - bool
@@ -317,6 +325,10 @@
      - Configures the use of the KVStore to optimize Kubernetes event handling by mirroring it into the KVstore for reduced overhead in large clusters.
      - bool
      - ``false``
+   * - enableK8sTerminatingEndpoint
+     - Configure whether to enable auto detect of terminating state for endpoints in order to support graceful termination.
+     - bool
+     - ``true``
    * - enableXTSocketFallback
      - Enables the fallback compatibility solution for when the xt_socket kernel module is missing and it is needed for the datapath L7 redirection to work properly. See documentation for details on when this can be disabled: http://docs.cilium.io/en/stable/install/system_requirements/#admin-kernel-version.
      - bool
@@ -365,6 +377,10 @@
      - Encryption method. Can be either ipsec or wireguard.
      - string
      - ``"ipsec"``
+   * - encryption.wireguard.userspaceFallback
+     - Enables the fallback to the user-space implementation.
+     - bool
+     - ``false``
    * - endpointHealthChecking.enabled
      - Enable connectivity health checking between virtual endpoints.
      - bool
@@ -568,7 +584,7 @@
    * - hubble.metrics
      - Hubble metrics configuration. See https://docs.cilium.io/en/stable/configuration/metrics/#hubble-metrics for more comprehensive documentation about Hubble metrics.
      - object
-     - ``{"enabled":null,"port":9091,"serviceAnnotations":{},"serviceMonitor":{"enabled":false}}``
+     - ``{"enabled":null,"port":9091,"serviceAnnotations":{},"serviceMonitor":{"enabled":false,"labels":{}}}``
    * - hubble.metrics.enabled
      - Configures the list of metrics to collect. If empty or null, metrics are disabled. Example:   enabled:   - dns:query;ignoreAAAA   - drop   - tcp   - flow   - icmp   - http You can specify the list of metrics from the helm CLI:   --set metrics.enabled="{dns:query;ignoreAAAA,drop,tcp,flow,icmp,http}"
      - string
@@ -585,6 +601,10 @@
      - Create ServiceMonitor resources for Prometheus Operator. This requires the prometheus CRDs to be available. ref: https://github.com/prometheus-operator/prometheus-operator/blob/master/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml)
      - bool
      - ``false``
+   * - hubble.metrics.serviceMonitor.labels
+     - Labels to add to ServiceMonitor hubble
+     - object
+     - ``{}``
    * - hubble.relay.dialTimeout
      - Dial timeout to connect to the local hubble instance to receive peer information (e.g. "30s").
      - string
@@ -789,6 +809,14 @@
      - Whether to set the security context on the Hubble UI pods.
      - bool
      - ``true``
+   * - hubble.ui.standalone.enabled
+     - When true, it will allow installing the Hubble UI only, without checking dependencies. It is useful if a cluster already has cilium and Hubble relay installed and you just want Hubble UI to be deployed. When installed via helm, installing UI should be done via ``helm upgrade`` and when installed via the cilium cli, then ``cilium hubble enable --ui``
+     - bool
+     - ``false``
+   * - hubble.ui.standalone.tls.certsVolume
+     - When deploying Hubble UI in standalone, with tls enabled for Hubble relay, it is required to provide a volume for mounting the client certificates.
+     - object
+     - ``{}``
    * - hubble.ui.tls.client
      - base64 encoded PEM values used to connect to hubble-relay This keypair is presented to Hubble Relay instances for mTLS authentication and is required when hubble.relay.tls.server.enabled is true. These values need to be set manually if hubble.tls.auto.enabled is false.
      - object
@@ -834,17 +862,25 @@
      - int
      - ``24``
    * - ipam.operator.clusterPoolIPv4PodCIDR
-     - IPv4 CIDR range to delegate to individual nodes for IPAM.
+     - Deprecated in favor of ipam.operator.clusterPoolIPv4PodCIDRList. IPv4 CIDR range to delegate to individual nodes for IPAM.
      - string
      - ``"10.0.0.0/8"``
+   * - ipam.operator.clusterPoolIPv4PodCIDRList
+     - IPv4 CIDR list range to delegate to individual nodes for IPAM.
+     - list
+     - ``[]``
    * - ipam.operator.clusterPoolIPv6MaskSize
      - IPv6 CIDR mask size to delegate to individual nodes for IPAM.
      - int
      - ``120``
    * - ipam.operator.clusterPoolIPv6PodCIDR
-     - IPv6 CIDR range to delegate to individual nodes for IPAM.
+     - Deprecated in favor of ipam.operator.clusterPoolIPv6PodCIDRList. IPv6 CIDR range to delegate to individual nodes for IPAM.
      - string
      - ``"fd00::/104"``
+   * - ipam.operator.clusterPoolIPv6PodCIDRList
+     - IPv6 CIDR list range to delegate to individual nodes for IPAM.
+     - list
+     - ``[]``
    * - ipv4.enabled
      - Enable IPv4 support.
      - bool
@@ -874,9 +910,9 @@
      - string
      - ``""``
    * - l2NeighDiscovery.arping-refresh-period
-     - Set period for arping
+     - Override the agent's default neighbor resolution refresh period.
      - string
-     - ``"5m"``
+     - ``"30s"``
    * - l2NeighDiscovery.enabled
      - Enable L2 neighbor discovery in the agent
      - bool
@@ -1068,11 +1104,15 @@
    * - operator.prometheus
      - Enable prometheus metrics for cilium-operator on the configured port at /metrics
      - object
-     - ``{"enabled":false,"port":6942,"serviceMonitor":{"enabled":false}}``
+     - ``{"enabled":false,"port":6942,"serviceMonitor":{"enabled":false,"labels":{}}}``
    * - operator.prometheus.serviceMonitor.enabled
      - Enable service monitors. This requires the prometheus CRDs to be available (see https://github.com/prometheus-operator/prometheus-operator/blob/master/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml)
      - bool
      - ``false``
+   * - operator.prometheus.serviceMonitor.labels
+     - Labels to add to ServiceMonitor cilium-operator
+     - object
+     - ``{}``
    * - operator.replicas
      - Number of replicas to run for the cilium-operator deployment
      - int
@@ -1200,7 +1240,7 @@
    * - prometheus
      - Configure prometheus metrics on the configured port at /metrics
      - object
-     - ``{"enabled":false,"metrics":null,"port":9090,"serviceMonitor":{"enabled":false}}``
+     - ``{"enabled":false,"metrics":null,"port":9090,"serviceMonitor":{"enabled":false,"labels":{}}}``
    * - prometheus.metrics
      - Metrics that should be enabled or disabled from the default metric list. (+metric_foo to enable metric_foo , -metric_bar to disable metric_bar). ref: https://docs.cilium.io/en/stable/operations/metrics/#exported-metrics
      - string
@@ -1209,6 +1249,10 @@
      - Enable service monitors. This requires the prometheus CRDs to be available (see https://github.com/prometheus-operator/prometheus-operator/blob/master/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml)
      - bool
      - ``false``
+   * - prometheus.serviceMonitor.labels
+     - Labels to add to ServiceMonitor cilium-agent
+     - object
+     - ``{}``
    * - proxy
      - Configure Istio proxy options.
      - object

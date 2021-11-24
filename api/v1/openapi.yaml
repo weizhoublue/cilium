@@ -2003,6 +2003,15 @@ definitions:
             properties:
               enabled:
                 type: boolean
+          gracefulTermination:
+            description: |-
+
+
+              +k8s:deepcopy-gen=true
+            type: object
+            properties:
+              enabled:
+                type: boolean
   AllocationMap:
     description: |
       Map of allocated IPs
@@ -3070,6 +3079,7 @@ definitions:
       Policy specs.
 
       +deepequal-gen=true
+      +k8s:deepcopy-gen=true
     type: array
     items:
       "$ref": "#/definitions/Port"

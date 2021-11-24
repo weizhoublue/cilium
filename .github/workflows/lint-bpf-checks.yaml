@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: Checkout code
         if: ${{ !github.event.pull_request }}
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
       - name: Check code changes
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -49,7 +49,7 @@ jobs:
         uses: docker://quay.io/cilium/cilium-checkpatch:51c4dc61117528afe974dc3e30150a730c8fe6d1@sha256:a124116766e78169977e4c36da7e9c18e0edee01a062f4887ee788cbc5efdab3
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
@@ -63,15 +63,15 @@ jobs:
     name: coccicheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
-      - uses: docker://cilium/coccicheck:2.0
+      - uses: docker://cilium/coccicheck:2.0@sha256:6f0369994c426d0bc013fc443cc6a48a0734fb35467955d10f3fc9f7cbd9c7fe
         with:
           entrypoint: ./contrib/coccinelle/check-cocci.sh
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
@@ -88,21 +88,21 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@331ce1d993939866bb63c32c6cbbfd48fa76fc57
         with:
-          go-version: 1.17.2
+          go-version: 1.17.3
       - name: Cache LLVM and Clang
         id: cache-llvm
-        uses: actions/cache@c64c572235d810460d0d6876e9c705ad5002b353
+        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
         with:
           path: $HOME/.clang
           key: llvm-10.0
       - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@3c8956ce3469123af1c39125f684835e56ac58ee
+        uses: KyleMayes/install-llvm-action@05c61da4ecfc850b6112f0b289000c2c0fecbcc8
         with:
           version: "10.0"
           directory: $HOME/.clang
           cached: ${{ steps.cache-llvm.outputs.cache-hit }}
       - name: Checkout code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -116,7 +116,7 @@ jobs:
           make -C bpf go_prog_test || (echo "Run 'make -C bpf go_prog_test' locally to investigate failures"; exit 1)
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)

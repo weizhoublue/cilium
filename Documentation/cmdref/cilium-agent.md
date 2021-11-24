@@ -18,10 +18,11 @@ cilium-agent [flags]
       --allow-localhost string                               Policy when to allow local stack to reach local endpoints { auto | always | policy } (default "auto")
       --annotate-k8s-node                                    Annotate Kubernetes node (default true)
       --api-rate-limit map                                   API rate limiting configuration (example: --rate-limit endpoint-create=rate-limit:10/m,rate-burst:2) (default map[])
-      --arping-refresh-period duration                       Period for remote node ARP entry refresh (set 0 to disable) (default 5m0s)
+      --arping-refresh-period duration                       Period for remote node ARP entry refresh (set 0 to disable) (default 30s)
       --auto-create-cilium-node-resource                     Automatically create CiliumNode resource for own node on startup (default true)
       --auto-direct-node-routes                              Enable automatic L2 routing between nodes
       --bgp-announce-lb-ip                                   Announces service IPs of type LoadBalancer via BGP
+      --bgp-announce-pod-cidr                                Announces the node's pod CIDR via BGP
       --bgp-config-path string                               Path to file containing the BGP configuration (default "/var/lib/cilium/bgp/config.yaml")
       --bpf-ct-global-any-max int                            Maximum number of entries in non-TCP CT table (default 262144)
       --bpf-ct-global-tcp-max int                            Maximum number of entries in TCP CT table (default 524288)
@@ -34,7 +35,6 @@ cilium-agent [flags]
       --bpf-fragments-map-max int                            Maximum number of entries in fragments tracking map (default 8192)
       --bpf-lb-acceleration string                           BPF load balancing acceleration via XDP ("native", "disabled") (default "disabled")
       --bpf-lb-algorithm string                              BPF load balancing algorithm ("random", "maglev") (default "random")
-      --bpf-lb-bypass-fib-lookup                             Enable FIB lookup bypass optimization for nodeport reverse NAT handling (default true)
       --bpf-lb-dev-ip-addr-inherit string                    Device name which IP addr is inherited by devices running LB BPF program (--devices)
       --bpf-lb-dsr-dispatch string                           BPF load balancing DSR dispatch method ("opt", "ipip") (default "opt")
       --bpf-lb-dsr-l4-xlate string                           BPF load balancing DSR L4 DNAT method for IPIP ("frontend", "backend") (default "frontend")
@@ -79,8 +79,8 @@ cilium-agent [flags]
       --enable-bpf-clock-probe                               Enable BPF clock source probing for more efficient tick retrieval
       --enable-bpf-masquerade                                Masquerade packets from endpoints leaving the host with BPF instead of iptables
       --enable-bpf-tproxy                                    Enable BPF-based proxy redirection, if support available
+      --enable-cilium-endpoint-slice                         If set to true, CiliumEndpointSlice feature is enabled and cilium agent watch for CiliumEndpointSlice instead of CiliumEndpoint to update the IPCache.
       --enable-custom-calls                                  Enable tail call hooks for custom eBPF programs
-      --enable-egress-gateway                                Enable egress gateway
       --enable-endpoint-health-checking                      Enable connectivity health checking between virtual endpoints (default true)
       --enable-endpoint-routes                               Use per endpoint routes instead of routing via cilium_host
       --enable-external-ips                                  Enable k8s service externalIPs feature (requires enabling enable-node-port) (default true)
@@ -96,6 +96,7 @@ cilium-agent [flags]
       --enable-ip-masq-agent                                 Enable BPF ip-masq-agent
       --enable-ipsec                                         Enable IPSec support
       --enable-ipv4                                          Enable IPv4 support (default true)
+      --enable-ipv4-egress-gateway                           Enable egress gateway for IPv4
       --enable-ipv4-fragment-tracking                        Enable IPv4 fragments tracking for L4-based lookups (default true)
       --enable-ipv4-masquerade                               Masquerade IPv4 traffic from endpoints leaving the host (default true)
       --enable-ipv6                                          Enable IPv6 support (default true)
@@ -104,6 +105,7 @@ cilium-agent [flags]
       --enable-k8s-api-discovery                             Enable discovery of Kubernetes API groups and resources with the discovery API
       --enable-k8s-endpoint-slice                            Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it (default true)
       --enable-k8s-event-handover                            Enable k8s event handover to kvstore for improved scalability
+      --enable-k8s-terminating-endpoint                      Enable auto-detect of terminating endpoint condition (default true)
       --enable-l2-neigh-discovery                            Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec (default true)
       --enable-l7-proxy                                      Enable L7 proxy for L7 policy enforcement (default true)
       --enable-local-node-route                              Enable installation of the route which points the allocation prefix of the local node (default true)
@@ -118,6 +120,8 @@ cilium-agent [flags]
       --enable-tracing                                       Enable tracing while determining policy (debugging)
       --enable-well-known-identities                         Enable well-known identities for known Kubernetes components (default true)
       --enable-wireguard                                     Enable wireguard
+      --enable-wireguard-userspace-fallback                  Enables the fallback to the wireguard userspace implementation
+      --enable-xdp-prefilter                                 Enable XDP prefiltering
       --enable-xt-socket-fallback                            Enable fallback for missing xt_socket module (default true)
       --encrypt-interface string                             Transparent encryption interface
       --encrypt-node                                         Enables encrypting traffic from non-Cilium pods and host networking
@@ -215,14 +219,13 @@ cilium-agent [flags]
       --pprof                                                Enable serving the pprof debugging API
       --pprof-port int                                       Port that the pprof listens on (default 6060)
       --preallocate-bpf-maps                                 Enable BPF map pre-allocation (default true)
-      --prefilter-device string                              Device facing external network for XDP prefiltering (default "undefined")
-      --prefilter-mode string                                Prefilter mode via XDP ("native", "generic") (default "native")
       --prepend-iptables-chains                              Prepend custom iptables chains instead of appending (default true)
       --prometheus-serve-addr string                         IP:Port on which to serve prometheus metrics (pass ":Port" to bind on all interfaces, "" is off)
       --proxy-connect-timeout uint                           Time after which a TCP connect attempt is considered failed unless completed (in seconds) (default 1)
       --proxy-prometheus-port int                            Port to serve Envoy metrics on. Default 0 (disabled).
       --read-cni-conf string                                 Read to the CNI configuration at specified path to extract per node configuration
       --restore                                              Restores state, if possible, from previous daemon (default true)
+      --route-metric int                                     Overwrite the metric used by cilium when adding routes to its 'cilium_host' device
       --sidecar-istio-proxy-image string                     Regular expression matching compatible Istio sidecar istio-proxy container image names (default "cilium/istio_proxy")
       --single-cluster-route                                 Use a single cluster route instead of per node routes
       --socket-path string                                   Sets daemon's socket path to listen for connections (default "/var/run/cilium/cilium.sock")

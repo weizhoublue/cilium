@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:6ed96e618f68cd941b62b546fc8d161db0144d84@sha256:5245610a830b14972d5b287fc0318ac6ab0d420e4afc9b5db9032a04fd706d32
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:f6698fe61dbe11019946e5cf5a92077cc8d4a6a9@sha256:9acfa5f4c64482d3dbe19c319f135f5e856f02b479b5eba06efa8691d74e1d4d
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:fd939cafee48ecde09af1d96b9b9d21f9938d9e9@sha256:72bf50d49771c2f8bf346b24905f8856bcf16e41b67ff81a5f246283afb1017e
 ARG TESTER_IMAGE=quay.io/cilium/image-tester:eb76f0d4d585946bb0267b4c4478cceed17bbd87@sha256:c9a598cdc4843e62ab4e430f36343ca06d5292506261f17e466e0f1cbb48ddbb
-ARG GOLANG_IMAGE=docker.io/library/golang:1.17.2@sha256:45d45a39258425b0386643efc863b3b3c1481173d64ec6151b18d48b565df9a0
+ARG GOLANG_IMAGE=docker.io/library/golang:1.17.3@sha256:dac1fd50dc298852005ed2d84baa4f15ca86b1042fce6d8da3f98d6074294bf4
 ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:0147a23fdada32bd51b4f313c645bcb5fbe188d6@sha256:24fd3ad32471d0e45844c856c38f1b2d4ac8bd0a2d4edf64cffaaa3fd0b21202
 
 FROM ${COMPILERS_IMAGE} as compilers-image
@@ -37,7 +37,6 @@ RUN \
       gcc \
       git \
       libc6-dev \
-      libelf-dev \
       make && \
     apt-get purge --auto-remove && \
     apt-get clean && \

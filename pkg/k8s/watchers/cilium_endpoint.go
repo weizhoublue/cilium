@@ -200,8 +200,8 @@ func (k *K8sWatcher) endpointUpdated(oldEndpoint, endpoint *types.CiliumEndpoint
 		}
 	}
 
-	if option.Config.EnableEgressGateway {
-		k.egressPolicyManager.OnUpdateEndpoint(endpoint)
+	if option.Config.EnableIPv4EgressGateway {
+		k.egressGatewayManager.OnUpdateEndpoint(endpoint)
 	}
 }
 
@@ -211,7 +211,7 @@ func (k *K8sWatcher) endpointDeleted(endpoint *types.CiliumEndpoint) {
 		for _, pair := range endpoint.Networking.Addressing {
 			if pair.IPV4 != "" {
 				k8sMeta := ipcache.IPIdentityCache.GetK8sMetadata(pair.IPV4)
-				if k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
+				if k8sMeta != nil && k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
 					portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV4, source.CustomResource)
 					if portsChanged {
 						namedPortsChanged = true
@@ -221,7 +221,7 @@ func (k *K8sWatcher) endpointDeleted(endpoint *types.CiliumEndpoint) {
 
 			if pair.IPV6 != "" {
 				k8sMeta := ipcache.IPIdentityCache.GetK8sMetadata(pair.IPV6)
-				if k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
+				if k8sMeta != nil && k8sMeta.Namespace == endpoint.Namespace && k8sMeta.PodName == endpoint.Name {
 					portsChanged := ipcache.IPIdentityCache.Delete(pair.IPV6, source.CustomResource)
 					if portsChanged {
 						namedPortsChanged = true
@@ -233,7 +233,7 @@ func (k *K8sWatcher) endpointDeleted(endpoint *types.CiliumEndpoint) {
 			k.policyManager.TriggerPolicyUpdates(true, "Named ports deleted")
 		}
 	}
-	if option.Config.EnableEgressGateway {
-		k.egressPolicyManager.OnDeleteEndpoint(endpoint)
+	if option.Config.EnableIPv4EgressGateway {
+		k.egressGatewayManager.OnDeleteEndpoint(endpoint)
 	}
 }

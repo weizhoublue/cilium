@@ -9,19 +9,22 @@ import (
 	"fmt"
 	stdlog "log"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/policy"
 	"github.com/cilium/cilium/pkg/api"
+	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
+	"github.com/cilium/cilium/pkg/endpointmanager"
+	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	bpfIPCache "github.com/cilium/cilium/pkg/maps/ipcache"
@@ -31,51 +34,44 @@ import (
 	"github.com/cilium/cilium/pkg/policy"
 	policyAPI "github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/safetime"
+	"github.com/cilium/cilium/pkg/trigger"
 
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/google/uuid"
 )
 
-type policyTriggerMetrics struct{}
-
-func (p *policyTriggerMetrics) QueueEvent(reason string) {
-	if option.Config.MetricsConfig.TriggerPolicyUpdateTotal {
-		metrics.TriggerPolicyUpdateTotal.WithLabelValues(reason).Inc()
+// initPolicy initializes the core policy components of the daemon.
+func (d *Daemon) initPolicy(epMgr *endpointmanager.EndpointManager) error {
+	// Reuse policy.TriggerMetrics and PolicyTriggerInterval here since
+	// this is only triggered by agent configuration changes for now and
+	// should be counted in pol.TriggerMetrics.
+	rt, err := trigger.NewTrigger(trigger.Parameters{
+		Name:            "datapath-regeneration",
+		MetricsObserver: &policy.TriggerMetrics{},
+		MinInterval:     option.Config.PolicyTriggerInterval,
+		TriggerFunc:     d.datapathRegen,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create datapath regeneration trigger: %w", err)
 	}
+	d.datapathRegenTrigger = rt
+
+	d.policy = policy.NewPolicyRepository(d.identityAllocator,
+		d.identityAllocator.GetIdentityCache(),
+		certificatemanager.NewManager(option.Config.CertDirectory, k8s.Client()))
+	d.policy.SetEnvoyRulesFunc(envoy.GetEnvoyHTTPRules)
+	d.policyUpdater, err = policy.NewUpdater(d.policy, epMgr)
+	if err != nil {
+		return fmt.Errorf("failed to create policy update trigger: %w", err)
+	}
+
+	return nil
 }
 
-func (p *policyTriggerMetrics) PostRun(duration, latency time.Duration, folds int) {
-	if option.Config.MetricsConfig.TriggerPolicyUpdateCallDuration {
-		metrics.TriggerPolicyUpdateCallDuration.WithLabelValues("duration").Observe(duration.Seconds())
-		metrics.TriggerPolicyUpdateCallDuration.WithLabelValues("latency").Observe(latency.Seconds())
-	}
-	if option.Config.MetricsConfig.TriggerPolicyUpdateFolds {
-		metrics.TriggerPolicyUpdateFolds.Set(float64(folds))
-	}
-}
-
-func (d *Daemon) policyUpdateTrigger(reasons []string) {
-	log.Debugf("Regenerating all endpoints")
-	reason := strings.Join(reasons, ", ")
-
-	regenerationMetadata := &regeneration.ExternalRegenerationMetadata{
-		Reason:            reason,
-		RegenerationLevel: regeneration.RegenerateWithoutDatapath,
-	}
-	d.endpointManager.RegenerateAllEndpoints(regenerationMetadata)
-}
-
-// TriggerPolicyUpdates triggers policy updates for every daemon's endpoint.
-// This may be called in a variety of situations: after policy changes, changes
-// in agent configuration, changes in endpoint labels, and change of security
-// identities.
+// TriggerPolicyUpdates triggers policy updates by deferring to the
+// policy.Updater to handle them.
 func (d *Daemon) TriggerPolicyUpdates(force bool, reason string) {
-	if force {
-		log.Debugf("Artificially increasing policy revision to enforce policy recalculation")
-		d.policy.BumpRevision()
-	}
-
-	d.policyTrigger.TriggerWithReason(reason)
+	d.policyUpdater.TriggerPolicyUpdates(force, reason)
 }
 
 // UpdateIdentities informs the policy package of all identity changes
@@ -291,6 +287,9 @@ func (d *Daemon) policyAdd(sourceRules policyAPI.Rules, opts *policy.AddOptions,
 	// With SelectiveRegeneration this is postponed to the rule reaction queue to be done
 	// after the affected endpoints have been regenerated, otherwise new identities are
 	// upserted to the ipcache before we return.
+	//
+	// Release of these identities will be tied to the corresponding policy
+	// in the policy.Repository and released upon policyDelete().
 	newlyAllocatedIdentities := make(map[string]*identity.Identity)
 	if _, err := ipcache.AllocateCIDRs(prefixes, newlyAllocatedIdentities); err != nil {
 		_ = d.prefixLengths.Delete(prefixes)
@@ -386,7 +385,7 @@ func (d *Daemon) policyAdd(sourceRules policyAPI.Rules, opts *policy.AddOptions,
 	// and will trigger deletions for those that are no longer used.
 	if len(removedPrefixes) > 0 {
 		logger.WithField("prefixes", removedPrefixes).Debug("Decrementing replaced CIDR refcounts when adding rules")
-		ipcache.ReleaseCIDRs(removedPrefixes)
+		ipcache.ReleaseCIDRIdentitiesByCIDR(removedPrefixes)
 		d.prefixLengths.Delete(removedPrefixes)
 	}
 
@@ -473,7 +472,7 @@ func reactToRuleUpdates(epsToBumpRevision, epsToRegen *policy.EndpointSet, rev u
 	// the stale identities are not used in policy map classifications after we regenerate the
 	// endpoints below.
 	if len(releasePrefixes) != 0 {
-		ipcache.ReleaseCIDRs(releasePrefixes)
+		ipcache.ReleaseCIDRIdentitiesByCIDR(releasePrefixes)
 	}
 
 	// Bump revision of endpoints which don't need to be regenerated.
@@ -652,7 +651,7 @@ func (d *Daemon) policyDelete(labels labels.LabelArray, res chan interface{}) {
 			log.WithError(err).WithField(logfields.PolicyRevision, rev).Error("enqueue of RuleReactionEvent failed")
 		}
 	} else {
-		ipcache.ReleaseCIDRs(prefixes)
+		ipcache.ReleaseCIDRIdentitiesByCIDR(prefixes)
 		d.TriggerPolicyUpdates(true, "policy rules deleted")
 	}
 

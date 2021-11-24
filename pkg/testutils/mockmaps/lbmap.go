@@ -39,14 +39,18 @@ func (m *LBMockMap) UpsertService(p *lbmap.UpsertServiceParams) error {
 		}
 		backendsList = append(backendsList, *b)
 	}
-
+	if p.UseMaglev && len(p.Backends) != 0 {
+		if err := m.UpsertMaglevLookupTable(p.ID, p.Backends, p.IPv6); err != nil {
+			return err
+		}
+	}
 	svc, found := m.ServiceByID[p.ID]
 	if !found {
 		frontend := lb.NewL3n4AddrID(lb.NONE, p.IP, p.Port, p.Scope, lb.ID(p.ID))
 		svc = &lb.SVC{Frontend: *frontend}
 	} else {
-		if p.PrevBackendCount != len(svc.Backends) {
-			return fmt.Errorf("Invalid backends count: %d vs %d", p.PrevBackendCount, len(svc.Backends))
+		if p.PrevActiveBackendCount != len(svc.Backends) {
+			return fmt.Errorf("Invalid backends count: %d vs %d", p.PrevActiveBackendCount, len(svc.Backends))
 		}
 	}
 	svc.Backends = backendsList

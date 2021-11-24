@@ -22,7 +22,7 @@ IPv6=$4
 CONTAINER_RUNTIME=$5
 
 # Kubeadm default parameters
-export KUBEADM_ADDR='192.168.36.11'
+export KUBEADM_ADDR='192.168.56.11'
 export KUBEADM_POD_CIDR='10.10.0.0/16'
 export KUBEADM_V1BETA2_POD_CIDR='10.10.0.0/16,fd02::/112'
 export KUBEADM_SVC_CIDR='10.96.0.0/12'
@@ -82,12 +82,12 @@ cat <<EOF >> /etc/hosts
 ::1     localhost ip6-localhost ip6-loopback
 ff02::1 ip6-allnodes
 ff02::2 ip6-allrouters
-192.168.36.11 k8s1
-192.168.36.12 k8s2
-192.168.36.13 k8s3
-192.168.36.14 k8s4
-192.168.36.15 k8s5
-192.168.36.16 k8s6
+192.168.56.11 k8s1
+192.168.56.12 k8s2
+192.168.56.13 k8s3
+192.168.56.14 k8s4
+192.168.56.15 k8s5
+192.168.56.16 k8s6
 EOF
 
 # Configure default IPv6 route without this connectivity from host to
@@ -213,6 +213,51 @@ apiServer:
 EOF
 )
 
+# V1BETA3 configuration is enabled with DualStack feature gate by default.
+# IPv6 only clusters can still be opted by setting IPv6 variable to 1.
+# It also sets the cgroup-driver to "cgroupfs", away from "systemd",
+# so that docker does not have to be reconfigured and restarted.
+KUBEADM_CONFIG_V1BETA3=$(cat <<-EOF
+apiVersion: kubeadm.k8s.io/v1beta2
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "{{ .KUBEADM_ADDR }}"
+  bindPort: 6443
+bootstrapTokens:
+- groups:
+  - system:bootstrappers:kubeadm:default-node-token
+  token: {{ .TOKEN }}
+  ttl: 24h0m0s
+  usages:
+  - signing
+  - authentication
+nodeRegistration:
+  criSocket: "{{ .KUBEADM_CRI_SOCKET }}"
+---
+apiVersion: kubeadm.k8s.io/v1beta2
+kind: ClusterConfiguration
+kubernetesVersion: "v{{ .K8S_FULL_VERSION }}"
+featureGates:
+  IPv6DualStack: {{ .IPV6_DUAL_STACK_FEATURE_GATE }}
+networking:
+  dnsDomain: cluster.local
+  podSubnet: "{{ .KUBEADM_V1BETA2_POD_CIDR }}"
+  serviceSubnet: "{{ .KUBEADM_V1BETA2_SVC_CIDR }}"
+controlPlaneEndpoint: "k8s1:6443"
+controllerManager:
+  extraArgs:
+    "node-cidr-mask-size-ipv6": "120"
+    "feature-gates": "{{ .CONTROLLER_FEATURE_GATES }},IPv6DualStack={{ .IPV6_DUAL_STACK_FEATURE_GATE }}"
+apiServer:
+  extraArgs:
+    "feature-gates": "{{ .API_SERVER_FEATURE_GATES }},IPv6DualStack={{ .IPV6_DUAL_STACK_FEATURE_GATE }}"
+---
+kind: KubeletConfiguration
+apiVersion: kubelet.config.k8s.io/v1beta1
+cgroupDriver: cgroupfs
+EOF
+)
+
 # CRIO bridge disabled.
 if [[ -f  "/etc/cni/net.d/100-crio-bridge.conf" ]]; then
     echo "Disabling crio CNI bridge"
@@ -282,8 +327,8 @@ case $K8S_VERSION in
         KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
-        CONTROLLER_FEATURE_GATES="EndpointSlice=true"
-        API_SERVER_FEATURE_GATES="EndpointSlice=true"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
         ;;
     "1.21")
         # kubeadm 1.21 requires conntrack to be installed, we can remove this
@@ -296,8 +341,22 @@ case $K8S_VERSION in
         KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
         sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
         KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA2}"
-        CONTROLLER_FEATURE_GATES="EndpointSlice=true"
-        API_SERVER_FEATURE_GATES="EndpointSlice=true"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        ;;
+    "1.22")
+        # kubeadm 1.22 requires conntrack to be installed, we can remove this
+        # once we have upgrade the VM image version.
+        sudo apt-get install -y conntrack
+        KUBERNETES_CNI_VERSION="0.8.7"
+        KUBERNETES_CNI_OS="-linux"
+        K8S_FULL_VERSION="1.22.0"
+        KUBEADM_OPTIONS="--ignore-preflight-errors=cri,swap"
+        KUBEADM_WORKER_OPTIONS="--discovery-token-unsafe-skip-ca-verification --ignore-preflight-errors=cri,SystemVerification,swap"
+        sudo ln -sf $COREDNS_DEPLOYMENT $DNS_DEPLOYMENT
+        KUBEADM_CONFIG="${KUBEADM_CONFIG_V1BETA3}"
+        CONTROLLER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
+        API_SERVER_FEATURE_GATES="EndpointSlice=true,EndpointSliceTerminatingCondition=true"
         ;;
 esac
 
@@ -308,7 +367,7 @@ fi
 #Install kubernetes
 set +e
 case $K8S_VERSION in
-    "1.16"|"1.17"|"1.18"|"1.19"|"1.20"|"1.21")
+    "1.16"|"1.17"|"1.18"|"1.19"|"1.20"|"1.21"|"1.22")
         install_k8s_using_packages \
             kubernetes-cni=${KUBERNETES_CNI_VERSION}* \
             kubelet=${K8S_FULL_VERSION}* \

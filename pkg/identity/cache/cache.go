@@ -35,6 +35,17 @@ func (s IdentitiesModel) Less(i, j int) bool {
 	return s[i].ID < s[j].ID
 }
 
+// FromIdentityCache populates the provided model from an identity cache.
+func (s IdentitiesModel) FromIdentityCache(cache IdentityCache) IdentitiesModel {
+	for id, lbls := range cache {
+		s = append(s, identitymodel.CreateModel(&identity.Identity{
+			ID:     id,
+			Labels: lbls.Labels(),
+		}))
+	}
+	return s
+}
+
 // GetIdentityCache returns a cache of all known identities
 func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
 	log.Debug("getting identity cache for identity allocator manager")
@@ -53,11 +64,11 @@ func (m *CachingIdentityAllocator) GetIdentityCache() IdentityCache {
 		})
 	}
 
-	for key, identity := range identity.ReservedIdentityCache {
-		cache[key] = identity.Labels.LabelArray()
-	}
+	identity.IterateReservedIdentities(func(ni identity.NumericIdentity, id *identity.Identity) {
+		cache[ni] = id.Labels.LabelArray()
+	})
 
-	if m.isLocalIdentityAllocatorInitialized() {
+	if m.IsLocalIdentityAllocatorInitialized() {
 		for _, identity := range m.localIdentities.GetIdentities() {
 			cache[identity.ID] = identity.Labels.LabelArray()
 		}
@@ -79,12 +90,11 @@ func (m *CachingIdentityAllocator) GetIdentities() IdentitiesModel {
 
 		})
 	}
-	// append user reserved identities
-	for _, v := range identity.ReservedIdentityCache {
-		identities = append(identities, identitymodel.CreateModel(v))
-	}
+	identity.IterateReservedIdentities(func(ni identity.NumericIdentity, id *identity.Identity) {
+		identities = append(identities, identitymodel.CreateModel(id))
+	})
 
-	if m.isLocalIdentityAllocatorInitialized() {
+	if m.IsLocalIdentityAllocatorInitialized() {
 		for _, v := range m.localIdentities.GetIdentities() {
 			identities = append(identities, identitymodel.CreateModel(v))
 		}
@@ -190,8 +200,8 @@ func (w *identityWatcher) stop() {
 	close(w.stopChan)
 }
 
-// isLocalIdentityAllocatorInitialized returns true if m.localIdentities is not nil.
-func (m *CachingIdentityAllocator) isLocalIdentityAllocatorInitialized() bool {
+// IsLocalIdentityAllocatorInitialized returns true if m.localIdentities is not nil.
+func (m *CachingIdentityAllocator) IsLocalIdentityAllocatorInitialized() bool {
 	select {
 	case <-m.localIdentityAllocatorInitialized:
 		return m.localIdentities != nil
@@ -221,7 +231,7 @@ func (m *CachingIdentityAllocator) LookupIdentity(ctx context.Context, lbls labe
 		return reservedIdentity
 	}
 
-	if !m.isLocalIdentityAllocatorInitialized() {
+	if !m.IsLocalIdentityAllocatorInitialized() {
 		return nil
 	}
 
@@ -264,7 +274,7 @@ func (m *CachingIdentityAllocator) LookupIdentityByID(ctx context.Context, id id
 		return identity
 	}
 
-	if !m.isLocalIdentityAllocatorInitialized() {
+	if !m.IsLocalIdentityAllocatorInitialized() {
 		return nil
 	}
 

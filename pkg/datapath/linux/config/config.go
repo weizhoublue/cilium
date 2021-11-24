@@ -133,6 +133,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	cDefinesMap["INIT_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameInit))
 	cDefinesMap["LOCAL_NODE_ID"] = fmt.Sprintf("%d", identity.GetLocalNodeID())
 	cDefinesMap["REMOTE_NODE_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameRemoteNode))
+	cDefinesMap["KUBE_APISERVER_NODE_ID"] = fmt.Sprintf("%d", identity.GetReservedID(labels.IDNameKubeAPIServer))
 	cDefinesMap["CILIUM_LB_MAP_MAX_ENTRIES"] = fmt.Sprintf("%d", lbmap.MaxEntries)
 	cDefinesMap["TUNNEL_MAP"] = tunnel.MapName
 	cDefinesMap["TUNNEL_ENDPOINT_MAP_SIZE"] = fmt.Sprintf("%d", tunnel.MaxEntries)
@@ -223,12 +224,16 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		cDefinesMap["ENCRYPT_NODE"] = "1"
 	}
 
-	if option.Config.DevicePreFilter != "undefined" {
+	if option.Config.EnableXDPPrefilter {
 		cDefinesMap["ENABLE_PREFILTER"] = "1"
 	}
 
-	if option.Config.EnableEgressGateway {
+	if option.Config.EnableIPv4EgressGateway {
 		cDefinesMap["ENABLE_EGRESS_GATEWAY"] = "1"
+	}
+
+	if option.Config.EnableEndpointRoutes {
+		cDefinesMap["ENABLE_ENDPOINT_ROUTES"] = "1"
 	}
 
 	if option.Config.EnableHostReachableServices {
@@ -363,9 +368,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled {
 			cDefinesMap["ENABLE_NODEPORT_ACCELERATION"] = "1"
 		}
-		if option.Config.NodePortHairpin {
-			cDefinesMap["ENABLE_NODEPORT_HAIRPIN"] = "1"
-		}
 		if !option.Config.EnableHostLegacyRouting {
 			cDefinesMap["ENABLE_REDIRECT_FAST"] = "1"
 		}
@@ -381,9 +383,6 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 				cDefinesMap["LB6_SRC_RANGE_MAP_SIZE"] =
 					fmt.Sprintf("%d", lbmap.SourceRange6Map.MapInfo.MaxEntries)
 			}
-		}
-		if option.Config.EnableBPFBypassFIBLookup {
-			cDefinesMap["ENABLE_FIB_LOOKUP_BYPASS"] = "1"
 		}
 
 		cDefinesMap["NODEPORT_PORT_MIN"] = fmt.Sprintf("%d", option.Config.NodePortMin)
@@ -410,11 +409,9 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		cDefinesMap["LB_SELECTION"] = fmt.Sprintf("%d", selectionMaglev)
 		cDefinesMap["LB_MAGLEV_LUT_SIZE"] = fmt.Sprintf("%d", option.Config.MaglevTableSize)
 		if option.Config.EnableIPv6 {
-			cDefinesMap["LB6_MAGLEV_MAP_INNER"] = lbmap.MaglevInner6MapName
 			cDefinesMap["LB6_MAGLEV_MAP_OUTER"] = lbmap.MaglevOuter6MapName
 		}
 		if option.Config.EnableIPv4 {
-			cDefinesMap["LB4_MAGLEV_MAP_INNER"] = lbmap.MaglevInner4MapName
 			cDefinesMap["LB4_MAGLEV_MAP_OUTER"] = lbmap.MaglevOuter4MapName
 		}
 	}
@@ -540,6 +537,10 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		return err
 	}
 	cDefinesMap["VLAN_FILTER(ifindex, vlan_id)"] = vlanFilter
+
+	if option.Config.EnableICMPRules {
+		cDefinesMap["ENABLE_ICMP_RULE"] = "1"
+	}
 
 	// Since golang maps are unordered, we sort the keys in the map
 	// to get a consistent writtern format to the writer. This maintains
@@ -820,10 +821,6 @@ func (h *HeaderfileWriter) writeTemplateConfig(fw *bufio.Writer, e datapath.Endp
 
 	if e.RequireRouting() {
 		fmt.Fprintf(fw, "#define ENABLE_ROUTING 1\n")
-	}
-
-	if e.RequireEndpointRoute() {
-		fmt.Fprintf(fw, "#define ENABLE_ENDPOINT_ROUTES 1\n")
 	}
 
 	if e.DisableSIPVerification() {

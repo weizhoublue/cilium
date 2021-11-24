@@ -130,17 +130,6 @@ var (
 	bootstrapStats = bootstrapStatistics{}
 )
 
-func init() {
-	RootCmd.SetFlagErrorFunc(func(_ *cobra.Command, e error) error {
-		time.Sleep(fatalSleep)
-		return e
-	})
-	logrus.RegisterExitHandler(func() {
-		time.Sleep(fatalSleep)
-	},
-	)
-}
-
 // Execute sets up gops, installs the cleanup signal handler and invokes
 // the root command. This function only returns when an interrupt
 // signal has been received. This is intended to be called by main.main().
@@ -165,6 +154,23 @@ func skipInit(basePath string) bool {
 }
 
 func init() {
+	setupSleepBeforeFatal()
+	initializeFlags()
+	registerBootstrapMetrics()
+}
+
+func setupSleepBeforeFatal() {
+	RootCmd.SetFlagErrorFunc(func(_ *cobra.Command, e error) error {
+		time.Sleep(fatalSleep)
+		return e
+	})
+	logrus.RegisterExitHandler(func() {
+		time.Sleep(fatalSleep)
+	},
+	)
+}
+
+func initializeFlags() {
 	if skipInit(path.Base(os.Args[0])) {
 		log.Debug("Skipping preparation of cilium-agent environment")
 		return
@@ -223,7 +229,7 @@ func init() {
 	flags.Bool(option.AnnotateK8sNode, defaults.AnnotateK8sNode, "Annotate Kubernetes node")
 	option.BindEnv(option.AnnotateK8sNode)
 
-	flags.Duration(option.ARPPingRefreshPeriod, 5*time.Minute, "Period for remote node ARP entry refresh (set 0 to disable)")
+	flags.Duration(option.ARPPingRefreshPeriod, defaults.ARPBaseReachableTime, "Period for remote node ARP entry refresh (set 0 to disable)")
 	option.BindEnv(option.ARPPingRefreshPeriod)
 
 	flags.Bool(option.EnableL2NeighDiscovery, true, "Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec")
@@ -401,6 +407,9 @@ func init() {
 
 	flags.Bool(option.EnableWireguard, false, "Enable wireguard")
 	option.BindEnv(option.EnableWireguard)
+
+	flags.Bool(option.EnableWireguardUserspaceFallback, false, "Enables the fallback to the wireguard userspace implementation")
+	option.BindEnv(option.EnableWireguardUserspaceFallback)
 
 	flags.Bool(option.ForceLocalPolicyEvalAtSource, defaults.ForceLocalPolicyEvalAtSource, "Force policy evaluation of all local communication at the source endpoint")
 	option.BindEnv(option.ForceLocalPolicyEvalAtSource)
@@ -679,8 +688,8 @@ func init() {
 	flags.Bool(option.EnableIPMasqAgent, false, "Enable BPF ip-masq-agent")
 	option.BindEnv(option.EnableIPMasqAgent)
 
-	flags.Bool(option.EnableEgressGateway, false, "Enable egress gateway")
-	option.BindEnv(option.EnableEgressGateway)
+	flags.Bool(option.EnableIPv4EgressGateway, false, "Enable egress gateway for IPv4")
+	option.BindEnv(option.EnableIPv4EgressGateway)
 
 	flags.String(option.IPMasqAgentConfigPath, "/etc/config/ip-masq-agent", "ip-masq-agent configuration file path")
 	option.BindEnv(option.IPMasqAgentConfigPath)
@@ -713,6 +722,9 @@ func init() {
 
 	flags.Int(option.MTUName, 0, "Overwrite auto-detected MTU of underlying network")
 	option.BindEnv(option.MTUName)
+
+	flags.Int(option.RouteMetric, 0, "Overwrite the metric used by cilium when adding routes to its 'cilium_host' device")
+	option.BindEnv(option.RouteMetric)
 
 	flags.Bool(option.PrependIptablesChainsName, true, "Prepend custom iptables chains instead of appending")
 	option.BindEnvWithLegacyEnvFallback(option.PrependIptablesChainsName, "CILIUM_PREPEND_IPTABLES_CHAIN")
@@ -761,11 +773,21 @@ func init() {
 	flags.Int(option.PProfPort, 6060, "Port that the pprof listens on")
 	option.BindEnv(option.PProfPort)
 
+	flags.Bool(option.EnableXDPPrefilter, false, "Enable XDP prefiltering")
+	option.BindEnv(option.EnableXDPPrefilter)
+
 	flags.String(option.PrefilterDevice, "undefined", "Device facing external network for XDP prefiltering")
 	option.BindEnv(option.PrefilterDevice)
+	flags.MarkHidden(option.PrefilterDevice)
+	flags.MarkDeprecated(option.PrefilterDevice,
+		fmt.Sprintf("This option will be removed in v1.12. Use --%s and --%s instead.",
+			option.EnableXDPPrefilter, option.Devices))
 
 	flags.String(option.PrefilterMode, option.ModePreFilterNative, "Prefilter mode via XDP (\"native\", \"generic\")")
 	option.BindEnv(option.PrefilterMode)
+	flags.MarkHidden(option.PrefilterMode)
+	flags.MarkDeprecated(option.PrefilterMode,
+		fmt.Sprintf("This option will be removed in v1.12. Use --%s instead.", option.LoadBalancerAcceleration))
 
 	flags.Bool(option.PreAllocateMapsName, defaults.PreAllocateMaps, "Enable BPF map pre-allocation")
 	option.BindEnv(option.PreAllocateMapsName)
@@ -978,8 +1000,10 @@ func init() {
 		"Offset routing table IDs under ENI IPAM mode to avoid collisions with reserved table IDs. If false, the offset is performed (new scheme), otherwise, the old scheme stays in-place.")
 	option.BindEnv(option.EgressMultiHomeIPRuleCompat)
 
-	flags.Bool(option.EnableBPFBypassFIBLookup, defaults.EnableBPFBypassFIBLookup, "Enable FIB lookup bypass optimization for nodeport reverse NAT handling")
+	flags.Bool(option.EnableBPFBypassFIBLookup, false, "Enable FIB lookup bypass optimization for nodeport reverse NAT handling")
 	option.BindEnv(option.EnableBPFBypassFIBLookup)
+	flags.MarkHidden(option.EnableBPFBypassFIBLookup)
+	flags.MarkDeprecated(option.EnableBPFBypassFIBLookup, fmt.Sprintf("This option will be removed in v1.12."))
 
 	flags.Bool(option.InstallNoConntrackIptRules, defaults.InstallNoConntrackIptRules, "Install Iptables rules to skip netfilter connection tracking on all pod traffic. This option is only effective when Cilium is running in direct routing and full KPR mode. Moreover, this option cannot be enabled when Cilium is running in a managed Kubernetes environment or in a chained CNI setup.")
 	option.BindEnv(option.InstallNoConntrackIptRules)
@@ -989,6 +1013,9 @@ func init() {
 
 	flags.Bool(option.BGPAnnounceLBIP, false, "Announces service IPs of type LoadBalancer via BGP")
 	option.BindEnv(option.BGPAnnounceLBIP)
+
+	flags.Bool(option.BGPAnnouncePodCIDR, false, "Announces the node's pod CIDR via BGP")
+	option.BindEnv(option.BGPAnnouncePodCIDR)
 
 	flags.String(option.BGPConfigPath, "/var/lib/cilium/bgp/config.yaml", "Path to file containing the BGP configuration")
 	option.BindEnv(option.BGPConfigPath)
@@ -1006,6 +1033,12 @@ func init() {
 	flags.Bool(option.BypassIPAvailabilityUponRestore, false, "Bypasses the IP availability error within IPAM upon endpoint restore")
 	flags.MarkHidden(option.BypassIPAvailabilityUponRestore)
 	option.BindEnv(option.BypassIPAvailabilityUponRestore)
+
+	flags.Bool(option.EnableCiliumEndpointSlice, false, "If set to true, CiliumEndpointSlice feature is enabled and cilium agent watch for CiliumEndpointSlice instead of CiliumEndpoint to update the IPCache.")
+	option.BindEnv(option.EnableCiliumEndpointSlice)
+
+	flags.Bool(option.EnableK8sTerminatingEndpoint, true, "Enable auto-detect of terminating endpoint condition")
+	option.BindEnv(option.EnableK8sTerminatingEndpoint)
 
 	viper.BindPFlags(flags)
 }
@@ -1192,7 +1225,17 @@ func initEnv(cmd *cobra.Command) {
 	}
 
 	if option.Config.DevicePreFilter != "undefined" {
-		option.Config.XDPDevice = option.Config.DevicePreFilter
+		option.Config.EnableXDPPrefilter = true
+		found := false
+		for _, dev := range option.Config.Devices {
+			if dev == option.Config.DevicePreFilter {
+				found = true
+				break
+			}
+		}
+		if !found {
+			option.Config.Devices = append(option.Config.Devices, option.Config.DevicePreFilter)
+		}
 		if err := loader.SetXDPMode(option.Config.ModePreFilter); err != nil {
 			scopedLog.WithError(err).Fatal("Cannot set prefilter XDP mode")
 		}
@@ -1371,6 +1414,10 @@ func initEnv(cmd *cobra.Command) {
 		option.Config.EnableBandwidthManager = false
 	}
 
+	if option.Config.EnableIPv6Masquerade && option.Config.EnableBPFMasquerade {
+		log.Fatal("BPF masquerade is not supported for IPv6.")
+	}
+
 	// If there is one device specified, use it to derive better default
 	// allocation prefixes
 	node.InitDefaultPrefix(option.Config.DirectRoutingDevice)
@@ -1469,6 +1516,13 @@ func initEnv(cmd *cobra.Command) {
 	if option.Config.BGPAnnounceLBIP {
 		option.Config.EnableNodePort = true
 		log.Infof("Auto-set BPF NodePort (%q) because LB IP announcements via BGP depend on it.", option.EnableNodePort)
+	}
+
+	if option.Config.BGPAnnouncePodCIDR &&
+		(option.Config.IPAM != ipamOption.IPAMClusterPool &&
+			option.Config.IPAM != ipamOption.IPAMKubernetes) {
+		log.Fatalf("BGP announcements for pod CIDRs is not supported with IPAM mode %q (only %q and %q are supported)",
+			option.Config.IPAM, ipamOption.IPAMClusterPool, ipamOption.IPAMKubernetes)
 	}
 
 	// Ensure that the user does not turn on this mode unless it's for an IPAM
@@ -1638,8 +1692,10 @@ func runDaemon() {
 		d.endpointManager.InitHostEndpointLabels(d.ctx)
 	} else {
 		log.Info("Creating host endpoint")
-		if err := d.endpointManager.AddHostEndpoint(d.ctx, d, d.l7Proxy, d.identityAllocator,
-			"Create host endpoint", nodeTypes.GetName()); err != nil {
+		if err := d.endpointManager.AddHostEndpoint(
+			d.ctx, d, d, d.l7Proxy, d.identityAllocator,
+			"Create host endpoint", nodeTypes.GetName(),
+		); err != nil {
 			log.WithError(err).Fatal("Unable to create host endpoint")
 		}
 	}
@@ -1727,14 +1783,17 @@ func runDaemon() {
 		log.WithError(err).Warn("Failed to send agent start monitor message")
 	}
 
-	// clean up all arp PERM entries that might have previously set by
-	// a Cilium instance
 	if !d.datapath.Node().NodeNeighDiscoveryEnabled() {
-		d.datapath.Node().NodeCleanNeighbors()
-	}
-	// Start periodical arping to refresh neighbor table
-	if d.datapath.Node().NodeNeighDiscoveryEnabled() && option.Config.ARPPingRefreshPeriod != 0 {
-		d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.Node())
+		// Remove all non-GC'ed neighbor entries that might have previously set
+		// by a Cilium instance.
+		d.datapath.Node().NodeCleanNeighbors(false)
+	} else {
+		// If we came from an agent upgrade, migrate entries.
+		d.datapath.Node().NodeCleanNeighbors(true)
+		// Start periodical refresh of the neighbor table from the agent if needed.
+		if option.Config.ARPPingRefreshPeriod != 0 && !option.Config.ARPPingKernelManaged {
+			d.nodeDiscovery.Manager.StartNeighborRefresh(d.datapath.Node())
+		}
 	}
 
 	log.WithField("bootstrapTime", time.Since(bootstrapTimestamp)).

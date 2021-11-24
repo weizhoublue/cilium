@@ -43,10 +43,8 @@ func (ds *FQDNTestSuite) TestNameManagerCIDRGeneration(c *C) {
 
 	// add rules
 	nameManager.Lock()
-	ids := nameManager.RegisterForIdentityUpdatesLocked(ciliumIOSel)
+	nameManager.RegisterForIdentityUpdatesLocked(ciliumIOSel)
 	nameManager.Unlock()
-	c.Assert(len(ids), Equals, 0)
-	c.Assert(ids, Not(IsNil))
 
 	// poll DNS once, check that we only generate 1 rule (for 1 IP) and that we
 	// still have 1 ToFQDN rule, and that the IP is correct
@@ -93,8 +91,7 @@ func (ds *FQDNTestSuite) TestNameManagerMultiIPUpdate(c *C) {
 	selectorsToAdd := api.FQDNSelectorSlice{ciliumIOSel, githubSel}
 	nameManager.Lock()
 	for _, sel := range selectorsToAdd {
-		ids := nameManager.RegisterForIdentityUpdatesLocked(sel)
-		c.Assert(ids, Not(IsNil))
+		nameManager.RegisterForIdentityUpdatesLocked(sel)
 	}
 	nameManager.Unlock()
 
@@ -133,8 +130,7 @@ func (ds *FQDNTestSuite) TestNameManagerMultiIPUpdate(c *C) {
 
 	// Second registration fails because IdenitityAllocator is not initialized
 	nameManager.Lock()
-	ids := nameManager.RegisterForIdentityUpdatesLocked(githubSel)
-	c.Assert(ids, IsNil)
+	nameManager.RegisterForIdentityUpdatesLocked(githubSel)
 
 	nameManager.UnregisterForIdentityUpdatesLocked(githubSel)
 	_, exists := nameManager.allSelectors[githubSel]

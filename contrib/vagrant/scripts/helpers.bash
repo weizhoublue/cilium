@@ -31,7 +31,7 @@ if [[ -n "${IPV6_EXT}" ]]; then
     # controllers_ips[1] contains the IP without brackets
     controllers_ips=( "[${master_ip}]" "${master_ip}" )
 else
-    master_ip=${MASTER_IPV4:-"192.168.33.11"}
+    master_ip=${MASTER_IPV4:-"192.168.60.11"}
     controllers_ips=( "${master_ip}" "${master_ip}" )
 fi
 
@@ -72,7 +72,7 @@ cluster_dns_ipv6=${K8S_CLUSTER_DNS_IPV6:-"FD03::A"}
 cluster_api_server_ipv4=${K8S_CLUSTER_API_SERVER_IPV4:-"172.20.0.1"}
 cluster_api_server_ipv6=${K8S_CLUSTER_API_SERVER_IPV6:-"FD03::1"}
 
-k8s_version="v1.21.0"
+k8s_version="v1.22.0"
 etcd_version="v3.4.16"
 
 function restore_flag {

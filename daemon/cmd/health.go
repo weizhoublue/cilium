@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/cilium/pkg/cleanup"
 	"github.com/cilium/cilium/pkg/controller"
 	"github.com/cilium/cilium/pkg/endpoint"
+	"github.com/cilium/cilium/pkg/health/defaults"
 	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
@@ -50,7 +51,7 @@ func (d *Daemon) initHealth() {
 	// Wait for the API, then launch the controller
 	var client *health.Client
 
-	controller.NewManager().UpdateController("cilium-health-ep",
+	controller.NewManager().UpdateController(defaults.HealthEPName,
 		controller.ControllerParams{
 			DoFunc: func(ctx context.Context) error {
 				var err error
@@ -64,14 +65,17 @@ func (d *Daemon) initHealth() {
 					var launchErr error
 					d.cleanupHealthEndpoint()
 
-					client, launchErr = health.LaunchAsEndpoint(ctx,
+					client, launchErr = health.LaunchAsEndpoint(
+						ctx,
+						d,
 						d,
 						&d.nodeDiscovery.LocalNode,
 						d.mtuConfig,
 						d.endpointManager,
 						d.l7Proxy,
 						d.identityAllocator,
-						d.healthEndpointRouting)
+						d.healthEndpointRouting,
+					)
 					if launchErr != nil {
 						if err != nil {
 							return fmt.Errorf("failed to restart endpoint (check failed: %q): %s", err, launchErr)

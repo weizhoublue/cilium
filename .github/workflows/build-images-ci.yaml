@@ -78,14 +78,14 @@ jobs:
           fi
 
       - name: Checkout Source Code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
           ref: ${{ steps.tag.outputs.tag }}
 
       # Load Golang cache build from GitHub
       - name: Load ${{ matrix.name }} Golang cache build from GitHub
-        uses: actions/cache@c64c572235d810460d0d6876e9c705ad5002b353
+        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
         id: cache
         with:
           path: /tmp/.cache/${{ matrix.name }}
@@ -146,7 +146,7 @@ jobs:
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:latest-race
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
           build-args: |
-            BASE_IMAGE=quay.io/cilium/cilium-runtime:f6698fe61dbe11019946e5cf5a92077cc8d4a6a9@sha256:9acfa5f4c64482d3dbe19c319f135f5e856f02b479b5eba06efa8691d74e1d4d
+            BASE_IMAGE=quay.io/cilium/cilium-runtime:fd939cafee48ecde09af1d96b9b9d21f9938d9e9@sha256:72bf50d49771c2f8bf346b24905f8856bcf16e41b67ff81a5f246283afb1017e
             LOCKDEBUG=1
             RACE=1
             OPERATOR_VARIANT=${{ matrix.name }}
@@ -195,7 +195,7 @@ jobs:
           tags: |
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
           build-args: |
-            BASE_IMAGE=quay.io/cilium/cilium-runtime:f6698fe61dbe11019946e5cf5a92077cc8d4a6a9@sha256:9acfa5f4c64482d3dbe19c319f135f5e856f02b479b5eba06efa8691d74e1d4d
+            BASE_IMAGE=quay.io/cilium/cilium-runtime:fd939cafee48ecde09af1d96b9b9d21f9938d9e9@sha256:72bf50d49771c2f8bf346b24905f8856bcf16e41b67ff81a5f246283afb1017e
             LOCKDEBUG=1
             RACE=1
             OPERATOR_VARIANT=${{ matrix.name }}
@@ -269,14 +269,14 @@ jobs:
           password: ${{ secrets.QUAY_PASSWORD_CI }}
 
       - name: Checkout Source Code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
 
       # Load Golang cache build from GitHub
       - name: Load ${{ matrix.name }} Golang cache build from GitHub
-        uses: actions/cache@c64c572235d810460d0d6876e9c705ad5002b353
+        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
         id: cache
         with:
           path: /tmp/.cache/${{ matrix.name }}
@@ -359,7 +359,7 @@ jobs:
 
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)

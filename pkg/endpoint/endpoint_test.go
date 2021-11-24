@@ -8,6 +8,7 @@ package endpoint
 
 import (
 	"context"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
@@ -33,7 +34,7 @@ import (
 	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
-	"github.com/cilium/cilium/pkg/testutils/allocator"
+	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 
 	"github.com/prometheus/client_golang/prometheus"
 	. "gopkg.in/check.v1"
@@ -52,7 +53,7 @@ type EndpointSuite struct {
 	repo             *policy.Repository
 	compilationMutex *lock.RWMutex
 	datapath         datapath.Datapath
-	mgr              *cache.CachingIdentityAllocator
+	mgr              fakeIdentityAllocator
 
 	// Owners interface mock
 	OnGetPolicyRepository     func() *policy.Repository
@@ -66,12 +67,12 @@ type EndpointSuite struct {
 }
 
 // suite can be used by testing.T benchmarks or tests as a mock regeneration.Owner
-var suite = EndpointSuite{repo: policy.NewPolicyRepository(nil, nil)}
+var suite = EndpointSuite{repo: policy.NewPolicyRepository(nil, nil, nil)}
 var _ = Suite(&suite)
 
 func (s *EndpointSuite) SetUpSuite(c *C) {
 	ctmap.InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true, true)
-	s.repo = policy.NewPolicyRepository(nil, nil)
+	s.repo = policy.NewPolicyRepository(nil, nil, nil)
 	// GetConfig the default labels prefix filter
 	err := labelsfilter.ParseLabelPrefixCfg(nil, "")
 	if err != nil {
@@ -117,12 +118,35 @@ func (s *EndpointSuite) GetDNSRules(epID uint16) restore.DNSRules {
 func (s *EndpointSuite) RemoveRestoredDNSRules(epID uint16) {
 }
 
+// TODO: Remove the etcd dependency from these tests with a full dummy
+// implementation of an identity allocator under pkg/testutils/identity.
+// Until we do that, these tests must rely on the real CachingIdentityAllocator
+// implementation inside.
+type fakeIdentityAllocator struct {
+	*cache.CachingIdentityAllocator
+}
+
+func (f fakeIdentityAllocator) AllocateCIDRsForIPs([]net.IP, map[string]*identity.Identity) ([]*identity.Identity, error) {
+	return nil, nil
+}
+
+func (f fakeIdentityAllocator) ReleaseCIDRIdentitiesByID(context.Context, []identity.NumericIdentity) {
+}
+
+func NewCachingIdentityAllocator(owner cache.IdentityAllocatorOwner) fakeIdentityAllocator {
+	return fakeIdentityAllocator{
+		CachingIdentityAllocator: cache.NewCachingIdentityAllocator(owner),
+	}
+}
+
+//func (f *fakeIdentityAllocator)
+
 func (s *EndpointSuite) SetUpTest(c *C) {
 	/* Required to test endpoint CEP policy model */
 	kvstore.SetupDummy("etcd")
 	identity.InitWellKnownIdentities(&fakeConfig.Config{})
 	// The nils are only used by k8s CRD identities. We default to kvstore.
-	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
+	mgr := NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
 	<-mgr.InitIdentityAllocator(nil, nil)
 	s.mgr = mgr
 }
@@ -232,7 +256,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 }
 
 func (s *EndpointSuite) TestEndpointUpdateLabels(c *C) {
-	e := NewEndpointWithState(s, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 100, StateWaitingForIdentity)
+	e := NewEndpointWithState(s, s, &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 100, StateWaitingForIdentity)
 
 	// Test that inserting identity labels works
 	rev := e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
@@ -256,7 +280,7 @@ func (s *EndpointSuite) TestEndpointUpdateLabels(c *C) {
 }
 
 func (s *EndpointSuite) TestEndpointState(c *C) {
-	e := NewEndpointWithState(s, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 100, StateWaitingForIdentity)
+	e := NewEndpointWithState(s, s, &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 100, StateWaitingForIdentity)
 	e.unconditionalLock()
 	defer e.unlock()
 
@@ -629,7 +653,7 @@ func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponStop(c *C) {
 		s.datapath = oldDatapath
 	}()
 
-	ep := NewEndpointWithState(s, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 12345, StateReady)
+	ep := NewEndpointWithState(s, s, &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 12345, StateReady)
 
 	// In case deadlock occurs, provide a timeout of 3 (number of events) *
 	// deadlockTimeout + 1 seconds to ensure that we are actually testing for
@@ -700,7 +724,7 @@ func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponStop(c *C) {
 }
 
 func BenchmarkEndpointGetModel(b *testing.B) {
-	e := NewEndpointWithState(&suite, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 123, StateWaitingForIdentity)
+	e := NewEndpointWithState(&suite, &suite, &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 123, StateWaitingForIdentity)
 
 	for i := 0; i < 256; i++ {
 		e.LogStatusOK(BPF, "Hello World!")

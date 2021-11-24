@@ -66,7 +66,7 @@ env:
   name: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}
   location: westeurope
   cost_reduction: --node-vm-size Standard_B2s --node-osdisk-size 30
-  cilium_cli_version: v0.9.1
+  cilium_cli_version: v0.9.3
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
@@ -89,7 +89,7 @@ jobs:
       # paths-filter to work.
       - name: Checkout code
         if: ${{ github.event.issue.pull_request }}
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
       - name: Retrieve pull request's base and head
@@ -174,12 +174,12 @@ jobs:
           cilium version
 
       - name: Login to Azure
-        uses: azure/login@77f1b2e3fb80c0e8645114159d17008b8a2e475a
+        uses: azure/login@89d153571fe9a34ed70fcf9f1d95ab8debea7a73
         with:
           creds: ${{ secrets.AZURE_PR_SP_CREDS }}
 
       - name: Display Azure CLI info
-        uses: azure/CLI@4b58c946a0f48d82cc2b6e31c0d15a6604859554
+        uses: azure/CLI@7378ce2ca3c38b4b063feb7a4cbe384fef978055
         with:
           azcliversion: 2.0.72
           inlineScript: |
@@ -257,10 +257,6 @@ jobs:
         run: |
           cilium hubble enable ${{ steps.vars.outputs.hubble_enable_defaults }}
 
-      - name: Wait for Cilium status to be ready
-        run: |
-          cilium status --wait
-
       - name: Port forward Relay
         run: |
           cilium hubble port-forward&
@@ -271,35 +267,39 @@ jobs:
         run: |
           cilium connectivity test --flow-validation=disabled
 
+      # AKS testing with encryption is disabled due to https://github.com/cilium/cilium-cli/issues/342
+      # Re-enabling tracked in: https://github.com/cilium/cilium/issues/17644
       - name: Clean up Cilium
+        if: ${{ false }} # see comment above for details
         run: |
           cilium uninstall --wait
           pkill -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay"
 
       - name: Create custom IPsec secret
+        if: ${{ false }} # see comment above for details
         run: |
           kubectl create -n kube-system secret generic cilium-ipsec-keys --from-literal=keys="15 rfc4106(gcm(aes)) $(echo $(dd if=/dev/urandom count=20 bs=1 2> /dev/null | xxd -p -c 64)) 128"
 
       - name: Install Cilium with encryption
+        if: ${{ false }} # see comment above for details
         run: |
           cilium install ${{ steps.vars.outputs.cilium_install_defaults }} \
             --encryption=ipsec
 
       - name: Enable Relay
+        if: ${{ false }} # see comment above for details
         run: |
           cilium hubble enable ${{ steps.vars.outputs.hubble_enable_defaults }}
 
-      - name: Wait for Cilium status to be ready
-        run: |
-          cilium status --wait
-
       - name: Port forward Relay
+        if: ${{ false }} # see comment above for details
         run: |
           cilium hubble port-forward&
           sleep 10s
           [[ $(pgrep -f "cilium.*hubble.*port-forward|kubectl.*port-forward.*hubble-relay" | wc -l) == 2 ]]
 
       - name: Run connectivity test
+        if: ${{ false }} # see comment above for details
         run: |
           cilium connectivity test --force-deploy --flow-validation=disabled
 
@@ -360,7 +360,7 @@ jobs:
 
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)

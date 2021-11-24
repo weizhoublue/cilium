@@ -418,9 +418,6 @@ const (
 	// KubeProxyReplacementHealthzBindAddr is the default kubeproxyReplacement healthz server bind addr
 	KubeProxyReplacementHealthzBindAddr = ""
 
-	// EnableBPFBypassFIBLookup instructs Cilium to enable the FIB lookup bypass optimization for nodeport reverse NAT handling.
-	EnableBPFBypassFIBLookup = true
-
 	// InstallNoConntrackRules instructs Cilium to install Iptables rules to skip netfilter connection tracking on all pod traffic.
 	InstallNoConntrackIptRules = false
 
@@ -441,4 +438,7 @@ const (
 	TunnelPortVXLAN = 8472
 	// TunnelPortGeneve is the default Geneve port
 	TunnelPortGeneve = 6081
+
+	// ARPBaseReachableTime resembles the kernel's NEIGH_VAR_BASE_REACHABLE_TIME which defaults to 30 seconds.
+	ARPBaseReachableTime = 30 * time.Second
 )

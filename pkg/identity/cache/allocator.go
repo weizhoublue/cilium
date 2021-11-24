@@ -6,6 +6,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"net"
 	"path"
 
 	"github.com/cilium/cilium/pkg/allocator"
@@ -112,16 +113,53 @@ type IdentityAllocator interface {
 	// security identities to have been received.
 	WaitForInitialGlobalIdentities(context.Context) error
 
+	// IsLocalIdentityAllocatorInitialized returns true if the local identity
+	// allocator has been initialized.
+	IsLocalIdentityAllocatorInitialized() bool
+
 	// AllocateIdentity allocates an identity described by the specified labels.
 	AllocateIdentity(context.Context, labels.Labels, bool) (*identity.Identity, bool, error)
 
 	// Release is the reverse operation of AllocateIdentity() and releases the
 	// specified identity.
-	Release(context.Context, *identity.Identity) (released bool, err error)
+	Release(context.Context, *identity.Identity, bool) (released bool, err error)
+
+	// ReleaseSlice is the slice variant of Release().
+	ReleaseSlice(context.Context, IdentityAllocatorOwner, []*identity.Identity) error
+
+	// LookupIdentityByID returns the identity that corresponds to the given
+	// labels.
+	LookupIdentity(ctx context.Context, lbls labels.Labels) *identity.Identity
 
 	// LookupIdentityByID returns the identity that corresponds to the given
 	// numeric identity.
 	LookupIdentityByID(ctx context.Context, id identity.NumericIdentity) *identity.Identity
+
+	// GetIdentityCache returns the current cache of identities that the
+	// allocator has allocated. The caller should not modify the resulting
+	// identities by pointer.
+	GetIdentityCache() IdentityCache
+
+	// GetIdentities returns a copy of the current cache of identities.
+	GetIdentities() IdentitiesModel
+
+	// AllocateCIDRsForIPs attempts to allocate identities for a list of
+	// CIDRs. If any allocation fails, all allocations are rolled back and
+	// the error is returned. When an identity is freshly allocated for a
+	// CIDR, it is added to the ipcache if 'newlyAllocatedIdentities' is
+	// 'nil', otherwise the newly allocated identities are placed in
+	// 'newlyAllocatedIdentities' and it is the caller's responsibility to
+	// upsert them into ipcache by calling UpsertGeneratedIdentities().
+	//
+	// Upon success, the caller must also arrange for the resulting identities to
+	// be released via a subsequent call to ReleaseCIDRIdentitiesByID().
+	//
+	// The implementation for this function currently lives in pkg/ipcache.
+	AllocateCIDRsForIPs(ips []net.IP, newlyAllocatedIdentities map[string]*identity.Identity) ([]*identity.Identity, error)
+
+	// ReleaseCIDRIdentitiesByID() is a wrapper for ReleaseSlice() that
+	// also handles ipcache entries.
+	ReleaseCIDRIdentitiesByID(context.Context, []identity.NumericIdentity)
 }
 
 // InitIdentityAllocator creates the the identity allocator. Only the first
@@ -366,10 +404,16 @@ func (m *CachingIdentityAllocator) AllocateIdentity(ctx context.Context, lbls la
 // Release is the reverse operation of AllocateIdentity() and releases the
 // identity again. This function may result in kvstore operations.
 // After the last user has released the ID, the returned lastUse value is true.
-func (m *CachingIdentityAllocator) Release(ctx context.Context, id *identity.Identity) (released bool, err error) {
+func (m *CachingIdentityAllocator) Release(ctx context.Context, id *identity.Identity, notifyOwner bool) (released bool, err error) {
 	defer func() {
 		if released {
 			metrics.Identity.Dec()
+		}
+		if m.owner != nil && released && notifyOwner {
+			deleted := IdentityCache{
+				id.ID: id.LabelArray,
+			}
+			m.owner.UpdateIdentities(nil, deleted)
 		}
 	}()
 
@@ -380,15 +424,7 @@ func (m *CachingIdentityAllocator) Release(ctx context.Context, id *identity.Ide
 
 	if !identity.RequiresGlobalIdentity(id.Labels) {
 		<-m.localIdentityAllocatorInitialized
-		lastUse := m.localIdentities.release(id)
-		// Notify release of locally managed identities on last use
-		if m.owner != nil && lastUse {
-			deleted := IdentityCache{
-				id.ID: id.LabelArray,
-			}
-			m.owner.UpdateIdentities(nil, deleted)
-		}
-		return lastUse, nil
+		return m.localIdentities.release(id), nil
 	}
 
 	// This will block until the kvstore can be accessed and all identities
@@ -420,7 +456,7 @@ func (m *CachingIdentityAllocator) ReleaseSlice(ctx context.Context, owner Ident
 		if id == nil {
 			continue
 		}
-		_, err2 := m.Release(ctx, id)
+		_, err2 := m.Release(ctx, id, false)
 		if err2 != nil {
 			log.WithError(err2).WithFields(logrus.Fields{
 				logfields.Identity: id,

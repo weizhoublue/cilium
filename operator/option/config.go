@@ -20,6 +20,12 @@ const (
 
 	// PrometheusServeAddr is the default server address for operator metrics
 	PrometheusServeAddr = ":6942"
+
+	// CESMaxCEPsInCESDefault is the maximum number of cilium endpoints allowed in a CES
+	CESMaxCEPsInCESDefault = 100
+
+	// CESSlicingModeDefault is default method for grouping CEP in a CES.
+	CESSlicingModeDefault = "cesSliceModeIdentity"
 )
 
 const (
@@ -152,9 +158,6 @@ const (
 
 	// Azure options
 
-	// AzureCloudName is the name of the cloud being used
-	AzureCloudName = "azure-cloud-name"
-
 	// AzureSubscriptionID is the subscription ID to use when accessing the Azure API
 	AzureSubscriptionID = "azure-subscription-id"
 
@@ -190,6 +193,15 @@ const (
 	// Enabling this option reduces waste of IP addresses but may increase
 	// the number of API calls to AlibabaCloud ECS service.
 	AlibabaCloudReleaseExcessIPs = "alibaba-cloud-release-excess-ips"
+
+	// CiliumEndpointSlice options
+
+	// CESMaxCEPsInCES is the maximum number of cilium endpoints allowed in single
+	// a CiliumEndpointSlice resource.
+	CESMaxCEPsInCES = "ces-max-ciliumendpoints-per-ces"
+
+	// CESSlicingMode instructs how CEPs are grouped in a CES.
+	CESSlicingMode = "ces-slice-mode"
 )
 
 // OperatorConfig is the configuration used by the operator.
@@ -226,9 +238,6 @@ type OperatorConfig struct {
 
 	// IdentityHeartbeatTimeout is the timeout used to GC identities from k8s
 	IdentityHeartbeatTimeout time.Duration
-
-	// NodesGCInterval is the duration for which the nodes are GC in the KVStore.
-	NodesGCInterval time.Duration
 
 	OperatorAPIServeAddr        string
 	OperatorPrometheusServeAddr string
@@ -331,9 +340,6 @@ type OperatorConfig struct {
 
 	// Azure options
 
-	// AzureCloudName is the name of the cloud being used
-	AzureCloudName string
-
 	// AzureSubscriptionID is the subscription ID to use when accessing the Azure API
 	AzureSubscriptionID string
 
@@ -357,6 +363,16 @@ type OperatorConfig struct {
 	// Enabling this option reduces waste of IP addresses but may increase
 	// the number of API calls to AlibabaCloud ECS service.
 	AlibabaCloudReleaseExcessIPs bool
+
+	// CiliumEndpointSlice options
+
+	// CESMaxCEPsInCES is the maximum number of CiliumEndpoints allowed in single
+	// a CiliumEndpointSlice resource.
+	// The default value of maximum CiliumEndpoints allowed in a CiliumEndpointSlice resource is 100.
+	CESMaxCEPsInCES int
+
+	// CESSlicingMode instructs how CEPs are grouped in a CES.
+	CESSlicingMode string
 }
 
 // Populate sets all options with the values from viper.
@@ -369,7 +385,6 @@ func (c *OperatorConfig) Populate() {
 	c.IdentityGCRateInterval = viper.GetDuration(IdentityGCRateInterval)
 	c.IdentityGCRateLimit = viper.GetInt64(IdentityGCRateLimit)
 	c.IdentityHeartbeatTimeout = viper.GetDuration(IdentityHeartbeatTimeout)
-	c.NodesGCInterval = viper.GetDuration(NodesGCInterval)
 	c.OperatorAPIServeAddr = viper.GetString(OperatorAPIServeAddr)
 	c.OperatorPrometheusServeAddr = viper.GetString(OperatorPrometheusServeAddr)
 	c.PProf = viper.GetBool(PProf)
@@ -381,7 +396,6 @@ func (c *OperatorConfig) Populate() {
 	c.NodeCIDRMaskSizeIPv6 = viper.GetInt(NodeCIDRMaskSizeIPv6)
 	c.ClusterPoolIPv4CIDR = viper.GetStringSlice(ClusterPoolIPv4CIDR)
 	c.ClusterPoolIPv6CIDR = viper.GetStringSlice(ClusterPoolIPv6CIDR)
-	c.NodesGCInterval = viper.GetDuration(NodesGCInterval)
 	c.LeaderElectionLeaseDuration = viper.GetDuration(LeaderElectionLeaseDuration)
 	c.LeaderElectionRenewDeadline = viper.GetDuration(LeaderElectionRenewDeadline)
 	c.LeaderElectionRetryPeriod = viper.GetDuration(LeaderElectionRetryPeriod)
@@ -403,7 +417,6 @@ func (c *OperatorConfig) Populate() {
 
 	// Azure options
 
-	c.AzureCloudName = viper.GetString(AzureCloudName)
 	c.AzureSubscriptionID = viper.GetString(AzureSubscriptionID)
 	c.AzureResourceGroup = viper.GetString(AzureResourceGroup)
 	c.AzureUsePrimaryAddress = viper.GetBool(AzureUsePrimaryAddress)
@@ -413,6 +426,10 @@ func (c *OperatorConfig) Populate() {
 
 	c.AlibabaCloudVPCID = viper.GetString(AlibabaCloudVPCID)
 	c.AlibabaCloudReleaseExcessIPs = viper.GetBool(AlibabaCloudReleaseExcessIPs)
+
+	// CiliumEndpointSlice options
+	c.CESMaxCEPsInCES = viper.GetInt(CESMaxCEPsInCES)
+	c.CESSlicingMode = viper.GetString(CESSlicingMode)
 
 	// Option maps and slices
 

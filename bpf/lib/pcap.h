@@ -7,7 +7,9 @@
 #include <bpf/ctx/ctx.h>
 #include <bpf/api.h>
 
+#ifdef ENABLE_CAPTURE
 #include "common.h"
+#include "time_cache.h"
 #include "lb.h"
 
 struct pcap_timeval {
@@ -105,13 +107,13 @@ struct capture_cache {
 	__u16 cap_len;
 };
 
-struct bpf_elf_map __section_maps cilium_capture_cache = {
-	.type		= BPF_MAP_TYPE_PERCPU_ARRAY,
-	.size_key	= sizeof(__u32),
-	.size_value	= sizeof(struct capture_cache),
-	.pinning	= PIN_GLOBAL_NS,
-	.max_elem	= 1,
-};
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct capture_cache);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, 1);
+} cilium_capture_cache __section_maps_btf;
 
 struct capture_rule {
 	__u16 rule_id;
@@ -143,15 +145,15 @@ struct capture6_wcard {
 	__u8   flags;       /* reserved: 0 */
 };
 
-#if defined(ENABLE_IPV4) && defined(ENABLE_CAPTURE)
-struct bpf_elf_map __section_maps CAPTURE4_RULES = {
-	.type		= BPF_MAP_TYPE_HASH,
-	.size_key	= sizeof(struct capture4_wcard),
-	.size_value	= sizeof(struct capture_rule),
-	.pinning	= PIN_GLOBAL_NS,
-	.max_elem	= CAPTURE4_SIZE,
-	.flags		= BPF_F_NO_PREALLOC,
-};
+#ifdef ENABLE_IPV4
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct capture4_wcard);
+	__type(value, struct capture_rule);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, CAPTURE4_SIZE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+} CAPTURE4_RULES __section_maps_btf;
 
 static __always_inline void
 cilium_capture4_masked_key(const struct capture4_wcard *orig,
@@ -253,17 +255,17 @@ _Pragma("unroll")
 
 	return NULL;
 }
-#endif /* ENABLE_IPV4 && ENABLE_CAPTURE */
+#endif /* ENABLE_IPV4 */
 
-#if defined(ENABLE_IPV6) && defined(ENABLE_CAPTURE)
-struct bpf_elf_map __section_maps CAPTURE6_RULES = {
-	.type		= BPF_MAP_TYPE_HASH,
-	.size_key	= sizeof(struct capture6_wcard),
-	.size_value	= sizeof(struct capture_rule),
-	.pinning	= PIN_GLOBAL_NS,
-	.max_elem	= CAPTURE6_SIZE,
-	.flags		= BPF_F_NO_PREALLOC,
-};
+#ifdef ENABLE_IPV6
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct capture6_wcard);
+	__type(value, struct capture_rule);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, CAPTURE6_SIZE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+} CAPTURE6_RULES __section_maps_btf;
 
 static __always_inline void
 cilium_capture6_masked_key(const struct capture6_wcard *orig,
@@ -378,7 +380,7 @@ _Pragma("unroll")
 
 	return NULL;
 }
-#endif /* ENABLE_IPV6 && ENABLE_CAPTURE */
+#endif /* ENABLE_IPV6 */
 
 static __always_inline struct capture_rule *
 cilium_capture_classify_wcard(struct __ctx_buff *ctx)
@@ -389,16 +391,16 @@ cilium_capture_classify_wcard(struct __ctx_buff *ctx)
 	if (!validate_ethertype(ctx, &proto))
 		return ret;
 	switch (proto) {
-#if defined(ENABLE_IPV4) && defined(ENABLE_CAPTURE)
+#ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
 		ret = cilium_capture4_classify_wcard(ctx);
 		break;
-#endif /* ENABLE_IPV4 && ENABLE_CAPTURE */
-#if defined(ENABLE_IPV6) && defined(ENABLE_CAPTURE)
+#endif
+#ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
 		ret = cilium_capture6_classify_wcard(ctx);
 		break;
-#endif /* ENABLE_IPV6 && ENABLE_CAPTURE */
+#endif
 	default:
 		break;
 	}
@@ -455,19 +457,16 @@ cilium_capture_cached(struct __ctx_buff *ctx __maybe_unused,
 static __always_inline void
 cilium_capture_in(struct __ctx_buff *ctx __maybe_unused)
 {
-#ifdef ENABLE_CAPTURE
 	__u32 cap_len;
 	__u16 rule_id;
 
 	if (cilium_capture_candidate(ctx, &rule_id, &cap_len))
 		__cilium_capture_in(ctx, rule_id, cap_len);
-#endif /* ENABLE_CAPTURE */
 }
 
 static __always_inline void
 cilium_capture_out(struct __ctx_buff *ctx __maybe_unused)
 {
-#ifdef ENABLE_CAPTURE
 	__u32 cap_len;
 	__u16 rule_id;
 
@@ -477,7 +476,19 @@ cilium_capture_out(struct __ctx_buff *ctx __maybe_unused)
 	 */
 	if (cilium_capture_cached(ctx, &rule_id, &cap_len))
 		__cilium_capture_out(ctx, rule_id, cap_len);
-#endif /* ENABLE_CAPTURE */
 }
 
+#else /* ENABLE_CAPTURE */
+
+static __always_inline void
+cilium_capture_in(struct __ctx_buff *ctx __maybe_unused)
+{
+}
+
+static __always_inline void
+cilium_capture_out(struct __ctx_buff *ctx __maybe_unused)
+{
+}
+
+#endif /* ENABLE_CAPTURE */
 #endif /* __LIB_PCAP_H_ */

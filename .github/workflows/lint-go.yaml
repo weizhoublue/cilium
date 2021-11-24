@@ -20,9 +20,9 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@331ce1d993939866bb63c32c6cbbfd48fa76fc57
         with:
-          go-version: 1.17.2
+          go-version: 1.17.3
       - name: Checkout code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
       - name: Check module vendoring
@@ -32,7 +32,7 @@ jobs:
           test -z "$(git status --porcelain)" || (echo "please run 'go mod tidy && go mod vendor', and submit your changes"; exit 1)
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
@@ -46,9 +46,9 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@331ce1d993939866bb63c32c6cbbfd48fa76fc57
         with:
-          go-version: 1.17.2
+          go-version: 1.17.3
       - name: Checkout code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
       - name: Run golangci-lint
@@ -58,7 +58,7 @@ jobs:
           skip-go-installation: true
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
@@ -71,9 +71,9 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@331ce1d993939866bb63c32c6cbbfd48fa76fc57
         with:
-          go-version: 1.17.2
+          go-version: 1.17.3
       - name: Checkout code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
           # hard-code the path instead of using ${{ github.repository }} to make sure it works for forked repo as well
@@ -84,7 +84,7 @@ jobs:
           make precheck
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
@@ -97,9 +97,9 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@331ce1d993939866bb63c32c6cbbfd48fa76fc57
         with:
-          go-version: 1.17.2
+          go-version: 1.17.3
       - name: Checkout code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
           # hard-code the path instead of using ${{ github.repository }} to make sure it works for forked repo as well
@@ -110,7 +110,7 @@ jobs:
           contrib/scripts/check-api-code-gen.sh
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
@@ -123,9 +123,9 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@331ce1d993939866bb63c32c6cbbfd48fa76fc57
         with:
-          go-version: 1.17.2
+          go-version: 1.17.3
       - name: Checkout code
-        uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
           # hard-code the path instead of using ${{ github.repository }} to make sure it works for forked repo as well
@@ -148,7 +148,7 @@ jobs:
 
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)

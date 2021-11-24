@@ -225,6 +225,8 @@ bgp:
   announce:
     # -- Enable allocation and announcement of service LoadBalancer IPs
     loadbalancerIP: false
+    # -- Enable announcement of node pod CIDR
+    podCIDR: false
 
 bpf:
   # -- Enable BPF clock source probing for more efficient tick retrieval.
@@ -256,7 +258,7 @@ bpf:
   policyMapMax: 16384
 
   # -- Configure auto-sizing for all BPF maps based on available memory.
-  # ref: https://docs.cilium.io/en/v1.9/concepts/ebpf/maps/#ebpf-maps
+  # ref: https://docs.cilium.io/en/stable/concepts/ebpf/maps/#ebpf-maps
   #mapDynamicSizeRatio: 0.0025
 
   # -- Configure the level of aggregation for monitor notifications.
@@ -275,7 +277,7 @@ bpf:
   lbExternalClusterIP: false
 
   # -- Enable native IP masquerade support in eBPF
-  #masquerade: true
+  #masquerade: false
 
   # -- Configure whether direct routing mode should route traffic via
   # host stack (true) or directly and more efficiently out of BPF (false) if
@@ -412,6 +414,9 @@ enableK8sEventHandover: false
 
 # enableK8sEndpointSlice: false
 
+# -- Enable CiliumEndpointSlice feature.
+enableCiliumEndpointSlice: false
+
 # -- Enables the fallback compatibility solution for when the xt_socket kernel
 # module is missing and it is needed for the datapath L7 redirection to work
 # properly. See documentation for details on when this can be disabled:
@@ -441,6 +446,10 @@ encryption:
 
     # -- The interface to use for encrypted traffic.
     interface: ""
+
+  wireguard:
+    # -- Enables the fallback to the user-space implementation.
+    userspaceFallback: false
 
   # -- Deprecated in favor of encryption.ipsec.keyFile.
   # Name of the key file inside the Kubernetes secret configured via secretName.
@@ -756,6 +765,30 @@ hubble:
     # -- Whether to enable the Hubble UI.
     enabled: false
 
+    standalone:
+      # -- When true, it will allow installing the Hubble UI only, without checking dependencies.
+      # It is useful if a cluster already has cilium and Hubble relay installed and you just
+      # want Hubble UI to be deployed.
+      # When installed via helm, installing UI should be done via `helm upgrade` and when installed via the cilium cli, then `cilium hubble enable --ui`
+      enabled: false
+
+      tls:
+        # -- When deploying Hubble UI in standalone, with tls enabled for Hubble relay, it is required
+        # to provide a volume for mounting the client certificates.
+        certsVolume: {}
+          # projected:
+          #   defaultMode: 0400
+          #   sources:
+          #   - secret:
+          #       name: hubble-ui-client-certs
+          #       items:
+          #       - key: tls.crt
+          #         path: client.crt
+          #       - key: tls.key
+          #         path: client.key
+          #       - key: ca.crt
+          #         path: hubble-relay-ca.crt
+
     # -- Roll out Hubble-ui pods automatically when configmap is updated.
     rollOutPods: false
 
@@ -893,12 +926,18 @@ ipam:
   # ref: https://docs.cilium.io/en/stable/concepts/networking/ipam/
   mode: "cluster-pool"
   operator:
-    # -- IPv4 CIDR range to delegate to individual nodes for IPAM.
+    # -- Deprecated in favor of ipam.operator.clusterPoolIPv4PodCIDRList.
+    # IPv4 CIDR range to delegate to individual nodes for IPAM.
     clusterPoolIPv4PodCIDR: "10.0.0.0/8"
+    # -- IPv4 CIDR list range to delegate to individual nodes for IPAM.
+    clusterPoolIPv4PodCIDRList: []
     # -- IPv4 CIDR mask size to delegate to individual nodes for IPAM.
     clusterPoolIPv4MaskSize: 24
-    # -- IPv6 CIDR range to delegate to individual nodes for IPAM.
+    # -- Deprecated in favor of ipam.operator.clusterPoolIPv6PodCIDRList.
+    # IPv6 CIDR range to delegate to individual nodes for IPAM.
     clusterPoolIPv6PodCIDR: "fd00::/104"
+     # -- IPv6 CIDR list range to delegate to individual nodes for IPAM.
+    clusterPoolIPv6PodCIDRList: []
     # -- IPv6 CIDR mask size to delegate to individual nodes for IPAM.
     clusterPoolIPv6MaskSize: 120
 
@@ -972,8 +1011,8 @@ kubeProxyReplacementHealthzBindAddr: ""
 l2NeighDiscovery:
   # -- Enable L2 neighbor discovery in the agent
   enabled: true
-  # -- Set period for arping
-  arping-refresh-period: "5m"
+  # -- Override the agent's default neighbor resolution refresh period.
+  arping-refresh-period: "30s"
 
 # -- Enable Layer 7 network policy.
 l7Proxy: true
@@ -1741,3 +1780,7 @@ cgroup:
     enabled: true
   # -- Configure cgroup root where cgroup2 filesystem is mounted on the host (see also: `cgroup.autoMount`)
   hostRoot: /run/cilium/cgroupv2
+
+# -- Configure whether to enable auto detect of terminating state for endpoints
+# in order to support graceful termination.
+enableK8sTerminatingEndpoint: true

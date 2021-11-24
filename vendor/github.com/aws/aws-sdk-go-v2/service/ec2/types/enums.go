@@ -2,6 +2,76 @@
 
 package types
 
+type AcceleratorManufacturer string
+
+// Enum values for AcceleratorManufacturer
+const (
+	AcceleratorManufacturerNvidia            AcceleratorManufacturer = "nvidia"
+	AcceleratorManufacturerAmd               AcceleratorManufacturer = "amd"
+	AcceleratorManufacturerAmazonWebServices AcceleratorManufacturer = "amazon-web-services"
+	AcceleratorManufacturerXilinx            AcceleratorManufacturer = "xilinx"
+)
+
+// Values returns all known values for AcceleratorManufacturer. Note that this can
+// be expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (AcceleratorManufacturer) Values() []AcceleratorManufacturer {
+	return []AcceleratorManufacturer{
+		"nvidia",
+		"amd",
+		"amazon-web-services",
+		"xilinx",
+	}
+}
+
+type AcceleratorName string
+
+// Enum values for AcceleratorName
+const (
+	AcceleratorNameA100          AcceleratorName = "a100"
+	AcceleratorNameV100          AcceleratorName = "v100"
+	AcceleratorNameK80           AcceleratorName = "k80"
+	AcceleratorNameT4            AcceleratorName = "t4"
+	AcceleratorNameM60           AcceleratorName = "m60"
+	AcceleratorNameRadeonProV520 AcceleratorName = "radeon-pro-v520"
+	AcceleratorNameVu9p          AcceleratorName = "vu9p"
+)
+
+// Values returns all known values for AcceleratorName. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (AcceleratorName) Values() []AcceleratorName {
+	return []AcceleratorName{
+		"a100",
+		"v100",
+		"k80",
+		"t4",
+		"m60",
+		"radeon-pro-v520",
+		"vu9p",
+	}
+}
+
+type AcceleratorType string
+
+// Enum values for AcceleratorType
+const (
+	AcceleratorTypeGpu       AcceleratorType = "gpu"
+	AcceleratorTypeFpga      AcceleratorType = "fpga"
+	AcceleratorTypeInference AcceleratorType = "inference"
+)
+
+// Values returns all known values for AcceleratorType. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (AcceleratorType) Values() []AcceleratorType {
+	return []AcceleratorType{
+		"gpu",
+		"fpga",
+		"inference",
+	}
+}
+
 type AccountAttributeName string
 
 // Enum values for AccountAttributeName
@@ -184,9 +254,10 @@ type ArchitectureType string
 
 // Enum values for ArchitectureType
 const (
-	ArchitectureTypeI386  ArchitectureType = "i386"
-	ArchitectureTypeX8664 ArchitectureType = "x86_64"
-	ArchitectureTypeArm64 ArchitectureType = "arm64"
+	ArchitectureTypeI386     ArchitectureType = "i386"
+	ArchitectureTypeX8664    ArchitectureType = "x86_64"
+	ArchitectureTypeArm64    ArchitectureType = "arm64"
+	ArchitectureTypeX8664Mac ArchitectureType = "x86_64_mac"
 )
 
 // Values returns all known values for ArchitectureType. Note that this can be
@@ -197,6 +268,7 @@ func (ArchitectureType) Values() []ArchitectureType {
 		"i386",
 		"x86_64",
 		"arm64",
+		"x86_64_mac",
 	}
 }
 
@@ -204,9 +276,10 @@ type ArchitectureValues string
 
 // Enum values for ArchitectureValues
 const (
-	ArchitectureValuesI386  ArchitectureValues = "i386"
-	ArchitectureValuesX8664 ArchitectureValues = "x86_64"
-	ArchitectureValuesArm64 ArchitectureValues = "arm64"
+	ArchitectureValuesI386     ArchitectureValues = "i386"
+	ArchitectureValuesX8664    ArchitectureValues = "x86_64"
+	ArchitectureValuesArm64    ArchitectureValues = "arm64"
+	ArchitectureValuesX8664Mac ArchitectureValues = "x86_64_mac"
 )
 
 // Values returns all known values for ArchitectureValues. Note that this can be
@@ -217,6 +290,7 @@ func (ArchitectureValues) Values() []ArchitectureValues {
 		"i386",
 		"x86_64",
 		"arm64",
+		"x86_64_mac",
 	}
 }
 
@@ -380,6 +454,26 @@ func (AvailabilityZoneState) Values() []AvailabilityZoneState {
 	}
 }
 
+type BareMetal string
+
+// Enum values for BareMetal
+const (
+	BareMetalIncluded BareMetal = "included"
+	BareMetalRequired BareMetal = "required"
+	BareMetalExcluded BareMetal = "excluded"
+)
+
+// Values returns all known values for BareMetal. Note that this can be expanded in
+// the future, and so it is only as up to date as the client. The ordering of this
+// slice is not guaranteed to be stable across updates.
+func (BareMetal) Values() []BareMetal {
+	return []BareMetal{
+		"included",
+		"required",
+		"excluded",
+	}
+}
+
 type BatchState string
 
 // Enum values for BatchState
@@ -490,6 +584,26 @@ func (BundleTaskState) Values() []BundleTaskState {
 	}
 }
 
+type BurstablePerformance string
+
+// Enum values for BurstablePerformance
+const (
+	BurstablePerformanceIncluded BurstablePerformance = "included"
+	BurstablePerformanceRequired BurstablePerformance = "required"
+	BurstablePerformanceExcluded BurstablePerformance = "excluded"
+)
+
+// Values returns all known values for BurstablePerformance. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (BurstablePerformance) Values() []BurstablePerformance {
+	return []BurstablePerformance{
+		"included",
+		"required",
+		"excluded",
+	}
+}
+
 type ByoipCidrState string
 
 // Enum values for ByoipCidrState
@@ -564,6 +678,39 @@ func (CancelSpotInstanceRequestState) Values() []CancelSpotInstanceRequestState 
 		"closed",
 		"cancelled",
 		"completed",
+	}
+}
+
+type CapacityReservationFleetState string
+
+// Enum values for CapacityReservationFleetState
+const (
+	CapacityReservationFleetStateSubmitted          CapacityReservationFleetState = "submitted"
+	CapacityReservationFleetStateModifying          CapacityReservationFleetState = "modifying"
+	CapacityReservationFleetStateActive             CapacityReservationFleetState = "active"
+	CapacityReservationFleetStatePartiallyFulfilled CapacityReservationFleetState = "partially_fulfilled"
+	CapacityReservationFleetStateExpiring           CapacityReservationFleetState = "expiring"
+	CapacityReservationFleetStateExpired            CapacityReservationFleetState = "expired"
+	CapacityReservationFleetStateCancelling         CapacityReservationFleetState = "cancelling"
+	CapacityReservationFleetStateCancelled          CapacityReservationFleetState = "cancelled"
+	CapacityReservationFleetStateFailed             CapacityReservationFleetState = "failed"
+)
+
+// Values returns all known values for CapacityReservationFleetState. Note that
+// this can be expanded in the future, and so it is only as up to date as the
+// client. The ordering of this slice is not guaranteed to be stable across
+// updates.
+func (CapacityReservationFleetState) Values() []CapacityReservationFleetState {
+	return []CapacityReservationFleetState{
+		"submitted",
+		"modifying",
+		"active",
+		"partially_fulfilled",
+		"expiring",
+		"expired",
+		"cancelling",
+		"cancelled",
+		"failed",
 	}
 }
 
@@ -941,6 +1088,26 @@ func (CopyTagsFromSource) Values() []CopyTagsFromSource {
 	}
 }
 
+type CpuManufacturer string
+
+// Enum values for CpuManufacturer
+const (
+	CpuManufacturerIntel             CpuManufacturer = "intel"
+	CpuManufacturerAmd               CpuManufacturer = "amd"
+	CpuManufacturerAmazonWebServices CpuManufacturer = "amazon-web-services"
+)
+
+// Values returns all known values for CpuManufacturer. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (CpuManufacturer) Values() []CpuManufacturer {
+	return []CpuManufacturer{
+		"intel",
+		"amd",
+		"amazon-web-services",
+	}
+}
+
 type CurrencyCodeValues string
 
 // Enum values for CurrencyCodeValues
@@ -1071,6 +1238,24 @@ func (DeleteQueuedReservedInstancesErrorCode) Values() []DeleteQueuedReservedIns
 		"reserved-instances-id-invalid",
 		"reserved-instances-not-in-queued-state",
 		"unexpected-error",
+	}
+}
+
+type DestinationFileFormat string
+
+// Enum values for DestinationFileFormat
+const (
+	DestinationFileFormatPlainText DestinationFileFormat = "plain-text"
+	DestinationFileFormatParquet   DestinationFileFormat = "parquet"
+)
+
+// Values returns all known values for DestinationFileFormat. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (DestinationFileFormat) Values() []DestinationFileFormat {
+	return []DestinationFileFormat{
+		"plain-text",
+		"parquet",
 	}
 }
 
@@ -1489,6 +1674,23 @@ func (FleetActivityStatus) Values() []FleetActivityStatus {
 	}
 }
 
+type FleetCapacityReservationTenancy string
+
+// Enum values for FleetCapacityReservationTenancy
+const (
+	FleetCapacityReservationTenancyDefault FleetCapacityReservationTenancy = "default"
+)
+
+// Values returns all known values for FleetCapacityReservationTenancy. Note that
+// this can be expanded in the future, and so it is only as up to date as the
+// client. The ordering of this slice is not guaranteed to be stable across
+// updates.
+func (FleetCapacityReservationTenancy) Values() []FleetCapacityReservationTenancy {
+	return []FleetCapacityReservationTenancy{
+		"default",
+	}
+}
+
 type FleetCapacityReservationUsageStrategy string
 
 // Enum values for FleetCapacityReservationUsageStrategy
@@ -1542,6 +1744,22 @@ func (FleetExcessCapacityTerminationPolicy) Values() []FleetExcessCapacityTermin
 	return []FleetExcessCapacityTerminationPolicy{
 		"no-termination",
 		"termination",
+	}
+}
+
+type FleetInstanceMatchCriteria string
+
+// Enum values for FleetInstanceMatchCriteria
+const (
+	FleetInstanceMatchCriteriaOpen FleetInstanceMatchCriteria = "open"
+)
+
+// Values returns all known values for FleetInstanceMatchCriteria. Note that this
+// can be expanded in the future, and so it is only as up to date as the client.
+// The ordering of this slice is not guaranteed to be stable across updates.
+func (FleetInstanceMatchCriteria) Values() []FleetInstanceMatchCriteria {
+	return []FleetInstanceMatchCriteria{
+		"open",
 	}
 }
 
@@ -1965,6 +2183,24 @@ func (InstanceEventWindowState) Values() []InstanceEventWindowState {
 	}
 }
 
+type InstanceGeneration string
+
+// Enum values for InstanceGeneration
+const (
+	InstanceGenerationCurrent  InstanceGeneration = "current"
+	InstanceGenerationPrevious InstanceGeneration = "previous"
+)
+
+// Values returns all known values for InstanceGeneration. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (InstanceGeneration) Values() []InstanceGeneration {
+	return []InstanceGeneration{
+		"current",
+		"previous",
+	}
+}
+
 type InstanceHealthStatus string
 
 // Enum values for InstanceHealthStatus
@@ -2136,6 +2372,25 @@ func (InstanceStateName) Values() []InstanceStateName {
 		"terminated",
 		"stopping",
 		"stopped",
+	}
+}
+
+type InstanceStorageEncryptionSupport string
+
+// Enum values for InstanceStorageEncryptionSupport
+const (
+	InstanceStorageEncryptionSupportUnsupported InstanceStorageEncryptionSupport = "unsupported"
+	InstanceStorageEncryptionSupportRequired    InstanceStorageEncryptionSupport = "required"
+)
+
+// Values returns all known values for InstanceStorageEncryptionSupport. Note that
+// this can be expanded in the future, and so it is only as up to date as the
+// client. The ordering of this slice is not guaranteed to be stable across
+// updates.
+func (InstanceStorageEncryptionSupport) Values() []InstanceStorageEncryptionSupport {
+	return []InstanceStorageEncryptionSupport{
+		"unsupported",
+		"required",
 	}
 }
 
@@ -2413,6 +2668,7 @@ const (
 	InstanceTypeD3en6xlarge     InstanceType = "d3en.6xlarge"
 	InstanceTypeD3en8xlarge     InstanceType = "d3en.8xlarge"
 	InstanceTypeD3en12xlarge    InstanceType = "d3en.12xlarge"
+	InstanceTypeDl124xlarge     InstanceType = "dl1.24xlarge"
 	InstanceTypeF12xlarge       InstanceType = "f1.2xlarge"
 	InstanceTypeF14xlarge       InstanceType = "f1.4xlarge"
 	InstanceTypeF116xlarge      InstanceType = "f1.16xlarge"
@@ -2560,6 +2816,9 @@ const (
 	InstanceTypeX2gd12xlarge    InstanceType = "x2gd.12xlarge"
 	InstanceTypeX2gd16xlarge    InstanceType = "x2gd.16xlarge"
 	InstanceTypeX2gdMetal       InstanceType = "x2gd.metal"
+	InstanceTypeVt13xlarge      InstanceType = "vt1.3xlarge"
+	InstanceTypeVt16xlarge      InstanceType = "vt1.6xlarge"
+	InstanceTypeVt124xlarge     InstanceType = "vt1.24xlarge"
 )
 
 // Values returns all known values for InstanceType. Note that this can be expanded
@@ -2837,6 +3096,7 @@ func (InstanceType) Values() []InstanceType {
 		"d3en.6xlarge",
 		"d3en.8xlarge",
 		"d3en.12xlarge",
+		"dl1.24xlarge",
 		"f1.2xlarge",
 		"f1.4xlarge",
 		"f1.16xlarge",
@@ -2984,6 +3244,9 @@ func (InstanceType) Values() []InstanceType {
 		"x2gd.12xlarge",
 		"x2gd.16xlarge",
 		"x2gd.metal",
+		"vt1.3xlarge",
+		"vt1.6xlarge",
+		"vt1.24xlarge",
 	}
 }
 
@@ -3262,6 +3525,44 @@ func (LocalGatewayRouteType) Values() []LocalGatewayRouteType {
 	return []LocalGatewayRouteType{
 		"static",
 		"propagated",
+	}
+}
+
+type LocalStorage string
+
+// Enum values for LocalStorage
+const (
+	LocalStorageIncluded LocalStorage = "included"
+	LocalStorageRequired LocalStorage = "required"
+	LocalStorageExcluded LocalStorage = "excluded"
+)
+
+// Values returns all known values for LocalStorage. Note that this can be expanded
+// in the future, and so it is only as up to date as the client. The ordering of
+// this slice is not guaranteed to be stable across updates.
+func (LocalStorage) Values() []LocalStorage {
+	return []LocalStorage{
+		"included",
+		"required",
+		"excluded",
+	}
+}
+
+type LocalStorageType string
+
+// Enum values for LocalStorageType
+const (
+	LocalStorageTypeHdd LocalStorageType = "hdd"
+	LocalStorageTypeSsd LocalStorageType = "ssd"
+)
+
+// Values returns all known values for LocalStorageType. Note that this can be
+// expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (LocalStorageType) Values() []LocalStorageType {
+	return []LocalStorageType{
+		"hdd",
+		"ssd",
 	}
 }
 
@@ -4073,55 +4374,68 @@ type ResourceType string
 
 // Enum values for ResourceType
 const (
-	ResourceTypeClientVpnEndpoint                    ResourceType = "client-vpn-endpoint"
-	ResourceTypeCustomerGateway                      ResourceType = "customer-gateway"
-	ResourceTypeDedicatedHost                        ResourceType = "dedicated-host"
-	ResourceTypeDhcpOptions                          ResourceType = "dhcp-options"
-	ResourceTypeEgressOnlyInternetGateway            ResourceType = "egress-only-internet-gateway"
-	ResourceTypeElasticIp                            ResourceType = "elastic-ip"
-	ResourceTypeElasticGpu                           ResourceType = "elastic-gpu"
-	ResourceTypeExportImageTask                      ResourceType = "export-image-task"
-	ResourceTypeExportInstanceTask                   ResourceType = "export-instance-task"
-	ResourceTypeFleet                                ResourceType = "fleet"
-	ResourceTypeFpgaImage                            ResourceType = "fpga-image"
-	ResourceTypeHostReservation                      ResourceType = "host-reservation"
-	ResourceTypeImage                                ResourceType = "image"
-	ResourceTypeImportImageTask                      ResourceType = "import-image-task"
-	ResourceTypeImportSnapshotTask                   ResourceType = "import-snapshot-task"
-	ResourceTypeInstance                             ResourceType = "instance"
-	ResourceTypeInstanceEventWindow                  ResourceType = "instance-event-window"
-	ResourceTypeInternetGateway                      ResourceType = "internet-gateway"
-	ResourceTypeKeyPair                              ResourceType = "key-pair"
-	ResourceTypeLaunchTemplate                       ResourceType = "launch-template"
-	ResourceTypeLocalGatewayRouteTableVpcAssociation ResourceType = "local-gateway-route-table-vpc-association"
-	ResourceTypeNatgateway                           ResourceType = "natgateway"
-	ResourceTypeNetworkAcl                           ResourceType = "network-acl"
-	ResourceTypeNetworkInterface                     ResourceType = "network-interface"
-	ResourceTypeNetworkInsightsAnalysis              ResourceType = "network-insights-analysis"
-	ResourceTypeNetworkInsightsPath                  ResourceType = "network-insights-path"
-	ResourceTypePlacementGroup                       ResourceType = "placement-group"
-	ResourceTypeReservedInstances                    ResourceType = "reserved-instances"
-	ResourceTypeRouteTable                           ResourceType = "route-table"
-	ResourceTypeSecurityGroup                        ResourceType = "security-group"
-	ResourceTypeSecurityGroupRule                    ResourceType = "security-group-rule"
-	ResourceTypeSnapshot                             ResourceType = "snapshot"
-	ResourceTypeSpotFleetRequest                     ResourceType = "spot-fleet-request"
-	ResourceTypeSpotInstancesRequest                 ResourceType = "spot-instances-request"
-	ResourceTypeSubnet                               ResourceType = "subnet"
-	ResourceTypeTrafficMirrorFilter                  ResourceType = "traffic-mirror-filter"
-	ResourceTypeTrafficMirrorSession                 ResourceType = "traffic-mirror-session"
-	ResourceTypeTrafficMirrorTarget                  ResourceType = "traffic-mirror-target"
-	ResourceTypeTransitGateway                       ResourceType = "transit-gateway"
-	ResourceTypeTransitGatewayAttachment             ResourceType = "transit-gateway-attachment"
-	ResourceTypeTransitGatewayConnectPeer            ResourceType = "transit-gateway-connect-peer"
-	ResourceTypeTransitGatewayMulticastDomain        ResourceType = "transit-gateway-multicast-domain"
-	ResourceTypeTransitGatewayRouteTable             ResourceType = "transit-gateway-route-table"
-	ResourceTypeVolume                               ResourceType = "volume"
-	ResourceTypeVpc                                  ResourceType = "vpc"
-	ResourceTypeVpcPeeringConnection                 ResourceType = "vpc-peering-connection"
-	ResourceTypeVpnConnection                        ResourceType = "vpn-connection"
-	ResourceTypeVpnGateway                           ResourceType = "vpn-gateway"
-	ResourceTypeVpcFlowLog                           ResourceType = "vpc-flow-log"
+	ResourceTypeCapacityReservation                                    ResourceType = "capacity-reservation"
+	ResourceTypeClientVpnEndpoint                                      ResourceType = "client-vpn-endpoint"
+	ResourceTypeCustomerGateway                                        ResourceType = "customer-gateway"
+	ResourceTypeCarrierGateway                                         ResourceType = "carrier-gateway"
+	ResourceTypeDedicatedHost                                          ResourceType = "dedicated-host"
+	ResourceTypeDhcpOptions                                            ResourceType = "dhcp-options"
+	ResourceTypeEgressOnlyInternetGateway                              ResourceType = "egress-only-internet-gateway"
+	ResourceTypeElasticIp                                              ResourceType = "elastic-ip"
+	ResourceTypeElasticGpu                                             ResourceType = "elastic-gpu"
+	ResourceTypeExportImageTask                                        ResourceType = "export-image-task"
+	ResourceTypeExportInstanceTask                                     ResourceType = "export-instance-task"
+	ResourceTypeFleet                                                  ResourceType = "fleet"
+	ResourceTypeFpgaImage                                              ResourceType = "fpga-image"
+	ResourceTypeHostReservation                                        ResourceType = "host-reservation"
+	ResourceTypeImage                                                  ResourceType = "image"
+	ResourceTypeImportImageTask                                        ResourceType = "import-image-task"
+	ResourceTypeImportSnapshotTask                                     ResourceType = "import-snapshot-task"
+	ResourceTypeInstance                                               ResourceType = "instance"
+	ResourceTypeInstanceEventWindow                                    ResourceType = "instance-event-window"
+	ResourceTypeInternetGateway                                        ResourceType = "internet-gateway"
+	ResourceTypeIpv4poolEc2                                            ResourceType = "ipv4pool-ec2"
+	ResourceTypeIpv6poolEc2                                            ResourceType = "ipv6pool-ec2"
+	ResourceTypeKeyPair                                                ResourceType = "key-pair"
+	ResourceTypeLaunchTemplate                                         ResourceType = "launch-template"
+	ResourceTypeLocalGateway                                           ResourceType = "local-gateway"
+	ResourceTypeLocalGatewayRouteTable                                 ResourceType = "local-gateway-route-table"
+	ResourceTypeLocalGatewayVirtualInterface                           ResourceType = "local-gateway-virtual-interface"
+	ResourceTypeLocalGatewayVirtualInterfaceGroup                      ResourceType = "local-gateway-virtual-interface-group"
+	ResourceTypeLocalGatewayRouteTableVpcAssociation                   ResourceType = "local-gateway-route-table-vpc-association"
+	ResourceTypeLocalGatewayRouteTableVirtualInterfaceGroupAssociation ResourceType = "local-gateway-route-table-virtual-interface-group-association"
+	ResourceTypeNatgateway                                             ResourceType = "natgateway"
+	ResourceTypeNetworkAcl                                             ResourceType = "network-acl"
+	ResourceTypeNetworkInterface                                       ResourceType = "network-interface"
+	ResourceTypeNetworkInsightsAnalysis                                ResourceType = "network-insights-analysis"
+	ResourceTypeNetworkInsightsPath                                    ResourceType = "network-insights-path"
+	ResourceTypePlacementGroup                                         ResourceType = "placement-group"
+	ResourceTypePrefixList                                             ResourceType = "prefix-list"
+	ResourceTypeReplaceRootVolumeTask                                  ResourceType = "replace-root-volume-task"
+	ResourceTypeReservedInstances                                      ResourceType = "reserved-instances"
+	ResourceTypeRouteTable                                             ResourceType = "route-table"
+	ResourceTypeSecurityGroup                                          ResourceType = "security-group"
+	ResourceTypeSecurityGroupRule                                      ResourceType = "security-group-rule"
+	ResourceTypeSnapshot                                               ResourceType = "snapshot"
+	ResourceTypeSpotFleetRequest                                       ResourceType = "spot-fleet-request"
+	ResourceTypeSpotInstancesRequest                                   ResourceType = "spot-instances-request"
+	ResourceTypeSubnet                                                 ResourceType = "subnet"
+	ResourceTypeTrafficMirrorFilter                                    ResourceType = "traffic-mirror-filter"
+	ResourceTypeTrafficMirrorSession                                   ResourceType = "traffic-mirror-session"
+	ResourceTypeTrafficMirrorTarget                                    ResourceType = "traffic-mirror-target"
+	ResourceTypeTransitGateway                                         ResourceType = "transit-gateway"
+	ResourceTypeTransitGatewayAttachment                               ResourceType = "transit-gateway-attachment"
+	ResourceTypeTransitGatewayConnectPeer                              ResourceType = "transit-gateway-connect-peer"
+	ResourceTypeTransitGatewayMulticastDomain                          ResourceType = "transit-gateway-multicast-domain"
+	ResourceTypeTransitGatewayRouteTable                               ResourceType = "transit-gateway-route-table"
+	ResourceTypeVolume                                                 ResourceType = "volume"
+	ResourceTypeVpc                                                    ResourceType = "vpc"
+	ResourceTypeVpcEndpoint                                            ResourceType = "vpc-endpoint"
+	ResourceTypeVpcEndpointService                                     ResourceType = "vpc-endpoint-service"
+	ResourceTypeVpcPeeringConnection                                   ResourceType = "vpc-peering-connection"
+	ResourceTypeVpnConnection                                          ResourceType = "vpn-connection"
+	ResourceTypeVpnGateway                                             ResourceType = "vpn-gateway"
+	ResourceTypeVpcFlowLog                                             ResourceType = "vpc-flow-log"
 )
 
 // Values returns all known values for ResourceType. Note that this can be expanded
@@ -4129,8 +4443,10 @@ const (
 // this slice is not guaranteed to be stable across updates.
 func (ResourceType) Values() []ResourceType {
 	return []ResourceType{
+		"capacity-reservation",
 		"client-vpn-endpoint",
 		"customer-gateway",
+		"carrier-gateway",
 		"dedicated-host",
 		"dhcp-options",
 		"egress-only-internet-gateway",
@@ -4147,15 +4463,24 @@ func (ResourceType) Values() []ResourceType {
 		"instance",
 		"instance-event-window",
 		"internet-gateway",
+		"ipv4pool-ec2",
+		"ipv6pool-ec2",
 		"key-pair",
 		"launch-template",
+		"local-gateway",
+		"local-gateway-route-table",
+		"local-gateway-virtual-interface",
+		"local-gateway-virtual-interface-group",
 		"local-gateway-route-table-vpc-association",
+		"local-gateway-route-table-virtual-interface-group-association",
 		"natgateway",
 		"network-acl",
 		"network-interface",
 		"network-insights-analysis",
 		"network-insights-path",
 		"placement-group",
+		"prefix-list",
+		"replace-root-volume-task",
 		"reserved-instances",
 		"route-table",
 		"security-group",
@@ -4174,6 +4499,8 @@ func (ResourceType) Values() []ResourceType {
 		"transit-gateway-route-table",
 		"volume",
 		"vpc",
+		"vpc-endpoint",
+		"vpc-endpoint-service",
 		"vpc-peering-connection",
 		"vpn-connection",
 		"vpn-gateway",
@@ -4704,6 +5031,26 @@ func (SummaryStatus) Values() []SummaryStatus {
 		"insufficient-data",
 		"not-applicable",
 		"initializing",
+	}
+}
+
+type TargetCapacityUnitType string
+
+// Enum values for TargetCapacityUnitType
+const (
+	TargetCapacityUnitTypeVcpu      TargetCapacityUnitType = "vcpu"
+	TargetCapacityUnitTypeMemoryMib TargetCapacityUnitType = "memory-mib"
+	TargetCapacityUnitTypeUnits     TargetCapacityUnitType = "units"
+)
+
+// Values returns all known values for TargetCapacityUnitType. Note that this can
+// be expanded in the future, and so it is only as up to date as the client. The
+// ordering of this slice is not guaranteed to be stable across updates.
+func (TargetCapacityUnitType) Values() []TargetCapacityUnitType {
+	return []TargetCapacityUnitType{
+		"vcpu",
+		"memory-mib",
+		"units",
 	}
 }
 

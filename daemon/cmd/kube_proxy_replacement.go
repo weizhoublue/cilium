@@ -342,9 +342,9 @@ func initKubeProxyReplacementOptions() (bool, error) {
 					option.NodePortAcceleration, option.NodePortAccelerationDisabled, option.TunnelName, option.TunnelDisabled)
 			}
 
-			if option.Config.EnableEgressGateway {
+			if option.Config.EnableIPv4EgressGateway {
 				return false, fmt.Errorf("Cannot use NodePort acceleration with the egress gateway. Run cilium-agent with either --%s=%s or %s=false",
-					option.NodePortAcceleration, option.NodePortAccelerationDisabled, option.EnableEgressGateway)
+					option.NodePortAcceleration, option.NodePortAccelerationDisabled, option.EnableIPv4EgressGateway)
 			}
 		}
 
@@ -428,6 +428,29 @@ func initKubeProxyReplacementOptions() (bool, error) {
 	}
 
 	return strict, nil
+}
+
+func probeManagedNeighborSupport() {
+	if option.Config.DryMode {
+		return
+	}
+
+	probesManager := probes.NewProbeManager()
+	found := false
+	// Probes for kernel commit:
+	//   856c02dbce4f ("bpf: Introduce helper bpf_get_branch_snapshot")
+	// This is a bit of a workaround given feature probing for netlink
+	// neighboring subsystem is cumbersome. The commit was added in the
+	// same release as managed neighbors, that is, 5.16+.
+	if h := probesManager.GetHelpers("kprobe"); h != nil {
+		if _, ok := h["bpf_get_branch_snapshot"]; ok {
+			found = true
+		}
+	}
+	if found {
+		log.Info("Using Managed Neighbor Kernel support")
+		option.Config.ARPPingKernelManaged = true
+	}
 }
 
 func probeCgroupSupportTCP(strict, ipv4 bool) error {
@@ -557,13 +580,6 @@ func finishKubeProxyReplacementInit(isKubeProxyReplacementStrict bool) error {
 	}
 
 	if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled {
-		if option.Config.XDPDevice != "undefined" &&
-			(option.Config.DirectRoutingDevice == "" ||
-				option.Config.XDPDevice != option.Config.DirectRoutingDevice) {
-			return fmt.Errorf("Cannot set NodePort acceleration device: mismatch between Prefilter device %s and NodePort device %s",
-				option.Config.XDPDevice, option.Config.DirectRoutingDevice)
-		}
-		option.Config.XDPDevice = option.Config.DirectRoutingDevice
 		if err := loader.SetXDPMode(option.Config.NodePortAcceleration); err != nil {
 			return fmt.Errorf("Cannot set NodePort acceleration")
 		}
@@ -612,7 +628,6 @@ func finishKubeProxyReplacementInit(isKubeProxyReplacementStrict bool) error {
 		}
 	}
 
-	option.Config.NodePortHairpin = len(option.Config.Devices) == 1
 	if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled &&
 		len(option.Config.Devices) != 1 {
 		return fmt.Errorf("Cannot set NodePort acceleration due to multi-device setup (%q). Specify --%s with a single device to enable NodePort acceleration.", option.Config.Devices, option.Devices)

@@ -68,13 +68,20 @@ func init() {
 	flags.BoolP(option.DebugArg, "D", false, "Enable debugging mode")
 	option.BindEnv(option.DebugArg)
 
-	// We need to obtain from Cilium ConfigMap if the CiliumEndpointCRD option
-	// is enabled or disabled. This option is marked as hidden because the
-	// Cilium Endpoint CRD controller is not in this program and by having it
+	// We need to obtain from Cilium ConfigMap if these options are enabled
+	// or disabled. These options are marked as hidden because having it
 	// being printed by operator --help could confuse users.
 	flags.Bool(option.DisableCiliumEndpointCRDName, false, "")
 	flags.MarkHidden(option.DisableCiliumEndpointCRDName)
 	option.BindEnv(option.DisableCiliumEndpointCRDName)
+
+	flags.Bool(option.EnableIPv4EgressGateway, false, "")
+	flags.MarkHidden(option.EnableIPv4EgressGateway)
+	option.BindEnv(option.EnableIPv4EgressGateway)
+
+	flags.Bool(option.EnableLocalRedirectPolicy, false, "")
+	flags.MarkHidden(option.EnableLocalRedirectPolicy)
+	option.BindEnv(option.EnableLocalRedirectPolicy)
 
 	flags.Duration(operatorOption.EndpointGCInterval, operatorOption.EndpointGCIntervalDefault, "GC interval for cilium endpoints")
 	option.BindEnv(operatorOption.EndpointGCInterval)
@@ -90,9 +97,6 @@ func init() {
 		option.LogOpt, `Log driver options for cilium-operator, `+
 			`configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local4"}`)
 	option.BindEnv(option.LogOpt)
-
-	flags.Bool(option.EnableWireguard, false, "Enable wireguard")
-	option.BindEnv(option.EnableWireguard)
 
 	var defaultIPAM string
 	switch binaryName {
@@ -174,7 +178,7 @@ func init() {
 	flags.Bool(option.EnableIPv4Name, defaults.EnableIPv4, "Enable IPv4 support")
 	option.BindEnv(option.EnableIPv4Name)
 
-	flags.String(operatorOption.ClusterPoolIPv4CIDR, "",
+	flags.StringSlice(operatorOption.ClusterPoolIPv4CIDR, []string{},
 		fmt.Sprintf("IPv4 CIDR Range for Pods in cluster. Requires '%s=%s' and '%s=%s'",
 			option.IPAM, ipamOption.IPAMClusterPool,
 			option.EnableIPv4Name, "true"))
@@ -189,7 +193,7 @@ func init() {
 	flags.Bool(option.EnableIPv6Name, defaults.EnableIPv6, "Enable IPv6 support")
 	option.BindEnv(option.EnableIPv6Name)
 
-	flags.String(operatorOption.ClusterPoolIPv6CIDR, "",
+	flags.StringSlice(operatorOption.ClusterPoolIPv6CIDR, []string{},
 		fmt.Sprintf("IPv6 CIDR Range for Pods in cluster. Requires '%s=%s' and '%s=%s'",
 			option.IPAM, ipamOption.IPAMClusterPool,
 			option.EnableIPv6Name, "true"))
@@ -240,8 +244,10 @@ func init() {
 	flags.String(option.K8sKubeConfigPath, "", "Absolute path of the kubernetes kubeconfig file")
 	option.BindEnv(option.K8sKubeConfigPath)
 
+	// To be removed in Cilium 1.12
 	flags.Duration(operatorOption.NodesGCInterval, 2*time.Minute, "GC interval for nodes store in the kvstore")
 	option.BindEnv(operatorOption.NodesGCInterval)
+	flags.MarkDeprecated(operatorOption.NodesGCInterval, "Unused flag, will be removed in future Cilium releases")
 
 	flags.String(operatorOption.OperatorPrometheusServeAddr, operatorOption.PrometheusServeAddr, "Address to serve Prometheus metrics")
 	option.BindEnv(operatorOption.OperatorPrometheusServeAddr)
@@ -300,6 +306,17 @@ func init() {
 
 	flags.Bool(option.SkipCRDCreation, false, "When true, Kubernetes Custom Resource Definitions will not be created")
 	option.BindEnv(option.SkipCRDCreation)
+
+	flags.Bool(option.EnableCiliumEndpointSlice, false, "If set to true, the CiliumEndpointSlice feature is enabled. If any CiliumEndpoints resources are created, updated, or deleted in the cluster, all those changes are broadcast as CiliumEndpointSlice updates to all of the Cilium agents.")
+	option.BindEnv(option.EnableCiliumEndpointSlice)
+
+	flags.Int(operatorOption.CESMaxCEPsInCES, operatorOption.CESMaxCEPsInCESDefault, "Maximum number of CiliumEndpoints allowed in a CES")
+	flags.MarkHidden(operatorOption.CESMaxCEPsInCES)
+	option.BindEnv(operatorOption.CESMaxCEPsInCES)
+
+	flags.String(operatorOption.CESSlicingMode, operatorOption.CESSlicingModeDefault, "Slicing mode define how ceps are grouped into a CES")
+	flags.MarkHidden(operatorOption.CESSlicingMode)
+	option.BindEnv(operatorOption.CESSlicingMode)
 
 	viper.BindPFlags(flags)
 }

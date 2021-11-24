@@ -348,8 +348,8 @@ const (
 	// EnableIPMasqAgent enables BPF ip-masq-agent
 	EnableIPMasqAgent = "enable-ip-masq-agent"
 
-	// EnableEgressGateway enables egress-gateway
-	EnableEgressGateway = "enable-egress-gateway"
+	// EnableIPv4EgressGateway enables the IPv4 egress gateway
+	EnableIPv4EgressGateway = "enable-ipv4-egress-gateway"
 
 	// IPMasqAgentConfigPath is the configuration file path
 	IPMasqAgentConfigPath = "ip-masq-agent-config-path"
@@ -396,6 +396,9 @@ const (
 	// PProfPort is the port that the pprof listens on
 	PProfPort = "pprof-port"
 
+	// EnableXDPPrefilter enables XDP-based prefiltering
+	EnableXDPPrefilter = "enable-xdp-prefilter"
+
 	// PrefilterDevice is the device facing external network for XDP prefiltering
 	PrefilterDevice = "prefilter-device"
 
@@ -441,6 +444,9 @@ const (
 
 	// MTUName is the name of the MTU option
 	MTUName = "mtu"
+
+	// RouteMetric is the name of the route-metric option
+	RouteMetric = "route-metric"
 
 	// DatapathMode is the name of the DatapathMode option
 	DatapathMode = "datapath-mode"
@@ -662,6 +668,9 @@ const (
 
 	// EnableWireguard is the name of the option to enable wireguard
 	EnableWireguard = "enable-wireguard"
+
+	// EnableWireguardUserspaceFallback is the name of the option that enables the fallback to wireguard userspace mode
+	EnableWireguardUserspaceFallback = "enable-wireguard-userspace-fallback"
 
 	// KVstoreLeaseTTL is the time-to-live for lease in kvstore.
 	KVstoreLeaseTTL = "kvstore-lease-ttl"
@@ -947,7 +956,8 @@ const (
 	// Otherwise, it will use the old scheme.
 	EgressMultiHomeIPRuleCompat = "egress-multi-home-ip-rule-compat"
 
-	// EnableBPFBypassFIBLookup instructs Cilium to enable the FIB lookup bypass optimization for nodeport reverse NAT handling.
+	// EnableBPFBypassFIBLookup instructs Cilium to enable the FIB lookup bypass
+	// optimization for nodeport reverse NAT handling (DEPRECATED).
 	EnableBPFBypassFIBLookup = "bpf-lb-bypass-fib-lookup"
 
 	// EnableCustomCallsName is the name of the option to enable tail calls
@@ -956,6 +966,9 @@ const (
 
 	// BGPAnnounceLBIP announces service IPs of type LoadBalancer via BGP
 	BGPAnnounceLBIP = "bgp-announce-lb-ip"
+
+	// BGPAnnouncePodCIDR announces the node's pod CIDR via BGP
+	BGPAnnouncePodCIDR = "bgp-announce-pod-cidr"
 
 	// BGPConfigPath is the file path to the BGP configuration. It is
 	// compatible with MetalLB's configuration.
@@ -975,6 +988,10 @@ const (
 	// within IPAM upon endpoint restore and allows the use of the restored IP
 	// regardless of whether it's available in the pool.
 	BypassIPAvailabilityUponRestore = "bypass-ip-availability-upon-restore"
+
+	// EnableK8sTerminatingEndpoint enables the option to auto detect terminating
+	// state for endpoints in order to support graceful termination.
+	EnableK8sTerminatingEndpoint = "enable-k8s-terminating-endpoint"
 )
 
 // Default string arguments
@@ -1041,6 +1058,9 @@ const (
 	// allows to keep a Kubernetes node NotReady until Cilium is up and
 	// running and able to schedule endpoints.
 	WriteCNIConfigurationWhenReady = "write-cni-conf-when-ready"
+
+	// EnableCiliumEndpointSlice enables the cilium endpoint slicing feature.
+	EnableCiliumEndpointSlice = "enable-cilium-endpoint-slice"
 )
 
 const (
@@ -1187,9 +1207,9 @@ type DaemonConfig struct {
 	Devices             []string   // bpf_host device
 	DirectRoutingDevice string     // Direct routing device (used only by NodePort BPF)
 	LBDevInheritIPAddr  string     // Device which IP addr used by bpf_host devices
+	EnableXDPPrefilter  bool       // Enable XDP-based prefiltering
 	DevicePreFilter     string     // Prefilter device
 	ModePreFilter       string     // Prefilter mode
-	XDPDevice           string     // XDP device
 	XDPMode             string     // XDP mode, values: { xdpdrv | xdpgeneric | none }
 	HostV4Addr          net.IP     // Host v4 address of the snooping device
 	HostV6Addr          net.IP     // Host v6 address of the snooping device
@@ -1264,6 +1284,9 @@ type DaemonConfig struct {
 
 	// MTU is the maximum transmission unit of the underlying network
 	MTU int
+
+	// RouteMetric is the metric used for the routes added to the cilium_host device
+	RouteMetric int
 
 	// ClusterName is the name of the cluster
 	ClusterName string
@@ -1423,6 +1446,9 @@ type DaemonConfig struct {
 	// EnableWireguard enables Wireguard encryption
 	EnableWireguard bool
 
+	// EnableWireguardUserspaceFallback enables the fallback to the userspace implementation
+	EnableWireguardUserspaceFallback bool
+
 	// MonitorQueueSize is the size of the monitor event queue
 	MonitorQueueSize int
 
@@ -1478,7 +1504,7 @@ type DaemonConfig struct {
 	DeriveMasqIPAddrFromDevice string
 	EnableBPFClockProbe        bool
 	EnableIPMasqAgent          bool
-	EnableEgressGateway        bool
+	EnableIPv4EgressGateway    bool
 	IPMasqAgentConfigPath      string
 	InstallIptRules            bool
 	MonitorAggregation         string
@@ -1716,9 +1742,6 @@ type DaemonConfig struct {
 	// NodePortAcceleration indicates whether NodePort should be accelerated
 	// via XDP ("none", "generic" or "native")
 	NodePortAcceleration string
-
-	// NodePortHairpin indicates whether the setup is a one-legged LB
-	NodePortHairpin bool
 
 	// NodePortBindProtection rejects bind requests to NodePort service ports
 	NodePortBindProtection bool
@@ -1967,9 +1990,6 @@ type DaemonConfig struct {
 	// Otherwise, it will use the old scheme.
 	EgressMultiHomeIPRuleCompat bool
 
-	// EnableBPFBypassFIBLookup instructs Cilium to enable the FIB lookup bypass optimization for nodeport reverse NAT handling.
-	EnableBPFBypassFIBLookup bool
-
 	// InstallNoConntrackIptRules instructs Cilium to install Iptables rules to skip netfilter connection tracking on all pod traffic.
 	InstallNoConntrackIptRules bool
 
@@ -1981,6 +2001,9 @@ type DaemonConfig struct {
 	// BGPAnnounceLBIP announces service IPs of type LoadBalancer via BGP.
 	BGPAnnounceLBIP bool
 
+	// BGPAnnouncePodCIDR announces the node's pod CIDR via BGP.
+	BGPAnnouncePodCIDR bool
+
 	// BGPConfigPath is the file path to the BGP configuration. It is
 	// compatible with MetalLB's configuration.
 	BGPConfigPath string
@@ -1991,6 +2014,11 @@ type DaemonConfig struct {
 
 	// ARPPingRefreshPeriod is the ARP entries refresher period.
 	ARPPingRefreshPeriod time.Duration
+	// EnableCiliumEndpointSlice enables the cilium endpoint slicing feature.
+	EnableCiliumEndpointSlice bool
+
+	// ARPPingKernelManaged denotes whether kernel can auto-refresh Neighbor entries
+	ARPPingKernelManaged bool
 
 	// VLANBPFBypass list of explicitly allowed VLAN id's for bpf logic bypass
 	VLANBPFBypass []int
@@ -2005,6 +2033,10 @@ type DaemonConfig struct {
 	// within IPAM upon endpoint restore and allows the use of the restored IP
 	// regardless of whether it's available in the pool.
 	BypassIPAvailabilityUponRestore bool
+
+	// EnableK8sTerminatingEndpoint enables auto-detect of terminating state for
+	// Kubernetes service endpoints.
+	EnableK8sTerminatingEndpoint bool
 }
 
 var (
@@ -2242,6 +2274,10 @@ func (c *DaemonConfig) Validate() error {
 		return fmt.Errorf("MTU '%d' cannot be negative", c.MTU)
 	}
 
+	if c.RouteMetric < 0 {
+		return fmt.Errorf("RouteMetric '%d' cannot be negative", c.RouteMetric)
+	}
+
 	if c.IPAM == ipamOption.IPAMENI && c.EnableIPv6 {
 		return fmt.Errorf("IPv6 cannot be enabled in ENI IPAM mode")
 	}
@@ -2431,8 +2467,10 @@ func (c *DaemonConfig) Populate() {
 	c.IPv6MCastDevice = viper.GetString(IPv6MCastDevice)
 	c.EnableIPSec = viper.GetBool(EnableIPSecName)
 	c.EnableWireguard = viper.GetBool(EnableWireguard)
+	c.EnableWireguardUserspaceFallback = viper.GetBool(EnableWireguardUserspaceFallback)
 	c.EnableWellKnownIdentities = viper.GetBool(EnableWellKnownIdentities)
 	c.EndpointInterfaceNamePrefix = viper.GetString(EndpointInterfaceNamePrefix)
+	c.EnableXDPPrefilter = viper.GetBool(EnableXDPPrefilter)
 	c.DevicePreFilter = viper.GetString(PrefilterDevice)
 	c.DisableCiliumEndpointCRD = viper.GetBool(DisableCiliumEndpointCRDName)
 	c.EgressMasqueradeInterfaces = viper.GetString(EgressMasqueradeInterfaces)
@@ -2521,7 +2559,7 @@ func (c *DaemonConfig) Populate() {
 	c.LocalRouterIPv6 = viper.GetString(LocalRouterIPv6)
 	c.EnableBPFClockProbe = viper.GetBool(EnableBPFClockProbe)
 	c.EnableIPMasqAgent = viper.GetBool(EnableIPMasqAgent)
-	c.EnableEgressGateway = viper.GetBool(EnableEgressGateway)
+	c.EnableIPv4EgressGateway = viper.GetBool(EnableIPv4EgressGateway)
 	c.IPMasqAgentConfigPath = viper.GetString(IPMasqAgentConfigPath)
 	c.InstallIptRules = viper.GetBool(InstallIptRules)
 	c.IPTablesLockTimeout = viper.GetDuration(IPTablesLockTimeout)
@@ -2544,6 +2582,7 @@ func (c *DaemonConfig) Populate() {
 	c.ProxyPrometheusPort = viper.GetInt(ProxyPrometheusPort)
 	c.ReadCNIConfiguration = viper.GetString(ReadCNIConfiguration)
 	c.RestoreState = viper.GetBool(Restore)
+	c.RouteMetric = viper.GetInt(RouteMetric)
 	c.RunDir = viper.GetString(StateDir)
 	c.SidecarIstioProxyImage = viper.GetString(SidecarIstioProxyImage)
 	c.UseSingleClusterRoute = viper.GetBool(SingleClusterRouteName)
@@ -2568,10 +2607,10 @@ func (c *DaemonConfig) Populate() {
 	c.LoadBalancerDSRL4Xlate = viper.GetString(LoadBalancerDSRL4Xlate)
 	c.LoadBalancerRSSv4CIDR = viper.GetString(LoadBalancerRSSv4CIDR)
 	c.LoadBalancerRSSv6CIDR = viper.GetString(LoadBalancerRSSv6CIDR)
-	c.EnableBPFBypassFIBLookup = viper.GetBool(EnableBPFBypassFIBLookup)
 	c.InstallNoConntrackIptRules = viper.GetBool(InstallNoConntrackIptRules)
 	c.EnableCustomCalls = viper.GetBool(EnableCustomCallsName)
 	c.BGPAnnounceLBIP = viper.GetBool(BGPAnnounceLBIP)
+	c.BGPAnnouncePodCIDR = viper.GetBool(BGPAnnouncePodCIDR)
 	c.BGPConfigPath = viper.GetString(BGPConfigPath)
 	c.ExternalClusterIP = viper.GetBool(ExternalClusterIPName)
 
@@ -2664,7 +2703,6 @@ func (c *DaemonConfig) Populate() {
 	}
 	c.IPv6PodSubnets = subnets
 
-	c.XDPDevice = "undefined"
 	c.XDPMode = XDPModeLinkNone
 
 	err = c.populateNodePortRange()
@@ -2799,6 +2837,7 @@ func (c *DaemonConfig) Populate() {
 	c.HubbleRecorderStoragePath = viper.GetString(HubbleRecorderStoragePath)
 	c.HubbleRecorderSinkQueueSize = viper.GetInt(HubbleRecorderSinkQueueSize)
 	c.DisableIptablesFeederRules = viper.GetStringSlice(DisableIptablesFeederRules)
+	c.EnableCiliumEndpointSlice = viper.GetBool(EnableCiliumEndpointSlice)
 
 	// Hidden options
 	c.CompilerFlags = viper.GetStringSlice(CompilerFlags)
@@ -2814,6 +2853,7 @@ func (c *DaemonConfig) Populate() {
 	c.DisableCNPStatusUpdates = viper.GetBool(DisableCNPStatusUpdates)
 	c.EnableICMPRules = viper.GetBool(EnableICMPRules)
 	c.BypassIPAvailabilityUponRestore = viper.GetBool(BypassIPAvailabilityUponRestore)
+	c.EnableK8sTerminatingEndpoint = viper.GetBool(EnableK8sTerminatingEndpoint)
 }
 
 func (c *DaemonConfig) populateDevices() {

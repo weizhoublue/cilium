@@ -6,6 +6,8 @@
 #define TRACE_NOTIFY
 #define DROP_NOTIFY
 #define POLICY_VERDICT_NOTIFY
+#define ENABLE_EGRESS_GATEWAY
+#define ENABLE_CAPTURE
 #undef ENABLE_ARP_RESPONDER
 
 #include <bpf/ctx/unspec.h>

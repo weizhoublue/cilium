@@ -189,7 +189,7 @@ func prepareEndpointDirs() (cleanup func(), err error) {
 }
 
 func (ds *DaemonSuite) prepareEndpoint(c *C, identity *identity.Identity, qa bool) *endpoint.Endpoint {
-	e := endpoint.NewEndpointWithState(ds.d, ds.d.l7Proxy, ds.d.identityAllocator, testEndpointID, endpoint.StateWaitingForIdentity)
+	e := endpoint.NewEndpointWithState(ds.d, ds.d, ds.d.l7Proxy, ds.d.identityAllocator, testEndpointID, endpoint.StateWaitingForIdentity)
 	if qa {
 		e.IPv6 = QAIPv6Addr
 		e.IPv4 = QAIPv4Addr
@@ -278,23 +278,23 @@ func (ds *DaemonSuite) TestUpdateConsumerMap(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	prodBarLbls := labels.Labels{lblBar.Key: lblBar, lblProd.Key: lblProd}
 	prodBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodBarLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), prodBarSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), prodBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 	prodFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblProd.Key: lblProd}
 	prodFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), prodFooSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), prodFooSecLblsCtx, false)
 	prodFooJoeLbls := labels.Labels{lblFoo.Key: lblFoo, lblProd.Key: lblProd, lblJoe.Key: lblJoe}
 	prodFooJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), prodFooJoeLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), prodFooJoeSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), prodFooJoeSecLblsCtx, false)
 
 	// Prepare endpoints
 	cleanup, err2 := prepareEndpointDirs()
@@ -411,11 +411,11 @@ func (ds *DaemonSuite) TestL4_L7_Shadowing(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 
 	rules := api.Rules{
 		{
@@ -495,11 +495,11 @@ func (ds *DaemonSuite) TestL4_L7_ShadowingShortCircuit(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 
 	rules := api.Rules{
 		{
@@ -573,15 +573,15 @@ func (ds *DaemonSuite) TestL3_dependent_L7(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaFooSecLblsCtx, false)
 	qaJoeLbls := labels.Labels{lblJoe.Key: lblJoe, lblQA.Key: lblQA}
 	qaJoeSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaJoeLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaJoeSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaJoeSecLblsCtx, false)
 
 	rules := api.Rules{
 		{
@@ -735,7 +735,7 @@ func (ds *DaemonSuite) TestRemovePolicy(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 
 	rules := api.Rules{
 		{
@@ -820,7 +820,7 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 	qaBarLbls := labels.Labels{lblBar.Key: lblBar, lblQA.Key: lblQA}
 	qaBarSecLblsCtx, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaBarLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx)
+	defer ds.d.identityAllocator.Release(context.Background(), qaBarSecLblsCtx, false)
 
 	rules := api.Rules{
 		{
@@ -909,7 +909,7 @@ func (ds *DaemonSuite) TestIncrementalPolicy(c *C) {
 	qaFooLbls := labels.Labels{lblFoo.Key: lblFoo, lblQA.Key: lblQA}
 	qaFooID, _, err := ds.d.identityAllocator.AllocateIdentity(context.Background(), qaFooLbls, true)
 	c.Assert(err, Equals, nil)
-	defer ds.d.identityAllocator.Release(context.Background(), qaFooID)
+	defer ds.d.identityAllocator.Release(context.Background(), qaFooID, false)
 
 	// Regenerate endpoint
 	ds.regenerateEndpoint(c, e)
@@ -1009,11 +1009,11 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 							},
 						},
 					},
-					repo: policy.NewPolicyRepository(nil, nil),
+					repo: policy.NewPolicyRepository(nil, nil, nil),
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil, nil)
+				r := policy.NewPolicyRepository(nil, nil, nil)
 				r.AddList(api.Rules{
 					api.NewRule().
 						WithEndpointSelector(api.EndpointSelector{
@@ -1042,7 +1042,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		{
 			name: "have a rule with user labels and update it without user labels, all other rules should be deleted",
 			setupArgs: func() args {
-				r := policy.NewPolicyRepository(nil, nil)
+				r := policy.NewPolicyRepository(nil, nil, nil)
 				lbls := utils.GetPolicyLabels("production", "db", uuid, utils.ResourceTypeCiliumNetworkPolicy)
 				lbls = append(lbls, labels.ParseLabelArray("foo=bar")...).Sort()
 				r.AddList(api.Rules{
@@ -1085,7 +1085,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil, nil)
+				r := policy.NewPolicyRepository(nil, nil, nil)
 				r.AddList(api.Rules{
 					api.NewRule().
 						WithEndpointSelector(api.EndpointSelector{
@@ -1114,7 +1114,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		{
 			name: "have a rule without user labels and update it with user labels, all other rules should be deleted",
 			setupArgs: func() args {
-				r := policy.NewPolicyRepository(nil, nil)
+				r := policy.NewPolicyRepository(nil, nil, nil)
 				r.AddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
@@ -1156,7 +1156,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil, nil)
+				r := policy.NewPolicyRepository(nil, nil, nil)
 				lbls := utils.GetPolicyLabels("production", "db", uuid, utils.ResourceTypeCiliumNetworkPolicy)
 				lbls = append(lbls, labels.ParseLabelArray("foo=bar")...).Sort()
 				r.AddList(api.Rules{
@@ -1182,7 +1182,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 		{
 			name: "have a rule policy installed with multiple rules and apply an empty spec should delete all rules installed",
 			setupArgs: func() args {
-				r := policy.NewPolicyRepository(nil, nil)
+				r := policy.NewPolicyRepository(nil, nil, nil)
 				r.AddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{
@@ -1229,7 +1229,7 @@ func (ds *DaemonSuite) Test_addCiliumNetworkPolicyV2(c *C) {
 				}
 			},
 			setupWanted: func() wanted {
-				r := policy.NewPolicyRepository(nil, nil)
+				r := policy.NewPolicyRepository(nil, nil, nil)
 				r.AddList(api.Rules{
 					{
 						EndpointSelector: api.EndpointSelector{

@@ -4,8 +4,32 @@
 #ifndef __LIB_IDENTITY_H_
 #define __LIB_IDENTITY_H_
 
-#include "drop.h"
 #include "dbg.h"
+
+static __always_inline bool identity_is_remote_node(__u32 identity)
+{
+	/* KUBE_APISERVER_NODE_ID is the reserved identity that corresponds to
+	 * the labels 'reserved:remote-node' and 'reserved:kube-apiserver'. As
+	 * such, if it is ever used for determining the identity of a node in
+	 * the cluster, then routing decisions and so on should be made the
+	 * same way as for REMOTE_NODE_ID. If we ever assign unique identities
+	 * to each node in the cluster, then we'll probably need to convert
+	 * the implementation here into a map to select any of the possible
+	 * identities. But for now, this is good enough to capture the notion
+	 * of 'remote nodes in the cluster' for routing decisions.
+	 *
+	 * Note that kube-apiserver policy is handled entirely separately by
+	 * the standard policymap enforcement logic and has no relationship to
+	 * the identity as used here. If the apiserver is outside the cluster,
+	 * then the KUBE_APISERVER_NODE_ID case should not ever be hit.
+	 */
+	return identity == REMOTE_NODE_ID || identity == KUBE_APISERVER_NODE_ID;
+}
+
+static __always_inline bool identity_is_node(__u32 identity)
+{
+	return identity == HOST_ID || identity_is_remote_node(identity);
+}
 
 /**
  * identity_is_reserved is used to determine whether an identity is one of the
@@ -16,6 +40,7 @@
  * - ReservedIdentityHost
  * - ReservedIdentityWorld
  * - ReservedIdentityRemoteNode
+ * - ReservedIdentityKubeAPIServer
  *
  * The following identities are given to endpoints so return false for these:
  * - ReservedIdentityUnmanaged
@@ -26,9 +51,10 @@
  */
 static __always_inline bool identity_is_reserved(__u32 identity)
 {
-	return identity < UNMANAGED_ID || identity == REMOTE_NODE_ID;
+	return identity < UNMANAGED_ID || identity_is_remote_node(identity);
 }
 
+#if __ctx_is == __ctx_skb
 static __always_inline bool inherit_identity_from_host(struct __ctx_buff *ctx,
 						       __u32 *identity)
 {
@@ -65,5 +91,6 @@ static __always_inline bool inherit_identity_from_host(struct __ctx_buff *ctx,
 
 	return from_proxy;
 }
+#endif /* __ctx_is == __ctx_skb */
 
 #endif

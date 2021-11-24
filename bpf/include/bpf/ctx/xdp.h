@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (C) 2020 Authors of Cilium */
+/* Copyright (C) 2020-2021 Authors of Cilium */
 
 #ifndef __BPF_CTX_XDP_H_
 #define __BPF_CTX_XDP_H_
@@ -249,17 +249,22 @@ ctx_adjust_hroom(struct xdp_md *ctx, const __s32 len_diff, const __u32 mode,
 	return ret;
 }
 
-#define redirect			redirect__stub
-#define redirect_peer			redirect
-
 static __always_inline __maybe_unused int
 ctx_redirect(const struct xdp_md *ctx, int ifindex, const __u32 flags)
 {
-	if (unlikely(flags))
-		return -ENOTSUPP;
-	if ((__u32)ifindex != ctx->ingress_ifindex)
-		return -ENOTSUPP;
-	return XDP_TX;
+	if ((__u32)ifindex == ctx->ingress_ifindex)
+		return XDP_TX;
+
+	return redirect(ifindex, flags);
+}
+
+static __always_inline __maybe_unused int
+ctx_redirect_peer(const struct xdp_md *ctx __maybe_unused,
+		  int ifindex __maybe_unused,
+		  const __u32 flags __maybe_unused)
+{
+	/* bpf_redirect_peer() is available only in TC BPF. */
+	return -ENOTSUP;
 }
 
 static __always_inline __maybe_unused __u64
@@ -275,13 +280,13 @@ ctx_wire_len(const struct xdp_md *ctx)
 	return ctx_full_len(ctx);
 }
 
-struct bpf_elf_map __section_maps cilium_xdp_scratch = {
-	.type		= BPF_MAP_TYPE_PERCPU_ARRAY,
-	.size_key	= sizeof(int),
-	.size_value	= META_PIVOT,
-	.pinning	= PIN_GLOBAL_NS,
-	.max_elem	= 1,
-};
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, int);
+	__uint(value_size, META_PIVOT);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__uint(max_entries, 1);
+} cilium_xdp_scratch __section_maps_btf;
 
 static __always_inline __maybe_unused void
 ctx_store_meta(struct xdp_md *ctx __maybe_unused, const __u64 off, __u32 datum)

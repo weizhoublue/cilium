@@ -61,10 +61,11 @@ type monitorNotify interface {
 }
 
 type svcInfo struct {
-	hash          string
-	frontend      lb.L3n4AddrID
-	backends      []lb.Backend
-	backendByHash map[string]*lb.Backend
+	hash                string
+	frontend            lb.L3n4AddrID
+	backends            []lb.Backend
+	activeBackendsCount int // Non-terminating backends count
+	backendByHash       map[string]*lb.Backend
 
 	svcType                   lb.SVCType
 	svcTrafficPolicy          lb.SVCTrafficPolicy
@@ -355,7 +356,7 @@ func (s *Service) UpsertService(params *lb.SVC) (bool, lb.ID, error) {
 	scopedLog.Debug("Acquired service ID")
 
 	onlyLocalBackends, filterBackends := svc.requireNodeLocalBackends(params.Frontend)
-	prevBackendCount := len(svc.backends)
+	prevActiveBackendCount := svc.activeBackendsCount
 
 	backendsCopy := []lb.Backend{}
 	for _, b := range params.Backends {
@@ -380,10 +381,9 @@ func (s *Service) UpsertService(params *lb.SVC) (bool, lb.ID, error) {
 	}
 
 	// Update lbmaps (BPF service maps)
-	if err = s.upsertServiceIntoLBMaps(svc, onlyLocalBackends, prevBackendCount, newBackends,
-		obsoleteBackendIDs, prevSessionAffinity,
-		prevLoadBalancerSourceRanges, obsoleteSVCBackendIDs,
-		scopedLog); err != nil {
+	if err = s.upsertServiceIntoLBMaps(svc, onlyLocalBackends, prevActiveBackendCount,
+		newBackends, obsoleteBackendIDs, prevSessionAffinity, prevLoadBalancerSourceRanges,
+		obsoleteSVCBackendIDs, scopedLog); err != nil {
 
 		return false, lb.ID(0), err
 	}
@@ -485,24 +485,11 @@ func (s *Service) RestoreServices() error {
 		return err
 	}
 
-	// Remove no longer existing affinity matches
-	if option.Config.EnableSessionAffinity {
-		if err := s.deleteOrphanAffinityMatchesLocked(); err != nil {
-			return err
-		}
-	}
-
 	// Remove LB source ranges for no longer existing services
 	if option.Config.EnableSVCSourceRangeCheck {
 		if err := s.restoreAndDeleteOrphanSourceRanges(); err != nil {
 			return err
 		}
-	}
-
-	// Remove obsolete backends and release their IDs
-	if err := s.deleteOrphanBackends(); err != nil {
-		log.WithError(err).Warn("Failed to remove orphan backends")
-
 	}
 
 	return nil
@@ -600,6 +587,19 @@ func (s *Service) SyncWithK8sFinished() error {
 				return fmt.Errorf("Unable to remove service %+v: %s", svc, err)
 			}
 		}
+	}
+
+	// Remove no longer existing affinity matches
+	if option.Config.EnableSessionAffinity {
+		if err := s.deleteOrphanAffinityMatchesLocked(); err != nil {
+			return err
+		}
+	}
+
+	// Remove obsolete backends and release their IDs
+	if err := s.deleteOrphanBackends(); err != nil {
+		log.WithError(err).Warn("Failed to remove orphan backends")
+
 	}
 
 	return nil
@@ -718,7 +718,7 @@ func (s *Service) addBackendsToAffinityMatchMap(svcID lb.ID, backendIDs []lb.Bac
 }
 
 func (s *Service) upsertServiceIntoLBMaps(svc *svcInfo, onlyLocalBackends bool,
-	prevBackendCount int, newBackends []lb.Backend, obsoleteBackendIDs []lb.BackendID,
+	prevActiveBackendCount int, newBackends []lb.Backend, obsoleteBackendIDs []lb.BackendID,
 	prevSessionAffinity bool, prevLoadBalancerSourceRanges []*cidr.CIDR,
 	obsoleteSVCBackendIDs []lb.BackendID, scopedLog *logrus.Entry) error {
 
@@ -786,16 +786,28 @@ func (s *Service) upsertServiceIntoLBMaps(svc *svcInfo, onlyLocalBackends bool,
 
 	// Upsert service entries into BPF maps
 	backends := make(map[string]lb.BackendID, len(svc.backends))
+	activeBackendsCount := 0
 	for _, b := range svc.backends {
-		backends[b.String()] = b.ID
+		// Skip adding the terminating backend to the service map so that it
+		// won't be selected to serve new requests. However, the backend is still
+		// kept in the affinity and backend maps so that existing connections
+		// are able to terminate gracefully. The final clean-up for the backend
+		// will happen once the agent receives a delete event for the service
+		// endpoint as it'll be part of obsoleteBackendIDs/obsoleteSVCBackendIDs
+		// list passed to this function.
+		if !b.Terminating {
+			backends[b.String()] = b.ID
+			activeBackendsCount++
+		}
 	}
+	svc.activeBackendsCount = activeBackendsCount
 
 	p := &lbmap.UpsertServiceParams{
 		ID:                        uint16(svc.frontend.ID),
 		IP:                        svc.frontend.L3n4Addr.IP,
 		Port:                      svc.frontend.L3n4Addr.L4Addr.Port,
 		Backends:                  backends,
-		PrevBackendCount:          prevBackendCount,
+		PrevActiveBackendCount:    prevActiveBackendCount,
 		IPv6:                      ipv6,
 		Type:                      svc.svcType,
 		Local:                     onlyLocalBackends,
@@ -888,12 +900,13 @@ func (s *Service) restoreServicesLocked() error {
 		}
 
 		newSVC := &svcInfo{
-			hash:             svc.Frontend.Hash(),
-			frontend:         svc.Frontend,
-			backends:         svc.Backends,
-			backendByHash:    map[string]*lb.Backend{},
-			svcType:          svc.Type,
-			svcTrafficPolicy: svc.TrafficPolicy,
+			hash:                svc.Frontend.Hash(),
+			frontend:            svc.Frontend,
+			backends:            svc.Backends,
+			activeBackendsCount: len(svc.Backends),
+			backendByHash:       map[string]*lb.Backend{},
+			svcType:             svc.Type,
+			svcTrafficPolicy:    svc.TrafficPolicy,
 
 			sessionAffinity:           svc.SessionAffinity,
 			sessionAffinityTimeoutSec: svc.SessionAffinityTimeoutSec,

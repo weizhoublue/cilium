@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-18.04
     steps:
       - name: Request GKE test cluster
-        uses: docker://quay.io/isovalent/gke-test-cluster-requester:fe34abda190c31680968ba62634c788428d91706
+        uses: docker://quay.io/isovalent/gke-test-cluster-requester:fe34abda190c31680968ba62634c788428d91706@sha256:5f4345487870e0447afa150d2b12741ac8734c36ae13a46a13b80c7129da9b4b
         env:
           GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -23,7 +23,7 @@ jobs:
     if: github.repository == 'cilium/cilium'
     runs-on: ubuntu-20.04
     steps:
-      - uses: actions/checkout@1e204e9a9253d643386038d443f96446fa156a97
+      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
         with:
           persist-credentials: false
       - name: Add namespace object
@@ -54,7 +54,7 @@ jobs:
             --set nativeRoutingCIDR=NATIVE_CIDR_PLACEHOLDER \
             | tee -a cilium.yaml
       - name: Request GKE test cluster
-        uses: docker://quay.io/isovalent/gke-test-cluster-requester:fe34abda190c31680968ba62634c788428d91706
+        uses: docker://quay.io/isovalent/gke-test-cluster-requester:fe34abda190c31680968ba62634c788428d91706@sha256:5f4345487870e0447afa150d2b12741ac8734c36ae13a46a13b80c7129da9b4b
         env:
           GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,7 +63,7 @@ jobs:
 
       - name: Send slack notification
         if: ${{ !success() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-        uses: 8398a7/action-slack@c84a35cfa82a01f3733a3cbf5d5260123e55c2f9
+        uses: 8398a7/action-slack@c9ff874f8549f97317ec9f6162d5449ee77bc984
         with:
           status: ${{ job.status }}
           fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)

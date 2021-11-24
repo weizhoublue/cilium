@@ -245,11 +245,6 @@ struct endpoint_info {
 	__u32		pad[4];
 };
 
-struct egress_info {
-	__u32 egress_ip;
-	__u32 tunnel_endpoint;
-};
-
 struct edt_id {
 	__u64		id;
 };
@@ -297,6 +292,17 @@ struct metrics_key {
 struct metrics_value {
 	__u64	count;
 	__u64	bytes;
+};
+
+struct egress_key {
+	struct bpf_lpm_trie_key lpm_key;
+	__u32 sip;
+	__u32 dip;
+};
+
+struct egress_info {
+	__u32 egress_ip;
+	__u32 tunnel_endpoint;
 };
 
 enum {
@@ -533,11 +539,6 @@ enum {
 
 /* We cap key index at 4 bits because mark value is used to map ctx to key */
 #define MAX_KEY_INDEX 15
-
-/* encrypt_key is the index into the encrypt map */
-struct encrypt_key {
-	__u32 ctx;
-} __packed;
 
 /* encrypt_config is the current encryption context on the node */
 struct encrypt_config {
@@ -910,7 +911,7 @@ static __always_inline int redirect_ep(struct __ctx_buff *ctx __maybe_unused,
 	 */
 #ifdef ENABLE_HOST_REDIRECT
 	if (needs_backlog || !is_defined(ENABLE_REDIRECT_FAST)) {
-		return redirect(ifindex, 0);
+		return ctx_redirect(ctx, ifindex, 0);
 	} else {
 # ifdef ENCAP_IFINDEX
 		/* When coming from overlay, we need to set packet type
@@ -918,7 +919,7 @@ static __always_inline int redirect_ep(struct __ctx_buff *ctx __maybe_unused,
 		 */
 		ctx_change_type(ctx, PACKET_HOST);
 # endif /* ENCAP_IFINDEX */
-		return redirect_peer(ifindex, 0);
+		return ctx_redirect_peer(ctx, ifindex, 0);
 	}
 #else
 	return CTX_ACT_OK;

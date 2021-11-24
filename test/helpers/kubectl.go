@@ -1195,6 +1195,21 @@ func (kub *Kubectl) Logs(namespace string, pod string) *CmdRes {
 		fmt.Sprintf("%s -n %s logs %s", KubectlCmd, namespace, pod))
 }
 
+// LogsPreviousWithLabel returns a CmdRes with command output from the
+// execution of `kubectl logs --previous=true -l <label string> -n <namespace>`.
+func (kub *Kubectl) LogsPreviousWithLabel(namespace string, labelStr string) *CmdRes {
+	return kub.Exec(
+		fmt.Sprintf("%s -n %s -l %s logs --previous", KubectlCmd, namespace, labelStr))
+}
+
+// LogsStream returns a CmdRes with command output from the
+// execution of `kubectl logs -f <pod> -n <namespace>`.
+func (kub *Kubectl) LogsStream(namespace string, pod string, ctx context.Context) *CmdRes {
+	logCmd := fmt.Sprintf("%s -n %s logs -f %s", KubectlCmd, namespace, pod)
+
+	return kub.ExecInBackground(ctx, logCmd, ExecOptions{})
+}
+
 // MonitorStart runs cilium monitor in the background and returns the command
 // result, CmdRes, along with a cancel function. The cancel function is used to
 // stop the monitor.
@@ -2355,6 +2370,7 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 
 		if RunsOn419OrLaterKernel() {
 			opts["bpf.masquerade"] = "true"
+			opts["enableIPv6Masquerade"] = "false"
 		}
 
 		for key, value := range opts {
@@ -2395,6 +2411,9 @@ func (kub *Kubectl) overwriteHelmOptions(options map[string]string) error {
 		options["imagePullSecrets[0].name"] = config.RegistrySecretName
 	}
 
+	if CiliumEndpointSliceFeatureEnabled() {
+		options["enableCiliumEndpointSlice"] = "true"
+	}
 	return nil
 }
 
@@ -2917,44 +2936,24 @@ func (kub *Kubectl) getPodRevisions() (map[string]int, error) {
 	return revisions, nil
 }
 
-func (kub *Kubectl) waitNextPolicyRevisions(podRevisions map[string]int, mustHavePolicy bool, timeout time.Duration) error {
-	npFilter := fmt.Sprintf(
-		`{range .items[*]}{"%s="}{.metadata.name}{" %s="}{.metadata.namespace}{"\n"}{end}`,
-		KubectlPolicyNameLabel, KubectlPolicyNameSpaceLabel)
-
-	knpBody := func() bool {
-		knp := kub.ExecShort(fmt.Sprintf("%s get --all-namespaces netpol -o jsonpath='%s'",
-			KubectlCmd, npFilter))
-		result := knp.ByLines()
-		if len(result) == 0 {
-			return true
-		}
-
-		for _, item := range result {
-			for ciliumPod, revision := range podRevisions {
-				if mustHavePolicy {
-					if !kub.CiliumIsPolicyLoaded(ciliumPod, item) {
-						kub.Logger().Infof("Policy '%s' is not ready on Cilium pod '%s'", item, ciliumPod)
-						return false
-					}
-				}
-
-				ctx, cancel := context.WithTimeout(context.Background(), ShortCommandTimeout)
-				defer cancel()
-				desiredRevision := revision + 1
-				res := kub.CiliumExecContext(ctx, ciliumPod, fmt.Sprintf("cilium policy wait %d --max-wait-time %d", desiredRevision, int(ShortCommandTimeout.Seconds())))
-				if res.GetExitCode() != 0 {
-					kub.Logger().Infof("Failed to wait for policy revision %d on pod %s", desiredRevision, ciliumPod)
-					return false
-				}
+func (kub *Kubectl) waitNextPolicyRevisions(podRevisions map[string]int, timeout time.Duration) error {
+	body := func() bool {
+		for ciliumPod, revision := range podRevisions {
+			ctx, cancel := context.WithTimeout(context.Background(), ShortCommandTimeout)
+			defer cancel()
+			desiredRevision := revision + 1
+			res := kub.CiliumExecContext(ctx, ciliumPod, fmt.Sprintf("cilium policy wait %d --max-wait-time %d", desiredRevision, int(ShortCommandTimeout.Seconds())))
+			if res.GetExitCode() != 0 {
+				kub.Logger().Infof("Failed to wait for policy revision %d on pod %s", desiredRevision, ciliumPod)
+				return false
 			}
 		}
 		return true
 	}
 
 	err := WithTimeout(
-		knpBody,
-		"Timed out while waiting for CNP to be applied on all PODs",
+		body,
+		"Timed out while waiting for policy revisions to be increased on all Cilium PODs",
 		&TimeoutConfig{Timeout: timeout})
 	return err
 }
@@ -3036,7 +3035,7 @@ func (kub *Kubectl) CiliumPolicyAction(namespace, filepath string, action Resour
 		return "", nil
 	}
 
-	return "", kub.waitNextPolicyRevisions(podRevisions, action != KubectlDelete, timeout)
+	return "", kub.waitNextPolicyRevisions(podRevisions, timeout)
 }
 
 // CiliumClusterwidePolicyAction applies a clusterwide policy action as described in action argument. It
@@ -3100,7 +3099,7 @@ func (kub *Kubectl) CiliumClusterwidePolicyAction(filepath string, action Resour
 		return "", nil
 	}
 
-	return "", kub.waitNextPolicyRevisions(podRevisions, action != KubectlDelete, timeout)
+	return "", kub.waitNextPolicyRevisions(podRevisions, timeout)
 }
 
 // CiliumReport report the cilium pod to the log and appends the logs for the
@@ -4400,18 +4399,18 @@ func (kub *Kubectl) CleanupCiliumComponents() {
 		wg sync.WaitGroup
 
 		resourcesToDelete = map[string]string{
-			"configmap":          "cilium-config hubble-ca-cert hubble-relay-config",
+			"configmap":          "cilium-config hubble-relay-config",
 			"daemonset":          "cilium cilium-node-init",
 			"deployment":         "cilium-operator hubble-relay",
 			"clusterrolebinding": "cilium cilium-operator hubble-relay",
-			"clusterrole":        "cilium cilium-operator hubble-relay",
+			"clusterrole":        "cilium cilium-operator hubble-relay hubble-ui",
 			"serviceaccount":     "cilium cilium-operator hubble-relay",
 			"service":            "cilium-agent hubble-metrics hubble-relay",
 			"secret":             "hubble-relay-client-certs hubble-server-certs hubble-ca-secret",
 			"resourcequota":      "cilium-resource-quota cilium-operator-resource-quota",
 		}
 
-		crdsToDelete = synced.AllCRDResourceNames
+		crdsToDelete = synced.AllCRDResourceNames()
 	)
 
 	wg.Add(len(resourcesToDelete))
@@ -4506,4 +4505,24 @@ func (kub *Kubectl) NslookupInPod(namespace, pod string, target string) (err err
 // Cilium into the cluster.
 func (kub *Kubectl) CiliumOptions() map[string]string {
 	return kub.ciliumOptions
+}
+
+// WaitForServiceBackend waits until the service backend with the given ipAddr
+// appears in "cilium bpf lb list" on the given node.
+func (kub *Kubectl) WaitForServiceBackend(node, ipAddr string) error {
+	ciliumPod, err := kub.GetCiliumPodOnNode(node)
+	if err != nil {
+		return err
+	}
+
+	body := func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), ShortCommandTimeout)
+		defer cancel()
+		cmd := fmt.Sprintf(`cilium bpf lb list | grep -q %s`, ipAddr)
+		return kub.CiliumExecContext(ctx, ciliumPod, cmd).WasSuccessful()
+	}
+
+	return WithTimeout(body,
+		fmt.Sprintf("backend entry for %s was not found in time", ipAddr),
+		&TimeoutConfig{Timeout: HelperTimeout})
 }

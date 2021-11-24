@@ -155,13 +155,14 @@ Use ``--verbose`` for full details:
     $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium status --verbose
     [...]
     KubeProxyReplacement Details:
-      Status:              Strict
-      Protocols:           TCP, UDP
-      Devices:             eth0 (Direct Routing), eth1
-      Mode:                SNAT
-      Backend Selection:   Random
-      Session Affinity:    Enabled
-      XDP Acceleration:    Disabled
+      Status:                Strict
+      Protocols:             TCP, UDP
+      Devices:               eth0 (Direct Routing), eth1
+      Mode:                  SNAT
+      Backend Selection:     Random
+      Session Affinity:      Enabled
+      Graceful Termination:  Enabled
+      XDP Acceleration:      Disabled
       Services:
       - ClusterIP:      Enabled
       - NodePort:       Enabled (Range: 30000-32767)
@@ -498,7 +499,8 @@ Socket LoadBalancer Bypass in Pod Namespace
 
 Cilium has built-in support for bypassing the socket-level loadbalancer and falling back
 to the tc loadbalancer at the veth interface when a custom redirection/operation relies
-on the original ClusterIP within pod namespace (e.g., Istio side-car).
+on the original ClusterIP within pod namespace (e.g., Istio side-car) or due to the Pod's
+nature the socket-level loadbalancer is ineffective (e.g., KubeVirt, Kata Containers).
 
 Setting ``hostServices.hostNamespaceOnly=true`` enables this bypassing mode. When enabled,
 this circumvents socket rewrite in the ``connect()`` and ``sendmsg()`` syscall bpf hook and
@@ -524,9 +526,8 @@ LoadBalancer & NodePort XDP Acceleration
 
 Cilium has built-in support for accelerating NodePort, LoadBalancer services and
 services with externalIPs for the case where the arriving request needs to be
-pushed back out of the node when the backend is located on a remote node. This
-ability to act as a "one-legged" / hairpin load balancer can be handled by Cilium
-starting from version `1.8 <https://cilium.io/blog/2020/06/22/cilium-18/#kube-proxy-replacement-at-the-xdp-layer>`_ at
+forwarded and the backend is located on a remote node. This feature was introduced
+in Cilium version `1.8 <https://cilium.io/blog/2020/06/22/cilium-18/#kube-proxy-replacement-at-the-xdp-layer>`_ at
 the XDP (eXpress Data Path) layer where eBPF is operating directly in the networking
 driver instead of a higher layer.
 
@@ -559,11 +560,11 @@ modes and can be enabled as follows for ``loadBalancer.mode=hybrid`` in this exa
         --set k8sServicePort=REPLACE_WITH_API_SERVER_PORT
 
 In case of a multi-device environment, where Cilium's device auto-detection selects
-more than a single device to expose NodePort, for example, the Helm option
-``devices=eth0`` must be additionally specified for the enablement, where
-``eth0`` is the native XDP supported networking device. In that case, the device
-name ``eth0`` must be the same on all Cilium managed nodes. Similarly, the underlying
-driver for ``eth0`` must have native XDP support on all Cilium managed nodes.
+more than a single device to expose NodePort or a user specifies multiple devices
+with ``devices``, the XDP acceleration is enabled on all devices. This means that
+each underlying device's driver must have native XDP support on all Cilium managed
+nodes. In addition, for the performance reasons we recommend kernel >= 5.5 for
+the multi-device XDP acceleration.
 
 A list of drivers supporting native XDP can be found in the table below. The
 corresponding network driver name of an interface can be determined as follows:
@@ -624,9 +625,6 @@ is shown:
 
     $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status --verbose | grep XDP
       XDP Acceleration:    Native
-
-In the example above, the NodePort XDP acceleration is enabled on the ``eth0`` device
-which is also used for direct routing (``DR``).
 
 Note that packets which have been pushed back out of the device for NodePort handling
 right at the XDP layer are not visible in tcpdump since packet taps come at a much
@@ -1162,6 +1160,34 @@ The current Cilium kube-proxy replacement mode can also be introspected through 
     $ kubectl exec -it -n kube-system cilium-xxxxx -- cilium status | grep KubeProxyReplacement
     KubeProxyReplacement:   Strict	[eth0 (DR)]
 
+Graceful Termination
+********************
+
+Cilium's eBPF kube-proxy replacement supports graceful termination of service
+endpoint pods. The feature requires at least Kubernetes version 1.20, and
+the feature gate ``EndpointSliceTerminatingCondition`` needs to be enabled.
+By default, the Cilium agent then detects such terminating Pod state. If needed,
+the feature can be disabled with the configuration option ``enable-k8s-terminating-endpoint``.
+
+The cilium agent feature flag can be probed by running ``cilium status`` command:
+
+.. code-block:: shell-session
+
+    $ kubectl exec -it -n kube-system cilium-fmh8d -- cilium status --verbose
+    [...]
+    KubeProxyReplacement Details:
+     [...]
+     Graceful Termination:  Enabled
+    [...]
+
+When Cilium agent receives a Kubernetes update event for a terminating endpoint,
+the datapath state for the endpoint is removed such that it won't service new
+connections, but the endpoint's active connections are able to terminate
+gracefully. The endpoint state is fully removed when the agent receives
+a Kubernetes delete event for the endpoint. The `Kubernetes
+pod termination <https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination>`_
+documentation contains more background on the behavior and configuration using ``terminationGracePeriodSeconds``.
+
 .. _session-affinity:
 
 Session Affinity
@@ -1249,16 +1275,48 @@ working, take a look at `this KEP
 Neighbor Discovery
 ******************
 
-When kube-proxy replacement is enabled Cilium does L2 neighbor discovery of nodes in the cluster.
-In some rare cases Cilium may leave stale entries behind in the neighbor table causing packets
-between some nodes to be dropped. To prevent Cilium from performing the neighbor discovery and
-instead rely on the Linux kernel to discover hosts on the same L2 network you can pass the
-``--enable-l2-neigh-discovery=false`` flag to the cilium-agent. However note that relying on the
-Linux Kernel might also cause some packets to be dropped, e.g., a NodePort request can be dropped on
-an intermediate node (i.e., the one which received and is going to forward to a destination node
-which runs the selected service endpoint) if there is no L2 neigh entry in the kernel (due to the
-entry being garbage collected or that ARP resolution has not been done by the kernel). This is
-because Cilium does not drive the ARP resolution from the BPF programs.
+When kube-proxy replacement is enabled, Cilium does L2 neighbor discovery of nodes
+in the cluster. This is required for the service load-balancing to populate L2
+addresses for backends since it is not possible to dynamically resolve neighbors
+on demand in the fast-path.
+
+In Cilium 1.10 or earlier, the agent itself contained an ARP resolution library
+where it triggered discovery and periodic refresh of new nodes joining the cluster.
+The resolved neighbor entries were pushed into the kernel and refreshed as PERMANENT
+entries. In some rare cases, Cilium 1.10 or earlier might have left stale entries behind
+in the neighbor table causing packets between some nodes to be dropped. To skip the
+neighbor discovery and instead rely on the Linux kernel to discover neighbors, you can
+pass the ``--enable-l2-neigh-discovery=false`` flag to the cilium-agent. However,
+note that relying on the Linux Kernel might also cause some packets to be dropped.
+For example, a NodePort request can be dropped on an intermediate node (i.e., the
+one which received a service packet and is going to forward it to a destination node
+which runs the selected service endpoint). This could happen if there is no L2 neighbor
+entry in the kernel (due to the entry being garbage collected or given that the neighbor
+resolution has not been done by the kernel). This is because it is not possible to drive
+the neighbor resolution from BPF programs in the fast-path e.g. at the XDP layer.
+
+From Cilium 1.11 onwards, the neighbor discovery has been fully reworked and the Cilium
+internal ARP resolution library has been removed from the agent. The agent now fully
+relies on the Linux kernel to discover gateways or hosts on the same L2 network. Both
+IPv4 and IPv6 neighbor discovery is supported in the Cilium agent. As per our recent
+kernel work `presented at Plumbers <https://linuxplumbersconf.org/event/11/contributions/953/>`__,
+"managed" neighbor entries have been `upstreamed <https://lore.kernel.org/netdev/20211011121238.25542-1-daniel@iogearbox.net/>`__
+and will be available in Linux kernel v5.16 or later which the Cilium agent will detect
+and transparently use. In this case, the agent pushes down L3 addresses of new nodes
+joining the cluster as externally learned "managed" neighbor entries. For introspection,
+iproute2 displays them as "managed extern_learn". The "extern_learn" attribute prevents
+garbage collection of the entries by the kernel's neighboring subsystem. Such "managed"
+neighbor entries are dynamically resolved and periodically refreshed by the Linux kernel
+itself in case there is no active traffic for a certain period of time. That is, the
+kernel attempts to always keep them in REACHABLE state. For Linux kernels v5.15 or
+earlier where "managed" neighbor entries are not present, the Cilium agent similarly
+pushes L3 addresses of new nodes into the kernel for dynamic resolution, but with an
+agent triggered periodic refresh. For introspection, iproute2 displays them only as
+"extern_learn" in this case. If there is no active traffic for a certain period of
+time, then a Cilium agent controller triggers the Linux kernel-based re-resolution for
+attempting to keep them in REACHABLE state. The refresh interval can be changed if needed
+through a ``--arping-refresh-period=30s`` flag passed to the cilium-agent. The default
+period is ``30s`` which corresponds to the kernel's base reachable time.
 
 External Access To ClusterIP Services
 *************************************
@@ -1312,11 +1370,6 @@ Limitations
       which uses eBPF cgroup hooks to implement the service translation. Using it with libceph
       deployments currently requires support for the getpeername(2) hook address translation in
       eBPF, which is only available for kernels v5.8 and higher.
-    * Cilium's eBPF kube-proxy acceleration in XDP can only be used in a single device setup
-      as a "one-legged" / hairpin load balancer scenario. In case of a multi-device environment,
-      where auto-detection selects more than a single device to expose NodePort, the option
-      ``devices=eth0`` must be specified in Helm in order to work, where ``eth0``
-      is the native XDP supported networking device.
     * Cilium's DSR NodePort mode currently does not operate well in environments with
       TCP Fast Open (TFO) enabled. It is recommended to switch to ``snat`` mode in this
       situation.

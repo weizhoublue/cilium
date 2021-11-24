@@ -44,6 +44,20 @@ Before you enable WireGuard in Cilium, please ensure that the Linux distribution
 running on your cluster nodes has support for WireGuard in kernel mode
 (i.e. ``CONFIG_WIREGUARD=m`` on Linux 5.6 and newer, or via the out-of-tree
 WireGuard module on older kernels).
+See `WireGuard Installation <https://www.wireguard.com/install/>`_ for details
+on how to install the kernel module on your Linux distribution.
+
+If your kernel or distribution does not support WireGuard, Cilium agent can be
+configured to fall back on the user-space implementation via the
+``--enable-wireguard-userspace-fallback`` flag. When this flag is enabled and
+Cilium detects that the kernel has no native support for WireGuard, it
+will fallback on the ``wireguard-go`` user-space implementation of WireGuard.
+When running the user-space implementation, encryption and decryption of packets
+is performed by the ``cilium-agent`` process. As a consequence, connectivity
+between Cilium-managed endpoints will be unavailable whenever the
+``cilium-agent`` process is restarted, such as during upgrades or configuration
+changes. Running WireGuard in user-space mode is therefore not recommended for
+production workloads that require high availability.
 
 .. tabs::
 
@@ -140,7 +154,7 @@ commands can be helpful:
                  "10.154.1.107/32",
                  "10.154.1.195/32"
                ],
-               "endpoint": "192.168.34.12:51871",
+               "endpoint": "192.168.61.12:51871",
                "last-handshake-time": "2021-05-05T12:31:24.418Z",
                "public-key": "RcYfs/GEkcnnv6moK5A1pKnd+YYUue21jO9I08Bv0zo="
              }
@@ -165,7 +179,7 @@ commands can be helpful:
                  "10.154.2.103/32",
                  "10.154.2.142/32"
                ],
-               "endpoint": "192.168.34.11:51871",
+               "endpoint": "192.168.61.11:51871",
                "last-handshake-time": "2021-05-05T12:31:24.631Z",
                "public-key": "DrAc2EloK45yqAcjhxerQKwoYUbLDjyrWgt9UXImbEY="
              }
@@ -185,6 +199,17 @@ must hold:
  - ``peers[*].allowed-ips`` should contain a list of pod IP addresses running
    on the remote.
 
+Cluster Mesh
+============
+
+WireGuard enabled Cilium clusters can be connected via :ref:`Cluster Mesh`. The
+``clustermesh-apiserver`` will forward the necessary WireGuard public keys
+automatically to remote clusters.
+In such a setup, it is important to note that all participating clusters must
+have WireGuard encryption enabled, i.e. mixed mode is currently not supported.
+In addition, UDP traffic between nodes of different clusters on port ``51871``
+must be allowed.
+
 Limitations
 ===========
 
@@ -192,12 +217,11 @@ WireGuard support in Cilium currently lacks the following features,
 which may be resolved in upcoming Cilium releases:
 
  - Host-level encryption. Only traffic between two Cilium-managed endpoints
-   (i.e. pod to pod traffic) is encrypted. Traffic between a Cilium-managed
-   pod and a remote host, or traffic between two hosts running the Cilium
-   agent will currently not be encrypted.
+   (i.e. pod-to-pod traffic) is encrypted. Traffic between two nodes and
+   traffic between a Cilium-managed pod and a remote node currently won't be
+   encrypted.
  - L7 policy enforcement and visibility
  - eBPF-based host routing
- - Support for older kernels via user-mode WireGuard
 
 The current status of these limitations is tracked in :gh-issue:`15462`.
 

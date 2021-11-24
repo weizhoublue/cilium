@@ -37,6 +37,11 @@ const (
 	// received any labels yet.
 	IDNameInit = "init"
 
+	// IDNameKubeAPIServer is the label used to identify the kube-apiserver. It
+	// is part of the reserved identity 7 and it is also used in conjunction
+	// with IDNameHost if the kube-apiserver is running on the local host.
+	IDNameKubeAPIServer = "kube-apiserver"
+
 	// IDNameNone is the label used to identify no endpoint or other L3 entity.
 	// It will never be assigned and this "label" is here for consistency with
 	// other Entities.
@@ -56,6 +61,16 @@ var (
 
 	// LabelHost is the label used for the host endpoint.
 	LabelHost = Labels{IDNameHost: NewLabel(IDNameHost, "", LabelSourceReserved)}
+
+	// LabelWorld is the label used for world.
+	LabelWorld = Labels{IDNameWorld: NewLabel(IDNameWorld, "", LabelSourceReserved)}
+
+	// LabelRemoteNode is the label used for remote nodes.
+	LabelRemoteNode = Labels{IDNameRemoteNode: NewLabel(IDNameRemoteNode, "", LabelSourceReserved)}
+
+	// LabelKubeAPIServer is the label used for the kube-apiserver. See comment
+	// on IDNameKubeAPIServer.
+	LabelKubeAPIServer = Labels{IDNameKubeAPIServer: NewLabel(IDNameKubeAPIServer, "", LabelSourceReserved)}
 )
 
 const (
@@ -417,6 +432,18 @@ func (l Labels) MergeLabels(from Labels) {
 	}
 }
 
+// Remove is similar to MergeLabels, but returns a new Labels object with the
+// specified Labels removed. The received Labels is not modified.
+func (l Labels) Remove(from Labels) Labels {
+	result := make(Labels, len(l))
+	for k, v := range l {
+		if _, exists := from[k]; !exists {
+			result[k] = v
+		}
+	}
+	return result
+}
+
 // SHA256Sum calculates l' internal SHA256Sum. For a particular set of labels is
 // guarantee that it will always have the same SHA256Sum.
 func (l Labels) SHA256Sum() string {
@@ -496,6 +523,16 @@ func (l Labels) FindReserved() Labels {
 func (l Labels) IsReserved() bool {
 	for _, lbl := range l {
 		if lbl.Source == LabelSourceReserved {
+			return true
+		}
+	}
+	return false
+}
+
+// Has returns true if l contains the given label.
+func (l Labels) Has(label Label) bool {
+	for _, lbl := range l {
+		if lbl.matches(&label) {
 			return true
 		}
 	}

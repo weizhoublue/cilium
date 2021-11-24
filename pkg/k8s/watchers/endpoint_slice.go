@@ -14,6 +14,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 
 	v1 "k8s.io/api/core/v1"
+	v1meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -159,6 +160,8 @@ func (k *K8sWatcher) updateK8sEndpointSliceV1(eps *slim_discover_v1.EndpointSlic
 	if option.Config.BGPAnnounceLBIP {
 		k.bgpSpeakerManager.OnUpdateEndpointSliceV1(eps)
 	}
+
+	k.addKubeAPIServerServiceEPSliceV1(eps)
 }
 
 func (k *K8sWatcher) updateK8sEndpointSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice, swgEps *lock.StoppableWaitGroup) {
@@ -166,5 +169,60 @@ func (k *K8sWatcher) updateK8sEndpointSliceV1Beta1(eps *slim_discover_v1beta1.En
 
 	if option.Config.BGPAnnounceLBIP {
 		k.bgpSpeakerManager.OnUpdateEndpointSliceV1Beta1(eps)
+	}
+
+	k.addKubeAPIServerServiceEPSliceV1Beta1(eps)
+}
+
+func (k *K8sWatcher) addKubeAPIServerServiceEPSliceV1(eps *slim_discover_v1.EndpointSlice) {
+	if eps == nil ||
+		eps.GetLabels()[slim_discover_v1.LabelServiceName] != "kubernetes" ||
+		eps.Namespace != "default" {
+		return
+	}
+
+	desiredIPs := make(map[string]struct{})
+	for _, e := range eps.Endpoints {
+		for _, addr := range e.Addresses {
+			desiredIPs[addr] = struct{}{}
+		}
+	}
+
+	k.handleKubeAPIServerServiceEPChanges(desiredIPs)
+}
+
+func (k *K8sWatcher) addKubeAPIServerServiceEPSliceV1Beta1(eps *slim_discover_v1beta1.EndpointSlice) {
+	if eps == nil ||
+		eps.GetLabels()[slim_discover_v1beta1.LabelServiceName] != "kubernetes" ||
+		eps.Namespace != "default" {
+		return
+	}
+
+	desiredIPs := make(map[string]struct{})
+	for _, e := range eps.Endpoints {
+		for _, addr := range e.Addresses {
+			desiredIPs[addr] = struct{}{}
+		}
+	}
+
+	k.handleKubeAPIServerServiceEPChanges(desiredIPs)
+}
+
+// initEndpointsOrSlices initializes either the "Endpoints" or "EndpointSlice"
+// resources for Kubernetes service backends.
+func (k *K8sWatcher) initEndpointsOrSlices(k8sClient kubernetes.Interface, serviceOptModifier func(*v1meta.ListOptions)) {
+	swgEps := lock.NewStoppableWaitGroup()
+	switch {
+	case k8s.SupportsEndpointSlice():
+		// We don't add the service option modifier here, as endpointslices do not
+		// mirror service proxy name label present in the corresponding service.
+		connected := k.endpointSlicesInit(k8sClient, swgEps)
+		// The cluster has endpoint slices so we should not check for v1.Endpoints
+		if connected {
+			break
+		}
+		fallthrough
+	default:
+		k.endpointsInit(k8sClient, swgEps, serviceOptModifier)
 	}
 }

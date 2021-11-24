@@ -128,6 +128,12 @@ you can delete the cilium-preflight and proceed with the upgrade.
 Upgrading Cilium
 ================
 
+During normal cluster operations, all Cilium components should run the same
+version. Upgrading just one of them (e.g., upgrading the agent without
+upgrading the operator) could result in unexpected cluster behavior.
+The following steps will describe how to upgrade all of the components from
+one stable release to a later stable release.
+
 .. include:: upgrade-warning.rst
 
 Step 1: Upgrade to latest micro version (Recommended)
@@ -314,6 +320,17 @@ Annotations:
   when device wildcard expansion (``--devices=eth+``) yields no devices.
 * Device auto-detection now discovers devices through the routing table and
   only considers devices that have a global unicast route in some routing table.
+* The XDP-based prefilter is enabled for all devices specified by ``--devices``
+  if ``--prefilter-device`` is set.
+* New flags were added to enable installation where alternative VXLAN/Geneve and
+  health ports need to be used (``--tunnel-port`` and ``--cluster-health-port``).
+  Default values of these flags haven't changed, however if ``--tunnel-port`` gets
+  set to non-default values on upgrade, there will datapath downtime between nodes.
+  If ``--tunnel-port`` needs to change, it's recommended to perform the upgrade
+  first, and change the port afterwards, in order to separate agent upgrade from
+  configuration update. Changing ``--cluster-health-port`` will not affect datapath,
+  however it's recommended to still handle configuration change separately from
+  agent upgrade. Changing both ports simultaneously shouldn't cause any issues.
 
 Removed Options
 ~~~~~~~~~~~~~~~
@@ -334,12 +351,22 @@ Removed Options
   please use the ``--kube-version`` flag (introduced in Helm 3.6.0) instead.
 * The deprecated ``hubble-ca-cert`` configmap has been removed. Use
   ``hubble-ca-secret`` secret instead.
+* The ``azure-cloud-name`` option for cilium-operator-azure was deprecated in
+  1.10 and is now removed.
 
 Deprecated Options
 ~~~~~~~~~~~~~~~~~~
 
 * ``native-routing-cidr``: This option has been deprecated in favor of
   ``ipv4-native-routing-cidr`` and will be removed in 1.12.
+* ``prefilter-device`` and ``prefilter-mode``: These options have been
+  deprecated in favor of ``enable-xdp-prefilter`` and ``bpf-lb-acceleration``,
+  and will be removed in 1.12.
+* The NodePort related ``bpf-lb-bypass-fib-lookup`` option to enable a FIB
+  lookup bypass optimization for NodePort's reverse NAT handling has been
+  deprecated as the Linux kernel's FIB table is now always consulted. Thus,
+  explicitly setting the option has no effect. It is scheduled for removal
+  in 1.12.
 
 New Options
 ~~~~~~~~~~~
@@ -348,10 +375,24 @@ New Options
   acceptable kvstore consecutive quorum errors before the agent assumes
   permanent failure.
 
+Renamed Options
+~~~~~~~~~~~~~~~
+
+The following option has been renamed:
+
+* ``enable-egress-gateway`` to ``enable-ipv4-egress-gateway``.
+
+Deprecated Options in Cilium Operator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+* ``nodes-gc-interval``: This option will be removed in 1.12. Its value does not
+  have any effect in 1.11.
+
 Helm Options
 ~~~~~~~~~~~~
 
 * ``hostFirewall`` was renamed to ``hostFirewall.enabled``.
+* ``ipam.operator.clusterPoolIPv4PodCIDR`` was deprecated in favor of ``ipam.operator.clusterPoolIPv4PodCIDRList``
+* ``ipam.operator.clusterPoolIPv6PodCIDR`` was deprecated in favor of ``ipam.operator.clusterPoolIPv6PodCIDRList``
 
 .. _1.10_upgrade_notes:
 
@@ -1354,7 +1395,7 @@ Export the current ConfigMap
           etcd-config: |-
             ---
             endpoints:
-            - https://192.168.33.11:2379
+            - https://192.168.60.11:2379
             #
             # In case you want to use TLS in etcd, uncomment the 'trusted-ca-file' line
             # and create a kubernetes secret by following the tutorial in
@@ -1415,7 +1456,7 @@ new options while keeping the configuration that we wanted:
           etcd-config: |-
             ---
             endpoints:
-            - https://192.168.33.11:2379
+            - https://192.168.60.11:2379
             #
             # In case you want to use TLS in etcd, uncomment the 'trusted-ca-file' line
             # and create a kubernetes secret by following the tutorial in
@@ -1584,13 +1625,13 @@ Example migration
 
       $ kubectl exec -n kube-system cilium-preflight-1234 -- cilium preflight migrate-identity
       INFO[0000] Setting up kvstore client
-      INFO[0000] Connecting to etcd server...                  config=/var/lib/cilium/etcd-config.yml endpoints="[https://192.168.33.11:2379]" subsys=kvstore
+      INFO[0000] Connecting to etcd server...                  config=/var/lib/cilium/etcd-config.yml endpoints="[https://192.168.60.11:2379]" subsys=kvstore
       INFO[0000] Setting up kubernetes client
-      INFO[0000] Establishing connection to apiserver          host="https://192.168.33.11:6443" subsys=k8s
+      INFO[0000] Establishing connection to apiserver          host="https://192.168.60.11:6443" subsys=k8s
       INFO[0000] Connected to apiserver                        subsys=k8s
       INFO[0000] Got lease ID 29c66c67db8870c8                 subsys=kvstore
       INFO[0000] Got lock lease ID 29c66c67db8870ca            subsys=kvstore
-      INFO[0000] Successfully verified version of etcd endpoint  config=/var/lib/cilium/etcd-config.yml endpoints="[https://192.168.33.11:2379]" etcdEndpoint="https://192.168.33.11:2379" subsys=kvstore version=3.3.13
+      INFO[0000] Successfully verified version of etcd endpoint  config=/var/lib/cilium/etcd-config.yml endpoints="[https://192.168.60.11:2379]" etcdEndpoint="https://192.168.60.11:2379" subsys=kvstore version=3.3.13
       INFO[0000] CRD (CustomResourceDefinition) is installed and up-to-date  name=CiliumNetworkPolicy/v2 subsys=k8s
       INFO[0000] Updating CRD (CustomResourceDefinition)...    name=v2.CiliumEndpoint subsys=k8s
       INFO[0001] CRD (CustomResourceDefinition) is installed and up-to-date  name=v2.CiliumEndpoint subsys=k8s

@@ -34,7 +34,9 @@
 
 {{- /* Default values when 1.10 was initially deployed */ -}}
 {{- if semverCompare ">=1.10" (default "1.10" .Values.upgradeCompatibility) -}}
-{{- $defaultKubeProxyReplacement = "disabled" -}}
+  {{- $defaultKubeProxyReplacement = "disabled" -}}
+  {{- /* Needs to be explicitly disabled because it was enabled on all versions >=v1.8 above. */ -}}
+  {{- $defaultBpfMasquerade = "false" -}}
 {{- end -}}
 
 {{- $ipam := (coalesce .Values.ipam.mode $defaultIPAM) -}}
@@ -454,6 +456,9 @@ data:
     {{- end }}
   {{- else if eq .Values.encryption.type "wireguard" }}
   enable-wireguard: {{ .Values.encryption.enabled | quote }}
+    {{- if .Values.encryption.wireguard.userspaceFallback }}
+  enable-wireguard-userspace-fallback: {{ .Values.encryption.wireguard.userspaceFallback | quote }}
+    {{- end }}
   {{- end }}
 {{- end }}
 
@@ -704,11 +709,19 @@ data:
 
 {{- if eq $ipam "cluster-pool" }}
 {{- if .Values.ipv4.enabled }}
+  {{- if .Values.ipam.operator.clusterPoolIPv4PodCIDRList }}
+  cluster-pool-ipv4-cidr: {{ .Values.ipam.operator.clusterPoolIPv4PodCIDRList | join " " | quote }}
+  {{- else }}
   cluster-pool-ipv4-cidr: {{ .Values.ipam.operator.clusterPoolIPv4PodCIDR | quote }}
-  cluster-pool-ipv4-mask-size: {{ .Values.ipam.operator.clusterPoolIPv4MaskSize | quote  }}
+  {{- end }}
+  cluster-pool-ipv4-mask-size: {{ .Values.ipam.operator.clusterPoolIPv4MaskSize | quote }}
 {{- end }}
 {{- if .Values.ipv6.enabled }}
+  {{- if .Values.ipam.operator.clusterPoolIPv6PodCIDRList }}
+  cluster-pool-ipv6-cidr: {{ .Values.ipam.operator.clusterPoolIPv6PodCIDRList | join " " | quote }}
+  {{- else }}
   cluster-pool-ipv6-cidr: {{ .Values.ipam.operator.clusterPoolIPv6PodCIDR | quote }}
+  {{- end }}
   cluster-pool-ipv6-mask-size: {{ .Values.ipam.operator.clusterPoolIPv6MaskSize | quote }}
 {{- end }}
 {{- end }}
@@ -720,7 +733,7 @@ data:
 {{- end }}
 
 {{- if .Values.egressGateway.enabled }}
-  enable-egress-gateway: "true"
+  enable-ipv4-egress-gateway: "true"
 {{- end }}
 
 {{- if .Values.enableK8sEventHandover }}
@@ -747,11 +760,17 @@ data:
   enable-custom-calls: {{ .Values.customCalls.enabled | quote }}
 {{- end }}
 
-{{- if and .Values.bgp.enabled (not .Values.bgp.announce.loadbalancerIP) }}
+{{- if and .Values.bgp.enabled (and (not .Values.bgp.announce.loadbalancerIP) (not .Values.bgp.announce.podCIDR)) }}
   {{ fail "BGP was enabled, but no announcements were enabled. Please enable one or more announcements." }}
-{{- else if and .Values.bgp.enabled .Values.bgp.announce.loadbalancerIP }}
+{{- end }}
+
+{{- if and .Values.bgp.enabled .Values.bgp.announce.loadbalancerIP }}
   bgp-announce-lb-ip: {{ .Values.bgp.announce.loadbalancerIP | quote }}
 {{- end }}
+
+{{- if and .Values.bgp.enabled .Values.bgp.announce.podCIDR }}
+  bgp-announce-pod-cidr: {{ .Values.bgp.announce.podCIDR | quote }}
+{{- end}}
 
 {{- if hasKey .Values.cgroup "hostRoot" }}
   cgroup-root: {{ .Values.cgroup.hostRoot | quote }}
@@ -760,6 +779,14 @@ data:
 {{- if hasKey .Values.bpf "vlanBypass" }}
   # A space separated list of explicitly allowed vlan id's
   vlan-bpf-bypass: {{ .Values.bpf.vlanBypass | join " " | quote }}
+{{- end }}
+
+{{- if .Values.enableCiliumEndpointSlice }}
+  enable-cilium-endpoint-slice: "true"
+{{- end }}
+
+{{- if hasKey .Values "enableK8sTerminatingEndpoint" }}
+  enable-k8s-terminating-endpoint: {{ .Values.enableK8sTerminatingEndpoint | quote }}
 {{- end }}
 
 {{- if .Values.extraConfig }}

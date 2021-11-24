@@ -12,6 +12,7 @@ Borkmann
 Brenden
 Broadcom
 Brouer
+CES
 CIDR
 CIDRs
 CRD
@@ -102,6 +103,7 @@ O'Reilly
 Pepelnjak
 Pfaff
 PodCIDR
+PodCIDRList
 Polytechnique
 QCon
 Qemu
@@ -222,6 +224,7 @@ certManagerIssuerRef
 certValidityDuration
 certgen
 certmanager
+certsVolume
 cgroup
 chainingMode
 changelog
@@ -334,6 +337,7 @@ egressMasqueradeInterfaces
 egressing
 elfutils
 ena
+enableCiliumEndpointSlice
 enableCnpStatusUpdates
 enableCriticalPriorityClass
 enableHealthCheck
@@ -359,6 +363,7 @@ eventBufferCapacity
 eventQueueSize
 extendable
 extensibility
+extern
 externalIPs
 externalWorkloads
 extraArgs
@@ -677,6 +682,7 @@ plugins
 pmdabcc
 png
 podAnnotations
+podCIDR
 podDisruptionBudget
 podLabels
 podcasts
@@ -761,6 +767,7 @@ sNodes
 sService
 sServiceHost
 sServicePort
+sTerminatingEndpoint
 sa
 sandboxing
 scalability
@@ -809,6 +816,7 @@ starfighters
 startup
 startupProbe
 stateful
+statefulset
 statsd
 structs
 subclasses
@@ -894,6 +902,7 @@ url
 useAPIServer
 username
 userspace
+userspaceFallback
 usr
 uuid
 vCPU
@@ -926,6 +935,7 @@ whitelists
 whitespace
 wildcard
 wildcards
+wireguard
 workflow
 workflows
 workspace
