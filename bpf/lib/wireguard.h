@@ -108,6 +108,15 @@ wg_maybe_redirect_to_encrypt(struct __ctx_buff *ctx, __be16 proto,
 #endif
 		dst = lookup_ip6_remote_endpoint((union v6addr *)&ip6->daddr, 0);
 
+		/* Do not encrypt traffic destined to a local host address. */
+		if (dst && dst->key) {
+			const struct endpoint_info *ep;
+
+			ep = __lookup_ip6_endpoint((union v6addr *)&ip6->daddr);
+			if (ep && (ep->flags & ENDPOINT_F_HOST))
+				goto out;
+		}
+
 		if (src_sec_identity == UNKNOWN_ID) {
 			src = lookup_ip6_remote_endpoint((union v6addr *)&ip6->saddr, 0);
 			if (!src)
@@ -123,6 +132,18 @@ wg_maybe_redirect_to_encrypt(struct __ctx_buff *ctx, __be16 proto,
 			return DROP_INVALID;
 
 		dst = lookup_ip4_remote_endpoint(ip4->daddr, 0);
+
+		/* Do not encrypt traffic destined to a local host address,
+		 * as it would be incorrectly redirected through the WireGuard
+		 * tunnel only to be decrypted and delivered locally.
+		 */
+		if (dst && dst->key) {
+			const struct endpoint_info *ep;
+
+			ep = __lookup_ip4_endpoint(ip4->daddr);
+			if (ep && (ep->flags & ENDPOINT_F_HOST))
+				goto out;
+		}
 
 		if (src_sec_identity == UNKNOWN_ID) {
 			src = lookup_ip4_remote_endpoint(ip4->saddr, 0);

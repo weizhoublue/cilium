@@ -14,6 +14,7 @@
 
 #include "node_config.h"
 #include "lib/eps.h"
+#include "lib/endpoint.h"
 #include "lib/common.h"
 #include "lib/wireguard.h"
 #include "lib/ipv4.h"
@@ -148,6 +149,65 @@ int wireguard_icmpv6_na_skip_check(struct __ctx_buff *ctx)
 
 	ret_val = wg_maybe_redirect_to_encrypt(ctx, bpf_htons(ETH_P_IPV6), 123);
 	assert(ret_val == CTX_ACT_OK);
+
+	test_finish();
+}
+
+PKTGEN("tc", "wireguard_skip_encrypt_host_endpoint")
+static __always_inline int
+pktgen_wg_skip_host_ep(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+	struct udphdr *l4;
+
+	pktgen__init(&builder, ctx);
+
+	l4 = pktgen__push_ipv4_udp_packet(&builder,
+					  (__u8 *)mac_one,
+					  (__u8 *)mac_two,
+					  v4_pod_one,
+					  v4_node_one,
+					  bpf_htons(8080),
+					  bpf_htons(80));
+	if (!l4)
+		return TEST_ERROR;
+
+	pktgen__finish(&builder);
+
+	return 0;
+}
+
+CHECK("tc", "wireguard_skip_encrypt_host_endpoint")
+int wg_skip_encrypt_host_ep_check(struct __ctx_buff *ctx)
+{
+	int ret_val;
+
+	/* Add ipcache entry for destination with encryption key set. */
+	ipcache_v4_add_entry(v4_node_one, 0, HOST_ID, 0, 1);
+
+	/* Register the destination as a local host endpoint. */
+	endpoint_v4_add_entry(v4_node_one, 0, 0, ENDPOINT_F_HOST, HOST_ID, 0, NULL, NULL);
+
+	test_init();
+
+	ret_val = wg_maybe_redirect_to_encrypt(ctx, bpf_htons(ETH_P_IP), CLUSTER_IDENTITY);
+	assert(ret_val == CTX_ACT_OK);
+
+	test_finish();
+}
+
+CHECK("tc", "wireguard_encrypt_no_host_endpoint")
+int wg_encrypt_no_host_ep_check(struct __ctx_buff *ctx)
+{
+	int ret_val;
+
+	/* Add ipcache entry for destination with encryption key but no host endpoint. */
+	ipcache_v4_add_entry(v4_node_one, 0, HOST_ID, 0, 1);
+
+	test_init();
+
+	ret_val = wg_maybe_redirect_to_encrypt(ctx, bpf_htons(ETH_P_IP), CLUSTER_IDENTITY);
+	assert(ret_val != CTX_ACT_OK);
 
 	test_finish();
 }
