@@ -36,6 +36,7 @@ import (
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
 	ipcacheTypes "github.com/cilium/cilium/pkg/ipcache/types"
+	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/node"
@@ -411,6 +412,64 @@ func TestNodeLabels(t *testing.T) {
 			assert.True(t, want.Equals(got), "Mismatched labels: want=%v got=%v", want, got)
 		})
 	}
+}
+
+// TestNodeLabelsWithPrefixFilters verifies that the cluster label is always
+// present in node identity labels even when node label prefix filters are
+// configured. This prevents toNodes selectors from failing to match node
+// identities due to a missing cluster label.
+func TestNodeLabelsWithPrefixFilters(t *testing.T) {
+	logger := hivetest.Logger(t)
+
+	dp := newSignalNodeHandler()
+	ipcacheMock := newIPcacheMock()
+	h, _ := cell.NewSimpleHealth()
+
+	nodeLabels := map[string]string{
+		"test-label":  "test-value",
+		"other-label": "other-value",
+	}
+	nodeTypes.SetName("localNode")
+	nLocal := nodeTypes.Node{
+		Name:    "localNode",
+		Cluster: "default",
+		Labels:  nodeLabels,
+		Source:  source.Local,
+	}
+	nRemote := nodeTypes.Node{
+		Name:    "remoteNode",
+		Cluster: "default",
+		Labels:  nodeLabels,
+		Source:  source.Unspec,
+	}
+
+	mngr, err := New(logger, &option.DaemonConfig{}, tunnel.Config{}, ipcacheMock, newIPSetMock(), nil, NewNodeMetrics(), h, nil, nil, nil, fakewireguard.Config{}, node.NewTestLocalNodeStore(node.LocalNode{Node: nLocal}))
+	mngr.Subscribe(dp)
+	require.NoError(t, err)
+	mngr.NodeUpdated(nRemote)
+
+	// Configure node label prefixes, which sets whitelist=true in the filter.
+	// Only labels matching these prefixes should be included in identity labels.
+	if err := labelsfilter.ParseLabelPrefixCfg(logger, nil, []string{"test-label", "other-label"}, ""); err != nil {
+		t.Fatal("ParseLabelPrefixCfg() failed")
+	}
+
+	option.Config.EnableNodeSelectorLabels = true
+	option.Config.ClusterName = "default"
+
+	clusterLabelKey := labels.NewLabel(k8sConst.PolicyLabelCluster, "default", labels.LabelSourceK8s).Key
+
+	t.Run("Remote node identity includes cluster label despite prefix filters", func(t *testing.T) {
+		got := mngr.nodeIdentityLabels(nRemote)
+		_, exists := got[clusterLabelKey]
+		assert.True(t, exists, "cluster label should be present in remote node identity labels")
+	})
+
+	t.Run("Local node identity includes cluster label despite prefix filters", func(t *testing.T) {
+		got := mngr.nodeIdentityLabels(nLocal)
+		_, exists := got[clusterLabelKey]
+		assert.True(t, exists, "cluster label should be present in local node identity labels")
+	})
 }
 
 func TestMultipleSources(t *testing.T) {
