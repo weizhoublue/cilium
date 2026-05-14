@@ -190,6 +190,9 @@ const (
 	// NextHop is an IPV4 or IPv6 address for the next hop
 	NextHop = "nextHop"
 
+	// RouteNextHop is the next hop address for a route
+	RouteNextHop = "nexthop"
+
 	// Address is an IPV4, IPv6 or FQDN address
 	Address = "address"
 
@@ -855,6 +858,9 @@ const (
 	DestinationIP = "destinationIP"
 
 	LocalIP = "localIP"
+
+	// RouteLocal is the local address for a route
+	RouteLocal = "local"
 
 	RemoteIP = "remoteIP"
 

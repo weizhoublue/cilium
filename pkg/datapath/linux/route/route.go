@@ -36,8 +36,8 @@ func (r *Route) LogAttrs() []any {
 
 	return []any{
 		slog.String(logfields.Prefix, r.Prefix.String()),
-		slog.String(logfields.NextHop, nexthop),
-		slog.String(logfields.LocalIP, r.Local.String()),
+		slog.String(logfields.RouteNextHop, nexthop),
+		slog.String(logfields.RouteLocal, r.Local.String()),
 		slog.String(logfields.Interface, r.Device),
 	}
 }
