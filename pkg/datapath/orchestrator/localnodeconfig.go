@@ -238,7 +238,7 @@ func directRoutingDeviceHasAddr(dev *tables.Device) bool {
 		if option.Config.EnableIPv4 && addr.Addr.Is4() {
 			return true
 		}
-		if option.Config.EnableIPv6 && addr.Addr.Is6() {
+		if option.Config.EnableIPv6 && addr.Addr.Is6() && !addr.Addr.IsLinkLocalUnicast() {
 			return true
 		}
 	}

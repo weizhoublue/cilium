@@ -94,6 +94,21 @@ func TestDirectRoutingDeviceHasAddr(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "IPv6 link-local only should be filtered",
+			addrs: []tables.DeviceAddress{
+				{Addr: netip.MustParseAddr("fe80::1")},
+			},
+			want: false,
+		},
+		{
+			name: "IPv4 and IPv6 link-local should return true",
+			addrs: []tables.DeviceAddress{
+				{Addr: netip.MustParseAddr("192.0.2.1")},
+				{Addr: netip.MustParseAddr("fe80::1")},
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
