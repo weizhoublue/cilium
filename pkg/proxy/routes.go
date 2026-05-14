@@ -12,6 +12,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"go4.org/netipx"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
@@ -152,9 +153,14 @@ func getCiliumNetIPv6() (netip.Addr, error) {
 	}
 
 	addrList, err := safenetlink.AddrList(link, netlink.FAMILY_V6)
-	if err == nil && len(addrList) > 0 {
-		if addr, ok := netip.AddrFromSlice(addrList[0].IP); ok {
-			return addr.Unmap(), nil
+	if err == nil {
+		for _, a := range addrList {
+			if a.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+				continue
+			}
+			if addr, ok := netip.AddrFromSlice(a.IP); ok {
+				return addr.Unmap(), nil
+			}
 		}
 	}
 

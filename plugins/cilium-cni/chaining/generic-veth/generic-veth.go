@@ -12,6 +12,7 @@ import (
 	cniTypesVer "github.com/containernetworking/cni/pkg/types/100"
 	cniVersion "github.com/containernetworking/cni/pkg/version"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/client"
@@ -94,7 +95,13 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 			addrs, err := safenetlink.AddrList(link, netlink.FAMILY_V4)
 			if err == nil && len(addrs) > 0 {
-				vethIP = addrs[0].IPNet.IP.String()
+				for _, a := range addrs {
+					if a.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+						continue
+					}
+					vethIP = a.IPNet.IP.String()
+					break
+				}
 			} else if err != nil {
 				pluginCtx.Logger.Warn(
 					"No valid IPv4 address found",
@@ -105,14 +112,13 @@ func (f *GenericVethChainer) Add(ctx context.Context, pluginCtx chainingapi.Plug
 
 			addrsv6, err := safenetlink.AddrList(link, netlink.FAMILY_V6)
 			if err == nil && len(addrsv6) > 0 {
-				if len(addrsv6) == 1 {
-					vethIPv6 = addrsv6[0].IPNet.IP.String()
-				} else {
-					for _, addrv6 := range addrsv6 {
-						if addrv6.IP.IsGlobalUnicast() {
-							vethIPv6 = addrv6.IPNet.IP.String()
-							break
-						}
+				for _, addrv6 := range addrsv6 {
+					if addrv6.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+						continue
+					}
+					if addrv6.IP.IsGlobalUnicast() {
+						vethIPv6 = addrv6.IPNet.IP.String()
+						break
 					}
 				}
 			} else if err != nil {

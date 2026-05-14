@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 )
@@ -22,6 +23,9 @@ func getCiliumHostIPsFromNetDev(devName string) (ipv4GW, ipv6Router net.IP) {
 		return nil, nil
 	}
 	for _, addr := range addrs {
+		if addr.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+			continue
+		}
 		if addr.IP.To4() != nil {
 			if addr.Scope == int(netlink.SCOPE_LINK) {
 				ipv4GW = addr.IP

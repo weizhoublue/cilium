@@ -9,6 +9,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"go4.org/netipx"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 )
@@ -25,6 +26,9 @@ func GetIfaceFirstIPv4Address(ifaceName string) (netip.Addr, error) {
 	}
 
 	for _, addr := range addrs {
+		if addr.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+			continue
+		}
 		if addr.IP.To4() != nil {
 			a, ok := netipx.FromStdIP(addr.IP)
 			if !ok {
@@ -84,6 +88,9 @@ func GetIfaceFirstIPv6Address(ifaceName string) (netip.Addr, error) {
 	}
 
 	for _, addr := range addrs {
+		if addr.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+			continue
+		}
 		if addr.IP.To4() == nil && addr.IP.To16() != nil {
 			a, ok := netipx.FromStdIP(addr.IP)
 			if !ok {
