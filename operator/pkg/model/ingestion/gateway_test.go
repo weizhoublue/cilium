@@ -56,6 +56,7 @@ func TestHTTPGatewayAPI(t *testing.T) {
 		"http external auth http tls":                             {},
 		"http external auth grpc tls":                             {},
 		"http external auth shared and no auth":                   {},
+		"httproute-request-mirror-nil-port":                       {},
 	}
 
 	for name := range tests {
@@ -80,6 +81,7 @@ func TestTLSGatewayAPI(t *testing.T) {
 		"Conformance/TLSRouteHostnameIntersection": {},
 		"mixed protocol listeners TLSRoute":        {},
 		"tls weighted backends":                    {},
+		"tlsroute-nil-port":                       {},
 	}
 
 	for name := range tests {
