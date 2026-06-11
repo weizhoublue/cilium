@@ -25,7 +25,7 @@ concurrency:
 jobs:
   wait-for-base-images:
     name: Wait for lint checks
-    uses: cilium/actions/.github/workflows/wait-for-status-check.yaml@342436e0898719fabc2337b145b91490f33cec2a
+    uses: weizhoublue/actions/.github/workflows/wait-for-status-check.yaml@cbe7ab100ef4e39b9ee3cf632a6cdfe4b60c62d6
     with:
       # Only run this job if the event is pull_request_target and if the PR
       # is not opened from a fork.
@@ -41,8 +41,7 @@ jobs:
     timeout-minutes: 45
     name: Build and Push Images
     runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-24.04' }}
-    # GH-46482: Lint checks action is broken, skip dependency for now.
-    #needs: wait-for-base-images
+    needs: wait-for-base-images
     outputs:
       sha: ${{ steps.tag.outputs.sha }}
     strategy:
