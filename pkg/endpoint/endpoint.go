@@ -44,6 +44,8 @@ import (
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/k8s"
+	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
@@ -1237,6 +1239,41 @@ func (e *Endpoint) replaceIdentityLabels(sourceFilter string, l labels.Labels) i
 // current endpoint's identityRevision.
 // Must be called with e.mutex.Lock().
 func (e *Endpoint) replaceNonGeneratedIdentityLabels(sourceFilter string, l labels.Labels) int {
+	changed := false
+	if e.HaveK8sMetadata() {
+		hasExistingNamedPorts := false
+		for k := range e.labels.OrchestrationIdentity {
+			if ciliumio.IsNamedPortsIdentityLabelName(k) {
+				hasExistingNamedPorts = true
+				break
+			}
+		}
+		isNewEndpoint := e.SecurityIdentity == nil || e.IsInit()
+
+		if hasExistingNamedPorts || isNewEndpoint {
+			expectedNamedPorts := k8s.NamedPortsIdentityLabels(e.GetK8sPorts())
+			currentNamedPorts := labels.Labels{}
+			for k, v := range e.labels.OrchestrationIdentity {
+				if ciliumio.IsNamedPortsIdentityLabelName(k) {
+					currentNamedPorts[k] = v
+				}
+			}
+			expectedLabels := labels.Labels{}
+			for _, lbl := range expectedNamedPorts {
+				expectedLabels[lbl.Key] = lbl
+			}
+			if !currentNamedPorts.Equals(expectedLabels) {
+				for k := range currentNamedPorts {
+					delete(e.labels.OrchestrationIdentity, k)
+				}
+				for k, v := range expectedLabels {
+					e.labels.OrchestrationIdentity[k] = v
+				}
+				changed = true
+			}
+		}
+	}
+
 	// only add generated labels if sourceFilter is Any or Generated,
 	// as otherwise the generated labels are already left as-is.
 	if sourceFilter == labels.LabelSourceAny || sourceFilter == labels.LabelSourceGenerated {
@@ -1251,7 +1288,12 @@ func (e *Endpoint) replaceNonGeneratedIdentityLabels(sourceFilter string, l labe
 			}
 		}
 	}
-	return e.replaceIdentityLabels(sourceFilter, l)
+	rev := e.replaceIdentityLabels(sourceFilter, l)
+	if changed && rev == 0 {
+		e.identityRevision++
+		rev = e.identityRevision
+	}
+	return rev
 }
 
 // DeleteConfig is the endpoint deletion configuration

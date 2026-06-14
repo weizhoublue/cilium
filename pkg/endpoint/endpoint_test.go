@@ -720,7 +720,7 @@ func TestInitialNamedPortsIdentityLabel(t *testing.T) {
 		assertNamedPortsLabels(t, e, "http.TCP.80", "https.TCP.443")
 	})
 
-	t.Run("real identity preserves generated label on source any metadata refresh", func(t *testing.T) {
+	t.Run("real identity updates generated label on source any metadata refresh", func(t *testing.T) {
 		current := labels.Labels{
 			"app":                                labels.NewLabel("app", "backend", labels.LabelSourceK8s),
 			ciliumio.NamedPortsIdentityLabelName: labels.NewLabel(ciliumio.NamedPortsIdentityLabelName, "http.TCP.80", labels.LabelSourceGenerated),
@@ -734,7 +734,7 @@ func TestInitialNamedPortsIdentityLabel(t *testing.T) {
 		})
 		e.UpdateLabels(t.Context(), labels.LabelSourceAny, incoming(), nil, false)
 
-		assertNamedPortsLabels(t, e, "http.TCP.80", "https.TCP.443")
+		assertNamedPortsLabels(t, e, "http.TCP.8080")
 	})
 
 	t.Run("real identity does not preserve disabled generated label", func(t *testing.T) {
@@ -748,7 +748,7 @@ func TestInitialNamedPortsIdentityLabel(t *testing.T) {
 		assertNoNamedPortsLabels(t, e.labels.IdentityLabels())
 	})
 
-	t.Run("real identity ignores changed named ports", func(t *testing.T) {
+	t.Run("real identity updates changed named ports", func(t *testing.T) {
 		current := labels.Labels{
 			"app":                                labels.NewLabel("app", "backend", labels.LabelSourceK8s),
 			ciliumio.NamedPortsIdentityLabelName: labels.NewLabel(ciliumio.NamedPortsIdentityLabelName, "http.TCP.80", labels.LabelSourceGenerated),
@@ -762,7 +762,7 @@ func TestInitialNamedPortsIdentityLabel(t *testing.T) {
 		})
 		e.UpdateLabels(t.Context(), labels.LabelSourceK8s, incoming(), nil, false)
 
-		assertNamedPortsLabels(t, e, "http.TCP.80", "https.TCP.443")
+		assertNamedPortsLabels(t, e, "http.TCP.8080")
 	})
 }
 
