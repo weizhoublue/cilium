@@ -826,7 +826,7 @@ func NewLegacyMetrics() *LegacyMetrics {
 		}, metric.Labels{
 			{
 				Name:   LabelPolicySource,
-				Values: metric.NewValues(string(source.Kubernetes), string(source.CustomResource), string(source.LocalAPI)),
+				Values: metric.NewValues(string(source.Kubernetes), string(source.CustomResource), string(source.LocalAPI), string(source.Directory)),
 			},
 		}),
 
