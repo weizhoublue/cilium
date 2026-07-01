@@ -592,6 +592,32 @@ func TestLookupIPv4(t *testing.T) {
 	}
 }
 
+func TestUnexposeOnlyRemovesReferencesOwnedByEndpoint(t *testing.T) {
+	s := setupEndpointManagerSuite(t)
+	logger := hivetest.Logger(t)
+	mgr := New(logger, nil, &dummyEpSyncher{}, nil, nil, nil, defaultEndpointManagerConfig)
+
+	sharedIP := netip.MustParseAddr("10.0.0.1")
+
+	model1 := newTestEndpointModel(1, endpoint.StateReady)
+	ep1, err := endpoint.NewEndpointFromChangeModel(makeTestEndpointParams(logger, s.repo), nil, &endpoint.FakeEndpointProxy{}, model1, nil)
+	require.NoError(t, err)
+	ep1.IPv4 = sharedIP
+	require.NoError(t, mgr.expose(ep1))
+	defer ep1.Stop()
+
+	model2 := newTestEndpointModel(2, endpoint.StateReady)
+	ep2, err := endpoint.NewEndpointFromChangeModel(makeTestEndpointParams(logger, s.repo), nil, &endpoint.FakeEndpointProxy{}, model2, nil)
+	require.NoError(t, err)
+	ep2.IPv4 = sharedIP
+	require.NoError(t, mgr.expose(ep2))
+	defer mgr.WaitEndpointRemoved(ep2)
+
+	mgr.WaitEndpointRemoved(ep1)
+
+	require.Equal(t, ep2, mgr.LookupIP(sharedIP))
+}
+
 func TestLookupCEPName(t *testing.T) {
 	s := setupEndpointManagerSuite(t)
 	logger := hivetest.Logger(t)

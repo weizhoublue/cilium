@@ -472,7 +472,7 @@ func (mgr *endpointManager) unexpose(ep *endpoint.Endpoint) {
 
 	delete(mgr.endpoints, ep.ID)
 	mgr.mcastManager.RemoveAddress(ep.IPv6)
-	mgr.removeReferencesLocked(identifiers)
+	mgr.removeReferencesLocked(identifiers, ep)
 }
 
 // releaseID returns the endpoint ID to the allocator pool. It must be called
@@ -613,10 +613,12 @@ func (mgr *endpointManager) UpdateReferences(ep *endpoint.Endpoint) error {
 }
 
 // removeReferencesLocked removes the mappings from the endpointmanager.
-func (mgr *endpointManager) removeReferencesLocked(identifiers endpointid.Identifiers) {
+func (mgr *endpointManager) removeReferencesLocked(identifiers endpointid.Identifiers, ep *endpoint.Endpoint) {
 	for prefix := range identifiers {
 		id := endpointid.NewID(prefix, identifiers[prefix])
-		delete(mgr.endpointsAux, id)
+		if mgr.endpointsAux[id] == ep {
+			delete(mgr.endpointsAux, id)
+		}
 	}
 }
 
