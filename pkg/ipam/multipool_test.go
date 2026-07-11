@@ -48,6 +48,12 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 )
 
+func TestParseMultiPoolPreAllocMapRejectsNegativeValue(t *testing.T) {
+	_, err := ParseMultiPoolPreAllocMap(map[string]string{"pool-x": "-1"})
+	require.ErrorContains(t, err, "pool-x")
+	require.ErrorContains(t, err, "must be non-negative")
+}
+
 func Test_MultiPoolManager(t *testing.T) {
 	var (
 		tick    = 10 * time.Millisecond

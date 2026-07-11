@@ -76,6 +76,9 @@ func ParseMultiPoolPreAllocMap(conf map[string]string) (preAllocatePerPool, erro
 		if err != nil {
 			return nil, fmt.Errorf("invalid value for pool %q: %w", pool, err)
 		}
+		if value < 0 {
+			return nil, fmt.Errorf("invalid value for pool %q: must be non-negative", pool)
+		}
 		m[Pool(pool)] = int(value)
 	}
 
