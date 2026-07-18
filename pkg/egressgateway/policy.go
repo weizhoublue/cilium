@@ -258,6 +258,7 @@ func (gwc *gatewayConfig) deriveFromPolicyGatewayConfig(manager *Manager, gc *po
 		dev := getDeviceWithAddress(manager, gc.egressIP)
 		if dev != nil {
 			gwc.ifaceName = dev.Name
+			gwc.egressIfindex = uint32(dev.Index)
 
 			if gc.egressIP.Is4() {
 				egressIP4 = gc.egressIP
@@ -308,6 +309,12 @@ func (gwc *gatewayConfig) deriveFromPolicyGatewayConfig(manager *Manager, gc *po
 					}
 				}
 			}
+
+			iface, err := safenetlink.LinkByName(gwc.ifaceName)
+			if err != nil {
+				return fmt.Errorf("failed to retrieve egress interface %s: %w", gwc.ifaceName, err)
+			}
+			gwc.egressIfindex = uint32(iface.Attrs().Index)
 		}
 	default:
 		// If the gateway config doesn't specify any egress IP or interface, use the
