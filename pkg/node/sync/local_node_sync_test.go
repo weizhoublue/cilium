@@ -30,7 +30,8 @@ import (
 
 // Mock resources for testing
 type mockResource[T k8sRuntime.Object] struct {
-	items []resource.Event[T]
+	items            []resource.Event[T]
+	closeImmediately bool
 }
 
 func (mr *mockResource[T]) Observe(ctx context.Context, next func(resource.Event[T]), complete func(error)) {
@@ -42,6 +43,10 @@ func (mr *mockResource[T]) Events(ctx context.Context, opts ...resource.EventsOp
 	for _, item := range mr.items {
 		ch <- item
 	}
+	if mr.closeImmediately {
+		close(ch)
+		return ch
+	}
 	// Keep channel open until context is cancelled to simulate blocking behavior
 	go func() {
 		<-ctx.Done()
@@ -52,6 +57,21 @@ func (mr *mockResource[T]) Events(ctx context.Context, opts ...resource.EventsOp
 
 func (mr *mockResource[T]) Store(context.Context) (resource.Store[T], error) {
 	panic("store not impl")
+}
+
+func TestGetK8sLocalCiliumNodeClosedEvents(t *testing.T) {
+	sync := &localNodeSynchronizer{
+		localNodeSynchronizerParams: localNodeSynchronizerParams{
+			Logger: hivetest.Logger(t),
+			K8sCiliumLocalNode: &mockResource[*v2.CiliumNode]{
+				closeImmediately: true,
+			},
+		},
+	}
+
+	require.NotPanics(t, func() {
+		require.Nil(t, sync.getK8sLocalCiliumNode(context.Background()))
+	})
 }
 
 type fakeLocalNode struct {
