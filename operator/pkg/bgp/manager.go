@@ -148,6 +148,8 @@ func (b *BGPResourceManager) initializeJobs() {
 				return err
 			}
 
+			close(b.storesInitialized)
+
 			b.logger.Info("BGP control plane operator started")
 			// restore router IDs for all nodes
 			if err := b.restoreRouterIDs(); err != nil {
