@@ -7,9 +7,12 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/cilium/statedb"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/cilium/cilium/pkg/datapath/tables"
 	slimv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/api"
@@ -211,4 +214,39 @@ func TestPolicyConfig_updateMatchedEndpointIDs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeriveFromPolicyGatewayConfigSetsIfindexForEgressIP(t *testing.T) {
+	db := statedb.New()
+	deviceTable, err := tables.NewDeviceTable(db)
+	require.NoError(t, err)
+
+	egressIP := netip.MustParseAddr("fd00::10:10:0:1")
+	dev := &tables.Device{
+		Index: 7,
+		Name:  "eth0",
+		Addrs: []tables.DeviceAddress{
+			{Addr: egressIP},
+		},
+	}
+
+	txn := db.WriteTxn(deviceTable)
+	_, _, err = deviceTable.Insert(txn, dev)
+	require.NoError(t, err)
+	txn.Commit()
+
+	manager := &Manager{
+		db:          db,
+		deviceTable: deviceTable,
+	}
+	gwc := &gatewayConfig{}
+	gc := &policyGatewayConfig{
+		egressIP: egressIP,
+	}
+
+	err = gwc.deriveFromPolicyGatewayConfig(manager, gc, false, true)
+	require.NoError(t, err)
+	assert.Equal(t, dev.Name, gwc.ifaceName)
+	assert.Equal(t, uint32(dev.Index), gwc.egressIfindex)
+	assert.Equal(t, egressIP, gwc.egressIP6)
 }
