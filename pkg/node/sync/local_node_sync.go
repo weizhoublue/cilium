@@ -183,7 +183,10 @@ func (ini *localNodeSynchronizer) getK8sLocalCiliumNode(ctx context.Context) *v2
 	select {
 	case <-ctx.Done():
 		return nil
-	case ev := <-ini.K8sCiliumLocalNode.Events(ctx):
+	case ev, ok := <-ini.K8sCiliumLocalNode.Events(ctx):
+		if !ok {
+			return nil
+		}
 		ev.Done(nil)
 		switch ev.Kind {
 		case resource.Upsert:
