@@ -20,6 +20,7 @@ import (
 
 	statstypes "github.com/cilium/cilium/pkg/bpf/stats/types"
 	"github.com/cilium/cilium/pkg/cgroups"
+	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/loader"
 	"github.com/cilium/cilium/pkg/datapath/tables"
@@ -153,12 +154,17 @@ func collectDeviceProgramStats(deviceName string, devices []string) ([]statstype
 func collectDevicePrograms(device netlink.Link) ([]ebpf.ProgramID, error) {
 	var ids []ebpf.ProgramID
 
-	attachTypes := []ebpf.AttachType{
-		ebpf.AttachTCXIngress, ebpf.AttachTCXEgress,
-	}
+	var attachTypes []ebpf.AttachType
 
-	if device.Type() == "netkit" {
-		attachTypes = append(attachTypes, ebpf.AttachNetkitPrimary, ebpf.AttachNetkitPeer)
+	// TCX and netkit links require Linux 6.6+. On older kernels programs
+	// are attached with legacy TC instead, which is collected below.
+	if probes.HaveTCX() == nil {
+		attachTypes = []ebpf.AttachType{
+			ebpf.AttachTCXIngress, ebpf.AttachTCXEgress,
+		}
+		if device.Type() == "netkit" {
+			attachTypes = append(attachTypes, ebpf.AttachNetkitPrimary, ebpf.AttachNetkitPeer)
+		}
 	}
 
 	for _, at := range attachTypes {
