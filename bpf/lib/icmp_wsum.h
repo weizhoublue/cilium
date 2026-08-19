@@ -38,10 +38,15 @@ __wsum icmp_wsum_accumulate(void *data_start, void *data_end, int sample_len)
 		body16(i + 96)
 
 	body128(0)
+	body128(128)
 	body128(256)
+	body128(384)
 	body128(512)
+	body128(640)
 	body128(768)
+	body128(896)
 	body128(1024)
+	body128(1152)
 
 	return wsum;
 }
