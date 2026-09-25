@@ -11,7 +11,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -131,25 +130,14 @@ func (r *secretSyncer) notInSecretsNamespace() builder.Predicates {
 
 func enqueueOwningSecretFromLabels() handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
-		labels := o.GetLabels()
-
-		if labels == nil {
-			return nil
-		}
-
-		owningSecretNamespace, owningSecretNamespacePresent := labels[OwningSecretNamespace]
-		owningSecretName, owningSecretNamePresent := labels[OwningSecretName]
-
-		if !owningSecretNamespacePresent || !owningSecretNamePresent {
+		owner, ok := ownerFromAnnotationsOrLabels(o, OwningSecretNamespace, OwningSecretName)
+		if !ok {
 			return nil
 		}
 
 		return []reconcile.Request{
 			{
-				NamespacedName: types.NamespacedName{
-					Namespace: owningSecretNamespace,
-					Name:      owningSecretName,
-				},
+				NamespacedName: owner,
 			},
 		}
 	})
