@@ -519,6 +519,60 @@ func Test_SecretSync_Reconcile_WithDefaultSecret(t *testing.T) {
 	})
 }
 
+func Test_SecretSync_Reconcile_LongSourceName(t *testing.T) {
+	logger := hivetest.Logger(t, hivetest.LogLevel(slog.LevelDebug))
+	longName := "tls-1234567890-1234567890-1234567890-1234567890-1234567890-1234567890-1234"
+	source := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: longName},
+		Data:       map[string][]byte{"tls.crt": []byte("initial")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(source).
+		Build()
+	r := secretsync.NewSecretSyncReconciler(c, logger, []*secretsync.SecretSyncRegistration{
+		{
+			RefObjectCheckFunc: func(context.Context, client.Client, *slog.Logger, *corev1.Secret) bool {
+				return true
+			},
+			SecretsNamespace: secretsNamespace,
+		},
+	}, time.Minute, 0.1)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: source.Namespace, Name: source.Name}}
+
+	result, err := r.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	require.True(t, resultHasResync(result))
+
+	synced := &corev1.Secret{}
+	err = c.Get(t.Context(), syncedSecretKey(secretsNamespace, source.Namespace, source.Name), synced)
+	require.NoError(t, err)
+	require.NotContains(t, synced.Labels, secretsync.OwningSecretNamespace)
+	require.NotContains(t, synced.Labels, secretsync.OwningSecretName)
+	require.Equal(t, longName, synced.Annotations[secretsync.SourceNameAnnotation])
+
+	original := &corev1.Secret{}
+	err = c.Get(t.Context(), client.ObjectKeyFromObject(source), original)
+	require.NoError(t, err)
+	original.Data["tls.crt"] = []byte("updated")
+	err = c.Update(t.Context(), original)
+	require.NoError(t, err)
+
+	_, err = r.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	err = c.Get(t.Context(), syncedSecretKey(secretsNamespace, source.Namespace, source.Name), synced)
+	require.NoError(t, err)
+	require.Equal(t, []byte("updated"), synced.Data["tls.crt"])
+
+	err = c.Delete(t.Context(), original)
+	require.NoError(t, err)
+	_, err = r.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	err = c.Get(t.Context(), syncedSecretKey(secretsNamespace, source.Namespace, source.Name), synced)
+	require.True(t, k8sErrors.IsNotFound(err))
+}
+
 func Test_SecretSync_Reconcile_SourceNameCollision(t *testing.T) {
 	logger := hivetest.Logger(t, hivetest.LogLevel(slog.LevelDebug))
 

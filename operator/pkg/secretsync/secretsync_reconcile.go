@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -143,7 +144,7 @@ func (r *secretSyncer) cleanupSyncedSecret(ctx context.Context, req reconcile.Re
 		}
 
 		if !isOwnedBy(syncSecret, source, OwningSecretNamespace, OwningSecretName) {
-			scopedLog.DebugContext(ctx, "Skipping synced secret cleanup because ownership labels do not match", logfields.K8sNamespace, ns)
+			scopedLog.DebugContext(ctx, "Skipping synced secret cleanup because ownership metadata does not match", logfields.K8sNamespace, ns)
 			continue
 		}
 
@@ -169,8 +170,13 @@ func desiredSyncSecret(secretsNamespace string, original *corev1.Secret) *corev1
 	if s.Labels == nil {
 		s.Labels = map[string]string{}
 	}
-	s.Labels[OwningSecretNamespace] = original.Namespace
-	s.Labels[OwningSecretName] = original.Name
+	if len(original.Name) <= validation.LabelValueMaxLength {
+		s.Labels[OwningSecretNamespace] = original.Namespace
+		s.Labels[OwningSecretName] = original.Name
+	} else {
+		delete(s.Labels, OwningSecretNamespace)
+		delete(s.Labels, OwningSecretName)
+	}
 	s.Immutable = original.Immutable
 	s.Data = original.Data
 	s.StringData = original.StringData
