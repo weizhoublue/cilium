@@ -368,19 +368,21 @@ func (p *Repository) resolvePolicyLocked(securityIdentity *identity.Identity) (*
 	if ingressEnabled {
 		policyCtx.PolicyTrace("resolving ingress policy")
 		newL4IngressPolicy, err := rulesIngress.resolveL4Policy(&policyCtx)
+		calculatedPolicy.L4Policy.Ingress = newL4IngressPolicy
 		if err != nil {
+			calculatedPolicy.Detach()
 			return nil, err
 		}
-		calculatedPolicy.L4Policy.Ingress = newL4IngressPolicy
 	}
 
 	if egressEnabled {
 		policyCtx.PolicyTrace("resolving egress policy")
 		newL4EgressPolicy, err := rulesEgress.resolveL4Policy(&policyCtx)
+		calculatedPolicy.L4Policy.Egress = newL4EgressPolicy
 		if err != nil {
+			calculatedPolicy.Detach()
 			return nil, err
 		}
-		calculatedPolicy.L4Policy.Egress = newL4EgressPolicy
 	}
 
 	// Make the calculated policy ready for incremental updates

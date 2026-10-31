@@ -4,13 +4,17 @@
 package policy
 
 import (
+	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"testing"
 
 	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
@@ -1205,6 +1209,92 @@ func TestIterate(t *testing.T) {
 	repo.Iterate(countEgressRules)
 
 	require.Equal(t, numRules-numModified, numWithEgress)
+}
+
+type missingCertificateManager struct{}
+
+func (missingCertificateManager) GetTLSContext(_ context.Context, tls *api.TLSContext, _ string) (ca, public, private string, inlineSecrets bool, err error) {
+	return "", "", "", false, apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, tls.Secret.Name)
+}
+
+func TestComputeSelectorPolicyErrorCleanup(t *testing.T) {
+	oldPolicyEnable := GetPolicyEnabled()
+	defer SetPolicyEnabled(oldPolicyEnable)
+	SetPolicyEnabled(option.DefaultEnforcement)
+
+	plain := api.PortRule{
+		Ports: []api.PortProtocol{{Port: "80", Protocol: api.ProtoTCP}},
+	}
+	tls := api.PortRule{
+		Ports:          []api.PortProtocol{{Port: "443", Protocol: api.ProtoTCP}},
+		TerminatingTLS: &api.TLSContext{Secret: &api.Secret{Name: "missing"}},
+	}
+
+	for _, tt := range []struct {
+		name         string
+		ingressPorts []api.PortRule
+		egressPorts  []api.PortRule
+	}{
+		{
+			name:         "partial ingress",
+			ingressPorts: []api.PortRule{plain, tls},
+		},
+		{
+			name:        "partial egress",
+			egressPorts: []api.PortRule{plain, tls},
+		},
+		{
+			name:         "complete ingress and partial egress",
+			ingressPorts: []api.PortRule{plain},
+			egressPorts:  []api.PortRule{plain, tls},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			td := newTestData(t, hivetest.Logger(t))
+			td.withIDs(identity.IdentityMap{idA.ID: idA.Labels, idB.ID: idB.Labels})
+			rule := api.Rule{EndpointSelector: endpointSelectorA}
+			if len(tt.ingressPorts) > 0 {
+				rule.Ingress = []api.IngressRule{{
+					IngressCommonRule: api.IngressCommonRule{
+						FromEndpoints: []api.EndpointSelector{endpointSelectorB},
+					},
+					ToPorts: tt.ingressPorts,
+				}}
+			}
+			if len(tt.egressPorts) > 0 {
+				rule.Egress = []api.EgressRule{{
+					EgressCommonRule: api.EgressCommonRule{
+						ToEndpoints: []api.EndpointSelector{endpointSelectorB},
+					},
+					ToPorts: tt.egressPorts,
+				}}
+			}
+			td.repo.mustAdd(rule)
+			certManager := td.repo.certManager
+			td.repo.certManager = missingCertificateManager{}
+
+			snapshotUsers := func() map[string]map[CachedSelectionUser]struct{} {
+				users := make(map[string]map[CachedSelectionUser]struct{})
+				for key, selector := range td.sc.selectors.All() {
+					users[key] = maps.Clone(selector.users)
+				}
+				return users
+			}
+			initialUsers := snapshotUsers()
+			for range 2 {
+				policy, _, err := td.repo.ComputeSelectorPolicy(idA)
+				require.True(t, apierrors.IsNotFound(err), "expected missing Secret, got %v", err)
+				require.Nil(t, policy)
+				require.Equal(t, initialUsers, snapshotUsers(), "failed computation must preserve existing selector users")
+			}
+
+			td.repo.certManager = certManager
+			policy, _, err := td.repo.ComputeSelectorPolicy(idA)
+			require.NoError(t, err)
+			policy.Detach()
+			require.Equal(t, initialUsers, snapshotUsers())
+		})
+	}
 }
 
 // TestDefaultAllow covers the defaulting logic in determining an identity's default rule

@@ -424,6 +424,60 @@ func TestCreateL4FilterMissingSecret(t *testing.T) {
 	}
 }
 
+func TestCreateL4FilterErrorCleanup(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		portRule api.PortRule
+		ingress  bool
+	}{
+		{
+			name:    "terminating TLS",
+			ingress: true,
+			portRule: api.PortRule{
+				TerminatingTLS: &api.TLSContext{Secret: &api.Secret{Name: "missing"}},
+			},
+		},
+		{
+			name:    "originating TLS",
+			ingress: true,
+			portRule: api.PortRule{
+				TerminatingTLS: &api.TLSContext{Secret: &api.Secret{Name: "tls-cert"}},
+				OriginatingTLS: &api.TLSContext{Secret: &api.Secret{Name: "missing"}},
+			},
+		},
+		{
+			name: "namespaced listener in clusterwide policy",
+			portRule: api.PortRule{
+				Listener: &api.Listener{
+					EnvoyConfig: &api.EnvoyConfig{Kind: "CiliumEnvoyConfig", Name: "test-cec"},
+					Name:        "test",
+				},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := hivetest.Logger(t)
+			sc := testNewSelectorCache(t, logger, nil)
+			policyCtx := &testPolicyContextType{logger: logger, sc: sc, fromFile: true}
+			port := api.PortProtocol{Port: "443", Protocol: api.ProtoTCP}
+			tt.portRule.Ports = []api.PortProtocol{port}
+			entry := &types.PolicyEntry{
+				Verdict: types.Allow,
+				L3:      types.ToSelectors(endpointSelectorB),
+				Ingress: tt.ingress,
+				L4:      []api.PortRule{tt.portRule},
+			}
+
+			for range 2 {
+				filter, err := createL4Filter(policyCtx, entry, &tt.portRule, port)
+				require.Error(t, err)
+				require.Nil(t, filter)
+				require.True(t, sc.selectors.Empty(), "failed construction must not retain selectors")
+			}
+		})
+	}
+}
+
 type SortablePolicyRules []*models.PolicyRule
 
 func (a SortablePolicyRules) Len() int           { return len(a) }

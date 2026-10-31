@@ -1011,10 +1011,12 @@ func createL4Filter(policyCtx PolicyContext, entry *types.PolicyEntry, portRule 
 		var err error
 		terminatingTLS, err = l4.getCerts(policyCtx, pr.TerminatingTLS, TerminatingTLS)
 		if err != nil {
+			l4.detach(selectorCache)
 			return nil, err
 		}
 		originatingTLS, err = l4.getCerts(policyCtx, pr.OriginatingTLS, OriginatingTLS)
 		if err != nil {
+			l4.detach(selectorCache)
 			return nil, err
 		}
 
@@ -1059,6 +1061,7 @@ func createL4Filter(policyCtx PolicyContext, entry *types.PolicyEntry, portRule 
 					// TODO: Catch this in rule validation once we have a
 					// validation context in there so that we can differentiate
 					// between CNP and CCNP at validation time.
+					l4.detach(selectorCache)
 					return nil, fmt.Errorf("Listener %q in CCNP can not use Kind CiliumEnvoyConfig", pr.Listener.Name)
 				}
 			case "CiliumClusterwideEnvoyConfig":
